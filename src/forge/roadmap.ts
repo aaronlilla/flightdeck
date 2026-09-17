@@ -28,7 +28,8 @@ export function parseRoadmapItems(text: string): RoadmapItem[] {
     const cells = splitRow(line);
     if (!cells || cells.length < 5) continue;
     const [id, , , status, pr] = cells;
-    if (!id || !/^R-\d{2}$/.test(id)) continue;
+    // Two digits or more: rows past R-99 exist (R-100, R-101), and `{2}` skipped them.
+    if (!id || !/^R-\d{2,}$/.test(id)) continue;
     items.push({ id, status: status ?? '', pr: pr ?? '' });
   }
   return items;
@@ -47,7 +48,7 @@ export function roadmapIdOpen(text: string, id: string): boolean {
  *  evidence to decide whether it has anything to attach to, before it ever reaches the
  *  roadmap table itself. */
 export function citesRoadmapId(text: string): boolean {
-  return /\bR-\d{2}\b/.test(text);
+  return /\bR-\d{2,}\b/.test(text);
 }
 
 /** R-02 guard #4: inserts `line` at the end of `text`'s `## Proposed` section, adding the

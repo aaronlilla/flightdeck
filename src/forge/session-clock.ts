@@ -62,7 +62,11 @@ export class SessionClock {
       const elapsedMs = now - run.startedAt;
       if (elapsedMs <= budget) continue;
       this.parked.add(run.run);
-      input.actuator.park(run.run, `wall clock: ${formatDuration(elapsedMs)} over ${formatDuration(budget)}`);
+      // The reason a person reads off the board, so it says the thing rather than naming
+      // the measurement (Aaron, 2026-09-12: no jargon and no made-up terms in anything
+      // on screen). "wall clock: 22.3 h over 3.0 h" told the reader what was being
+      // measured and left them to work out what it meant.
+      input.actuator.park(run.run, `Running ${formatDuration(elapsedMs)}, expected ${formatDuration(budget)}`);
     }
   }
 }

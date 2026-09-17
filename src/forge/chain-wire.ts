@@ -32,6 +32,7 @@ import type { PollSourceName } from './contracts.js';
 import type { QueueRuntimeDeps } from './intake/queue.js';
 import { run as execRun, type RunRequest, type RunResult } from './exec.js';
 import { findingsTextFrom } from './council/renderNotes.js';
+import { worktreeRemovalOff } from './sync/code/worktrees.js';
 import { createJiraFeed } from './intake/jira.js';
 import {
   intakeBriefsDir, journalPath, killSwitchPath, forgeHome, registryDir, runDir,
@@ -505,11 +506,14 @@ export async function provisionWorktree(input: {
   // compares against a freshly computed (never-redacted) branch name, which can then
   // never match; the reuse check falls through to `git worktree add` on a worktree that
   // already exists. See exec.ts's `raw` option for the confirmed live failure.
+  // 2026-09-14: `fullOutput` too. The runner keeps only the last TAIL_BYTES otherwise, and
+  // with 37 worktrees the listing ran to 5174 bytes: BBZ-303's own entry sat before the
+  // cut, the reuse check never saw it, and `git worktree add` failed on its own worktree.
   const list = await runner({
     argv: ['git', '-C', checkout, 'worktree', 'list', '--porcelain'],
-    cwd: checkout, owner: `chain-${input.ticket}`, cls: 'script', raw: true,
+    cwd: checkout, owner: `chain-${input.ticket}`, cls: 'script', raw: true, fullOutput: true,
   });
-  const entries = list.ok ? parseWorktreeList(list.tail) : [];
+  const entries = list.ok ? parseWorktreeList(list.full ?? list.tail) : [];
 
   const target = normalizeWorktreePath(worktreePath);
   const samePath = entries.find((entry) => normalizeWorktreePath(entry.path) === target);
@@ -532,6 +536,11 @@ export async function provisionWorktree(input: {
     // and only a worktree with no live owner behind it gets reclaimed.
     if (rows === undefined || ownedLive) {
       throw new Error(`branch ${branch} is already checked out at ${branchElsewhere.path}`);
+    }
+    if (worktreeRemovalOff()) {
+      throw new Error(
+        `branch ${branch} is already checked out at ${branchElsewhere.path}, and worktree removal is switched off (FORGE_WORKTREE_REMOVAL=off)`,
+      );
     }
 
     const removed = await runner({

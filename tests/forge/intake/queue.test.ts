@@ -32,6 +32,7 @@ interface FixtureOverrides {
   launcher?: Partial<ChainLauncher>;
   gh?: Partial<ChainGh>;
   rebaseOnBase?: QueueRuntimeDeps['rebaseOnBase'];
+  clearRunBlock?: QueueRuntimeDeps['clearRunBlock'];
   council?: ChainCouncilFn;
   gate?: ChainGateFn;
   killSwitch?: () => boolean;
@@ -40,6 +41,8 @@ interface FixtureOverrides {
   launchGoal?: QueueRuntimeDeps['launchGoal'];
   mergeAllowed?: QueueRuntimeDeps['mergeAllowed'];
   postMergeVerify?: QueueRuntimeDeps['postMergeVerify'];
+  repoRunsChecks?: QueueRuntimeDeps['repoRunsChecks'];
+  runRepoVerify?: QueueRuntimeDeps['runRepoVerify'];
 }
 
 function buildDeps(store: QueueStore, overrides: FixtureOverrides = {}): { deps: QueueRuntimeDeps; events: Record<string, unknown>[] } {
@@ -65,6 +68,7 @@ function buildDeps(store: QueueStore, overrides: FixtureOverrides = {}): { deps:
       ...overrides.gh,
     },
     ...(overrides.rebaseOnBase ? { rebaseOnBase: overrides.rebaseOnBase } : {}),
+    ...(overrides.clearRunBlock ? { clearRunBlock: overrides.clearRunBlock } : {}),
     council: overrides.council ?? (async () => ({ verdict: 'PASS' })),
     gate: overrides.gate ?? (async () => ({ merged: false })),
     clock: () => 1_000,
@@ -81,9 +85,56 @@ function buildDeps(store: QueueStore, overrides: FixtureOverrides = {}): { deps:
     ...(overrides.launchGoal ? { launchGoal: overrides.launchGoal } : {}),
     ...(overrides.mergeAllowed ? { mergeAllowed: overrides.mergeAllowed } : {}),
     ...(overrides.postMergeVerify ? { postMergeVerify: overrides.postMergeVerify } : {}),
+    ...(overrides.repoRunsChecks ? { repoRunsChecks: overrides.repoRunsChecks } : {}),
+    ...(overrides.runRepoVerify ? { runRepoVerify: overrides.runRepoVerify } : {}),
   };
   return { deps, events };
 }
+
+// R-101 escape, 2026-09-14: BBZ-296 was cancelled in Jira while it was being planned. The
+// watcher wrote the item `done` at 08:30:25, the planning hop that had started at 08:30:09
+// finished at 08:30:28 and wrote it back to `running` from its stale copy, and a worker
+// launched on a cancelled ticket at 08:30:59.
+describe('an item closed while a hop is in flight stays closed', () => {
+  it('a planning hop that finishes after the close writes nothing and launches nothing', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    let launches = 0;
+    const { deps } = buildDeps(store, {
+      planner: {
+        planTicket: async (ticket) => {
+          store.append({ id: item.id, at: 1500, state: 'done', reason: 'closed in Jira', updatedAt: 1500 });
+          return { ticket, repo: 'owner/name', briefPath: `C:/briefs/${ticket}.md` };
+        },
+      },
+      launcher: { launch: async ({ ticket }) => { launches += 1; return { runKey: ticket.toLowerCase() }; } },
+    });
+
+    const afterPlan = await advanceItem(item, deps);
+    expect(afterPlan.state).toBe('done');
+    expect(store.get(item.id)?.state).toBe('done');
+
+    await advanceItem(afterPlan, deps);
+    expect(launches).toBe(0);
+    expect(store.get(item.id)?.state).toBe('done');
+  });
+
+  it('a launch hop holding a stale running copy does not start a worker for a closed item', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-2', 1000);
+    let launches = 0;
+    const { deps } = buildDeps(store, {
+      launcher: { launch: async ({ ticket }) => { launches += 1; return { runKey: ticket.toLowerCase() }; } },
+    });
+    const planned = await advanceItem(item, deps);
+    expect(planned.state).toBe('running');
+    store.append({ id: item.id, at: 2000, state: 'done', reason: 'closed in Jira', updatedAt: 2000 });
+
+    const after = await advanceItem(planned, deps);
+    expect(launches).toBe(0);
+    expect(after.state).toBe('done');
+  });
+});
 
 describe('addTicketItem / addBriefItem', () => {
   it('adds a queued item carrying the ticket as both input and ticket', () => {
@@ -266,7 +317,7 @@ describe('advanceItem: goal source', () => {
     const finished = await advanceItem(launched, deps2);
 
     expect(finished.state).toBe('parked');
-    expect(finished.reason).toBe('exhausted');
+    expect(finished.reason).toMatch(/ran out of room to think/);
     expect(finished.runKey).toBe('goal-run-3');
     expect(events.map((e) => e['event'])).toContain('queue.parked');
   });
@@ -416,6 +467,61 @@ describe('retry: a parked item whose run already finished launches again instead
     expect(events.map((e) => e['event'])).toContain('queue.relaunch-on-retry');
   });
 
+  it("clears the old run key's stored stop reason before a retry relaunches it", async () => {
+    // Aaron, 2026-09-14: every relaunch was refused ("refusing to start ...: Running 3.0 h")
+    // on the reason the first park had written, until someone ran `forge clear` by hand.
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const order: string[] = [];
+    let launchCalls = 0;
+    const { deps } = buildDeps(store, {
+      launcher: {
+        launch: async ({ ticket }) => {
+          launchCalls += 1;
+          order.push(`launch:${launchCalls}`);
+          return { runKey: `${ticket.toLowerCase()}-${launchCalls}` };
+        },
+        status: async () => ({ finished: true, verdict: 'parked' }),
+      },
+      gh: { findPrByHead: async () => undefined },
+      clearRunBlock: (runKey: string) => { order.push(`clear:${runKey}`); },
+    });
+
+    let current = item;
+    current = await advanceItem(current, deps); // plan
+    current = await advanceItem(current, deps); // launch
+    const firstRunKey = current.runKey!;
+    current = await advanceItem(current, deps); // finished, no PR -> park
+    const retried = retryItem(store, current.id, 5000)!;
+    await advanceItem(retried, deps);
+
+    expect(order).toContain(`clear:${firstRunKey}`);
+    expect(order.indexOf(`clear:${firstRunKey}`)).toBeLessThan(order.indexOf('launch:2'));
+  });
+
+  it("a ticket's first launch clears any stored stop reason on the run key the launcher will use", async () => {
+    // Aaron, 2026-09-14: BBZ-304's first launch of item Q-ecadd03d was refused on the drift
+    // park its earlier run had written under the same run key; only a retry-relaunch cleared it.
+    const { runKeyForBrief } = await import('../../../src/forge/chain.js');
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const order: string[] = [];
+    const { deps } = buildDeps(store, {
+      launcher: {
+        launch: async ({ ticket }) => { order.push('launch:1'); return { runKey: ticket.toLowerCase() }; },
+      },
+      clearRunBlock: (runKey: string) => { order.push(`clear:${runKey}`); },
+    });
+
+    let current = item;
+    current = await advanceItem(current, deps); // plan
+    const expectedKey = runKeyForBrief(current.briefPath!);
+    await advanceItem(current, deps); // first launch
+
+    expect(order).toContain(`clear:${expectedKey}`);
+    expect(order.indexOf(`clear:${expectedKey}`)).toBeLessThan(order.indexOf('launch:1'));
+  });
+
   it('an item retried while its finished run does carry a PR still goes to the gate, not a relaunch', async () => {
     const store = tempStore();
     const item = addTicketItem(store, 'ABC-1', 1000);
@@ -551,6 +657,31 @@ describe('advanceItem', () => {
     expect(result.mergedBy).toBeUndefined();
   });
 
+  it('R-101: a held item stops at review on an allow-listed repo, with no QA handoff', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000, { noMerge: true });
+    let gateInput: { repo: string; pr: number; merge: boolean } | undefined;
+    let handoffCalls = 0;
+    const { deps } = buildDeps(store, {
+      launcher: {
+        status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/9' }),
+      },
+      gate: async (input) => { gateInput = input; return { merged: false }; },
+      mergeAllowed: (repo) => repo === 'owner/name',
+    });
+    deps.jiraHandoff = async () => { handoffCalls += 1; };
+
+    let current = item;
+    current = await advanceItem(current, deps); // plan
+    current = await advanceItem(current, deps); // launch
+    const result = await advanceItem(current, deps); // gate
+
+    expect(item.noMerge).toBe(true);
+    expect(gateInput?.merge).toBe(false);
+    expect(result.state).toBe('review');
+    expect(handoffCalls).toBe(0);
+  });
+
   it('parks an item whose repo does not route, without touching the launcher', async () => {
     const store = tempStore();
     const item = addTicketItem(store, 'ZZZ-1', 1000);
@@ -615,7 +746,11 @@ describe('advanceItem', () => {
     current = await advanceItem(current, deps);
     const result = await advanceItem(current, deps);
     expect(result.state).toBe('parked');
-    expect(result.reason).toBe('blocked');
+    // Was `toBe('blocked')`. The bare verdict as the whole reason is the defect fixed on
+    // 2026-09-13: a card told somebody to read it and offered one word. The verdict is
+    // still what happened, and is still recorded; this is how it is said.
+    expect(result.reason).toMatch(/could not get past/);
+    expect(result.state).toBe('parked');
   });
 
   it('takes an unverified run on to the gate when its branch already carries a PR', async () => {
@@ -650,7 +785,8 @@ describe('advanceItem', () => {
     current = await advanceItem(current, deps);
     const result = await advanceItem(current, deps);
     expect(result.state).toBe('parked');
-    expect(result.reason).toBe('unverified');
+    expect(result.reason).toMatch(/nothing proving the work is good/);
+    expect(result.state).toBe('parked');
   });
 
   // BBZ-60/62/74/202, 2026-09-08: four items reached the gate hop while their PR checks
@@ -674,6 +810,107 @@ describe('advanceItem', () => {
     expect(result.state).toBe('running');
     expect(result.reason).toMatch(/checks are pending/);
     expect(result.pendingGatePolls).toBe(1);
+  });
+
+  // Aaron, 2026-09-12: a repository whose Actions are off never leaves a pending rollup,
+  // so the item polled twenty times and parked saying the checks "never settled" -- about
+  // a wait that never happened. The gate asks whether the repository runs any, and stands
+  // that repository's own verify in their place when it does not.
+  it('a repository that runs no checks is gated on its own verify instead of waiting', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    let verifyRan = 0;
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'PASS', pending: true }),
+      repoRunsChecks: async () => false,
+      runRepoVerify: async () => { verifyRan += 1; return { ok: true, output: 'green' }; },
+    });
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    const result = await advanceItem(current, deps);
+    expect(verifyRan, 'the gate never ran the verify this repository owns').toBe(1);
+    expect(result.reason ?? '').not.toMatch(/checks are pending/);
+    expect(result.pendingGatePolls ?? 0).toBe(0);
+  });
+
+  it('a repository that runs no checks parks on its own verify failing, not on a timeout', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'PASS', pending: true }),
+      repoRunsChecks: async () => false,
+      runRepoVerify: async () => ({
+        ok: false,
+        output: ['running', '', '  Tests  2 failed | 90 passed', ''].join(String.fromCharCode(10)),
+      }),
+    });
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    const result = await advanceItem(current, deps);
+    expect(result.state).toBe('parked');
+    expect(result.reason).toMatch(/runs no checks; its own verify failed/);
+    expect(result.reason).not.toMatch(/never settled/);
+  });
+
+  it('a repository that does run checks waits exactly as it always did', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    let verifyRan = 0;
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'unavailable', pending: true }),
+      repoRunsChecks: async () => true,
+      runRepoVerify: async () => { verifyRan += 1; return { ok: true, output: '' }; },
+    });
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    const result = await advanceItem(current, deps);
+    expect(verifyRan, 'it ran a verify on a repository that runs its own checks').toBe(0);
+    expect(result.reason).toMatch(/checks are pending/);
+  });
+
+  it('runs the verify before the council, so the council is not waited on first', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const order: string[] = [];
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => { order.push('council'); return { verdict: 'PASS', pending: true }; },
+      repoRunsChecks: async () => false,
+      runRepoVerify: async () => { order.push('verify'); return { ok: true, output: 'green' }; },
+    });
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    await advanceItem(current, deps);
+    expect(order[0], 'the council was asked before the verify ran').toBe('verify');
+  });
+
+  it('does not run the verify twice in one gate pass', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    let ran = 0;
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'PASS', pending: true }),
+      repoRunsChecks: async () => false,
+      runRepoVerify: async () => { ran += 1; return { ok: true, output: 'green' }; },
+    });
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    await advanceItem(current, deps);
+    expect(ran).toBe(1);
   });
 
   it('a pending council result that later turns success carries the item on to review', async () => {
@@ -1123,6 +1360,127 @@ describe('Jira write-back at review: A.3', () => {
     expect(current.state).toBe('review');
     expect(handoffCalls).toBe(1);
     expect(current.handoffAt).toBeTypeOf('number');
+  });
+
+  // Item 16, 2026-09-12: the pull request reaching review stayed a draft and its body
+  // said nothing about whether merging publishes an update or triggers a rebuild,
+  // though the decide job had already resolved one. Whoever merged it could not tell.
+  it('marks the pull request ready at review and writes the ship prediction into it', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'BBZ-226', 1000);
+    const calls: { pr: number; prediction: string }[] = [];
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'PASS' }),
+    });
+    deps.prSnapshot = async () => ({ files: ['android/app/build.gradle', 'src/app/store.ts'], add: 3, del: 1 });
+    deps.mobileRepo = () => true;
+    deps.readyPrWithPrediction = async (input) => {
+      calls.push({ pr: input.pr.no, prediction: input.prediction });
+      return { readied: true };
+    };
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.state).toBe('review');
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.prediction).toMatch(/Android: predicted rebuild/);
+    expect(calls[0]!.prediction).toMatch(/iOS: predicted over-the-air update/);
+    expect(current.pr?.draft).toBe(false);
+  });
+
+  it('journals a refusal to mark ready, and never silently skips it', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'BBZ-226', 1000);
+    const { deps, events } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'PASS' }),
+    });
+    deps.prSnapshot = async () => ({ files: ['src/app/store.ts'], add: 1, del: 0 });
+    deps.mobileRepo = () => true;
+    deps.readyPrWithPrediction = async () => { throw new Error('gh: draft conversion refused'); };
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.state).toBe('review');
+    const refusal = events.find((row) => row['event'] === 'queue.pr-ready-failed');
+    expect(refusal).toBeDefined();
+    expect(String(refusal!['error'])).toContain('draft conversion refused');
+    expect(current.pr?.draft).toBe(true);
+  });
+
+  // Found by code review, 2026-09-12: `repoKindFor` answers `frontend` for any repo
+  // with no entry of its own, so the permissive reading put an Android and iOS ship
+  // path into a pull request on a Node repo with no mobile build at all.
+  // This used to assert the readier was never called for a repository with no mobile
+  // build, which is the defect rather than the intent: readying a draft and predicting a
+  // ship path were one call, so such a pull request stayed a draft nobody could merge.
+  // Measured 2026-09-12 on a ticket driven in through the console -- it reached review,
+  // Merge did nothing, and the row said no mobile build was found.
+  it('readies a repo with no mobile build, predicts nothing, and journals why', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'BBZ-226', 1000);
+    let called = false;
+    const { deps, events } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'PASS' }),
+    });
+    deps.prSnapshot = async () => ({ files: ['src/app/store.ts'], add: 1, del: 0 });
+    // Wired the way production wires it: `repoKindFor` answers `frontend` for any repo
+    // with no entry of its own, so a guard reading THAT would fire here. The guard
+    // reads whether the repo has a mobile build, which this one does not.
+    deps.repoKindFor = () => 'frontend';
+    deps.mobileRepo = () => false;
+    let sentPrediction: string | undefined;
+    deps.readyPrWithPrediction = async ({ prediction }) => {
+      called = true;
+      sentPrediction = prediction;
+      return { readied: true };
+    };
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.state).toBe('review');
+    expect(called, 'the draft was never readied, so nobody can merge it').toBe(true);
+    expect(sentPrediction, 'it predicted a ship path for a repository that has none').toBe('');
+    // A silent skip is how a feature that never runs looks exactly like one that does.
+    const skip = events.find((row) => row['event'] === 'queue.pr-ready-skipped');
+    expect(skip).toBeDefined();
+    expect(String(skip?.['reason'])).toMatch(/readied with no ship path predicted/);
+  });
+
+  // Found by code review, 2026-09-12: a FIX FIRST round leaves the item running and
+  // the next tick re-enters this hop. Marking ready again is harmless; commenting
+  // again is not, and the two predictions can disagree because the file list is
+  // re-fetched each pass.
+  it('posts the prediction once, however many times the hop is re-entered', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'BBZ-226', 1000);
+    let calls = 0;
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'PASS' }),
+    });
+    deps.prSnapshot = async () => ({ files: ['src/app/store.ts'], add: 1, del: 0 });
+    deps.mobileRepo = () => true;
+    deps.readyPrWithPrediction = async () => { calls += 1; return { readied: true }; };
+
+    let current = item;
+    for (let i = 0; i < 5; i += 1) current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.state).toBe('review');
+    expect(calls).toBe(1);
+    expect(current.predictionAt).toBeTypeOf('number');
   });
 
   it('a failing handoff never keeps the item off review, and leaves handoffAt unset', async () => {
@@ -1754,6 +2112,76 @@ describe('mergeItem: A.7', () => {
       const log = sh(seedDir, 'log', 'origin/develop', '-1', '--format=%s').trim();
       expect(log).toBe('Merge feature/abc-1 (#9)');
     });
+
+    // Measured 2026-09-13: the first ticket driven in through the console merged to main
+    // and left its own pull request open behind it, a draft, on a board saying done. The
+    // squash pushes a NEW commit, so GitHub never recognises the branch in the base and
+    // nothing closes the pull request on its own.
+    it('closes the pull request the merge landed, naming where it went', async () => {
+      const store = tempStore();
+      const added = addTicketItem(store, 'ABC-1', 1000);
+      store.append({
+        id: added.id, at: 2000, state: 'review', repo: 'owner/name', branch: 'feature/abc-1', base: 'develop',
+        pr: { no: 9, url: 'https://github.com/owner/name/pull/9', files: 1, add: 1, del: 0, draft: true },
+      });
+      const closed: Array<{ repo: string; pr: number; comment: string }> = [];
+      const result = await mergeItem(store.get(added.id)!, {
+        mergeAllowed: () => true,
+        gate: async () => ({ merged: true }),
+        gitMerge: async () => ({ ok: true, mergeSha: 'abc1234' }),
+        closePr: async (input) => { closed.push(input); return { ok: true }; },
+        clock: () => 3000,
+        store: { append: () => {} } as never,
+      });
+
+      expect(result.ok).toBe(true);
+      expect(closed, 'the pull request was left open behind the merge').toHaveLength(1);
+      expect(closed[0]?.pr).toBe(9);
+      expect(closed[0]?.comment).toMatch(/Merged into develop as abc1234/);
+    });
+
+    it('does not close a pull request the merge refused', async () => {
+      const store = tempStore();
+      const added = addTicketItem(store, 'ABC-1', 1000);
+      store.append({
+        id: added.id, at: 2000, state: 'review', repo: 'owner/name', branch: 'feature/abc-1', base: 'develop',
+        pr: { no: 9, url: 'https://github.com/owner/name/pull/9', files: 1, add: 1, del: 0, draft: true },
+      });
+      let closes = 0;
+      await mergeItem(store.get(added.id)!, {
+        mergeAllowed: () => true,
+        gate: async () => ({ merged: false }),
+        gitMerge: async () => ({ ok: false, reason: 'the base moved first' }),
+        closePr: async () => { closes += 1; return { ok: true }; },
+        clock: () => 3000,
+        store: { append: () => {} } as never,
+      });
+      expect(closes, 'it closed a pull request whose merge never landed').toBe(0);
+    });
+
+    it('journals a close that failed rather than swallowing it', async () => {
+      const store = tempStore();
+      const added = addTicketItem(store, 'ABC-1', 1000);
+      store.append({
+        id: added.id, at: 2000, state: 'review', repo: 'owner/name', branch: 'feature/abc-1', base: 'develop',
+        pr: { no: 9, url: 'https://github.com/owner/name/pull/9', files: 1, add: 1, del: 0, draft: true },
+      });
+      const rows: Array<Record<string, unknown>> = [];
+      const result = await mergeItem(store.get(added.id)!, {
+        mergeAllowed: () => true,
+        gate: async () => ({ merged: true }),
+        gitMerge: async () => ({ ok: true, mergeSha: 'abc1234' }),
+        closePr: async () => ({ ok: false, reason: 'gh is not logged in' }),
+        append: (row: unknown) => { rows.push(row as Record<string, unknown>); return 'jid'; },
+        clock: () => 3000,
+        store: { append: () => {} } as never,
+      } as never);
+
+      expect(result.ok, 'a failed close un-merged the item').toBe(true);
+      const row = rows.find((r) => r['event'] === 'queue.pr-close-failed');
+      expect(row).toBeDefined();
+      expect(String(row?.['error'])).toMatch(/gh is not logged in/);
+    });
   });
 });
 
@@ -1843,5 +2271,51 @@ describe('a review item whose PR merged elsewhere', () => {
     await runQueueTick(deps, staleSnapshot);
     expect(store.get(item.id)?.state).toBe('done');
     expect(store.get(item.id)?.reason).toBe('merged; OTA pending');
+  });
+});
+
+// 2026-09-14, BBZ-303 (Q-842f5b17): the queue parked this item at the gate hop ten seconds
+// after its relaunch while the worker (pid 41412) kept working for five more minutes. A
+// person retrying the "parked" card would have put a second worker on the same worktree.
+// The liveness read here is the production one: a real registry row, a real child process,
+// and `processAlive` through `liveRunPid`, never a boolean the test hands in.
+import { spawn as spawnLiveWorker } from 'node:child_process';
+import { once as onceWorkerEvent } from 'node:events';
+import { liveRunPid, Registry as QueueSpecRegistry } from '../../../src/forge/registry.js';
+
+describe('the gate hop never parks a run whose process is alive', () => {
+  it('holds the item on running while its worker pid lives, and parks it once that pid is gone', async () => {
+    const store = tempStore();
+    const registry = new QueueSpecRegistry(mkdtempSync(join(tmpdir(), 'queue-registry-')));
+    const worker = spawnLiveWorker(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+    try {
+      const runKey = 'queue-BBZ-303-Q-842f5b17';
+      expect(registry.admit({ goal: runKey, cwd: 'C:/worktrees/repo--bbz-303', briefPath: 'C:/briefs/BBZ-303.md', pid: worker.pid! }).ok).toBe(true);
+      const added = addTicketItem(store, 'BBZ-303', 1000);
+      store.append({
+        id: added.id, at: 1100, state: 'running', ticket: 'BBZ-303', repo: 'owner/name',
+        briefPath: 'C:/briefs/BBZ-303.md', runKey, branch: 'feature/bbz-303', updatedAt: 1100,
+      });
+      const { deps, events } = buildDeps(store, { launcher: { status: async () => ({ finished: true, verdict: 'parked' }) } });
+      deps.runPid = (key) => liveRunPid(registry, key);
+      const lookups: string[] = [];
+      const findPrByHead = deps.gh.findPrByHead;
+      deps.gh = { ...deps.gh, findPrByHead: async (repo, branch) => { lookups.push(branch); return findPrByHead(repo, branch); } };
+
+      const held = await advanceItem(store.get(added.id)!, deps);
+      expect(held.state).toBe('running');
+      expect(store.get(added.id)!.state).toBe('running');
+      expect(events.map((e) => e['event'])).not.toContain('queue.parked');
+      // Held on a live worker, the next tick waits on that process and asks GitHub nothing.
+      expect((await advanceItem(store.get(added.id)!, deps)).state).toBe('running');
+      expect(lookups).toHaveLength(1);
+
+      worker.kill();
+      await onceWorkerEvent(worker, 'exit');
+      const parked = await advanceItem(store.get(added.id)!, deps);
+      expect(parked.state).toBe('parked');
+    } finally {
+      if (worker.exitCode === null && worker.signalCode === null) worker.kill();
+    }
   });
 });

@@ -11,30 +11,40 @@
  * same two steps `chain-wire.ts#chainIntake` already runs for a poll-sourced packet,
  * just triggered by an operator's own add instead of a poll cycle.
  */
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { chainCouncil, chainGate, chainGh, chainRebase, chainLauncher, chainLaunchGoal } from './chain-wire.js';
-import { checkoutFor, repoKindFor as repoKindForEnv, type ChainEnv } from './chain-env.js';
+import {
+  checkoutFor, declaredRepoKind, repoKindFor as repoKindForEnv, verifyCommandFor, type ChainEnv,
+} from './chain-env.js';
 import type { CliResult, ForgeDeps } from './cli.js';
 import { autoMergeAllowed } from './council/risk.js';
-import { countAddDel, guardedCommentPr, REAL_GH } from './council/gh.js';
+import { conclusionOf, countAddDel, guardedCommentPr, REAL_GH, type GhWriter } from './council/gh.js';
 import type { Packet, PollSourceName, Watermark } from './contracts.js';
 import { run as execRun } from './exec.js';
-import type { QueueMergeDeps, QueuePlannedBrief, QueuePlanner, QueuePromoteDeps, QueueRuntimeDeps, QueueTicketSearch } from './intake/queue.js';
+import type {
+  QueueMergeDeps, QueuePlannedBrief, QueuePlanner, QueuePlanOutcome, QueuePromoteDeps, QueueRuntimeDeps, QueueTicketSearch,
+} from './intake/queue.js';
+import { asksForItem, planTicketWithInterview } from './intake/interviewPlanner.js';
+import { InterviewStore } from './intake/interviewStore.js';
+import { scoutAnswer } from './intake/scout.js';
+import { Inbox } from './inbox.js';
 import { gitSquashMergeToBase, type GitRunFn } from './intake/gitMerge.js';
 import { developDeployVerifier } from './intake/otaVerify.js';
-import { appendRoutinesSection, loadRoutines, matchRoutines } from './self/routines.js';
+import { briefWithRoutines, loadRoutines } from './self/routines.js';
 import { routinesDir } from './paths.js';
 import { createJiraFeed, createJiraWriteClient, type JiraConfig } from './intake/jira.js';
+import { fetchIssueComments, fetchIssueRemoteLinks, readTicketDetail } from './intake/jira.js';
+import { checkTicketInFlight } from './intake/inFlight.js';
 import { runQueueDone, runQueueHandoff } from './intake/queueHandoff.js';
 import type { PollItemDetail } from './intake/poller.js';
-import { planFromPacket } from './intake/planner.js';
 import { resolvePlanProvider } from './intake/reasoner.js';
 import { parseRepoMap, routeRepo, repoFromBrief, ticketFromBrief } from './intake/repoRoute.js';
 import { Journal } from './journal.js';
 import { loadPolicy } from './policy.js';
-import { queueBriefsDir, journalPath, killSwitchPath } from './paths.js';
+import { inboxDir, interviewRecordsDir, queueBriefsDir, journalPath, killSwitchPath, registryDir } from './paths.js';
+import { liveRunPid, Registry } from './registry.js';
 import { reasonerFor } from './reasoner-claude.js';
 import { readKillSwitch } from './supervisor.js';
 import { readQueuePaused } from './console/queue-pause.js';
@@ -127,12 +137,24 @@ function packetFor(ticket: string, repo: string, detail: PollItemDetail | undefi
 /**
  * `queuePlanner`: a ticket key becomes a routed brief the same way `chain-wire.ts`'s own
  * intake does -- one Jira lookup for the ticket's own text, `routeRepo` against
- * `FORGE_INTAKE_REPO_MAP`, then one `planFromPacket` call through the Reasoner. A pasted
+ * `FORGE_INTAKE_REPO_MAP`, then the interview hop (`intake/interviewPlanner.ts`). A pasted
  * brief skips both: there is no ticket to look up, so `routeRepo` runs against an empty
  * `labels`/`components`/`issuetype`, which only ever resolves through a `default` rule
  * in the map (or stays `'unknown'`, reported honestly rather than guessed at).
  */
-export function queuePlanner(configFn: () => JiraConfig | undefined = jiraConfigFromEnv): QueuePlanner {
+export function queuePlanner(
+  configFn: () => JiraConfig | undefined = jiraConfigFromEnv,
+  chainEnv?: ChainEnv,
+  // Injected rather than reached for, so a specimen can drive the in-flight gate without
+  // a real `gh` on the machine. Referencing REAL_GH inside left this whole path untested
+  // (review, 2026-09-12), against the rule that no specimen calls it.
+  prState: GhWriter['viewPrState'] = REAL_GH.viewPrState,
+): QueuePlanner {
+  // F.6 defect, 2026-09-12: every brief was written with `repoKind` left undefined, so a
+  // routine tagged `frontend` could never match one and a mobile worker was handed the
+  // general routines only. The kind comes from the repository map, the same declaration
+  // `chain-env.ts` already reads, never guessed from the repository's name.
+  const kindOf = (repo: string): string | undefined => (chainEnv ? declaredRepoKind(chainEnv, repo) : undefined);
   const repoRules = parseRepoMap(process.env['FORGE_INTAKE_REPO_MAP']);
   const briefsDir = queueBriefsDir();
   mkdirSync(briefsDir, { recursive: true });
@@ -143,34 +165,90 @@ export function queuePlanner(configFn: () => JiraConfig | undefined = jiraConfig
   const routines = loadRoutines(routinesDir());
   async function writeBrief(id: string, text: string, repoKind?: string): Promise<string> {
     const path = join(briefsDir, `${id.replace(/[^A-Za-z0-9._-]/g, '_')}.md`);
-    const keywords = [...new Set(text.toLowerCase().match(/[a-z][a-z0-9-]{2,}/g) ?? [])];
-    const matched = matchRoutines({ ...(repoKind ? { repoKind } : {}), keywords: ['general', ...keywords] }, routines);
-    writeFileSync(path, appendRoutinesSection(text, matched), 'utf8');
+    writeFileSync(path, briefWithRoutines(text, routines, repoKind), 'utf8');
     return path;
   }
 
   return {
-    async planTicket(ticket, itemId): Promise<QueuePlannedBrief> {
+    async planTicket(ticket, itemId): Promise<QueuePlanOutcome> {
+      // An item already holding on an unanswered question is answered before the Jira
+      // lookup, not after it. Without this, a question left overnight on a 15-second tick
+      // made thousands of Jira reads whose result was thrown away, which also made the
+      // planner's own "a held item costs nothing per tick" claim false. Found by code
+      // review, 2026-09-11.
+      const held = asksForItem(new Inbox(inboxDir()), itemId);
+      if (held.length && held.some((ask) => ask.answer === undefined)) {
+        return { waiting: 'interview', asks: held.filter((ask) => ask.answer === undefined).length };
+      }
       const config = configFn();
       let repo = routeRepo(repoRules, { ticket, labels: [], components: [], issuetype: '' });
       let detail: PollItemDetail | undefined;
       if (config) {
-        const feed = createJiraFeed({ ...config, jql: `key = ${ticket}` });
-        const [item] = await feed.fetchSince(EMPTY_WATERMARK);
-        detail = item?.detail;
-        if (detail) {
-          repo = routeRepo(repoRules, {
-            ticket, labels: detail.labels ?? [], components: detail.components ?? [], issuetype: detail.issuetype,
-          });
+        // R-101: the issue itself, not a key search -- the index lags a ticket the feed
+        // queued seconds after it was created. Throws when unreadable, failing the item.
+        detail = await readTicketDetail(config, ticket);
+        repo = routeRepo(repoRules, {
+          ticket, labels: detail.labels ?? [], components: detail.components ?? [], issuetype: detail.issuetype,
+        });
+      }
+      // Does this ticket already have a pull request? Asked after routing, because only a
+      // pull request in the ticket's OWN repository is a claim on it -- a URL from
+      // somewhere else is somebody else's work, and treating it as unmeasured parked the
+      // item with no way out. The status field is never asked: the status field is what
+      // lied. A ticket read Backlog, unassigned, while carrying a draft pull request
+      // opened that morning.
+      if (config) {
+        const verdict = await checkTicketInFlight(ticket, {
+          comments: (key) => fetchIssueComments(config, key),
+          remoteLinks: (key) => fetchIssueRemoteLinks(config, key),
+          stateOf: async (repoSlug, pr) => (await prState(repoSlug, pr)).prState,
+          ownRepo: repo,
+        });
+        if (!verdict.start) {
+          return { inFlight: true, ticket, prUrl: verdict.pr?.url ?? '', reason: verdict.reason };
         }
       }
+
       const packet = packetFor(ticket, repo, detail);
       const journal = new Journal(journalPath());
       try {
         const reasoner = reasonerFor(resolvePlanProvider(loadPolicy().reasoner), { journal });
-        const planned = await planFromPacket(packet, reasoner);
-        const briefPath = await writeBrief(briefIdFor(planned.packetId, itemId), planned.text);
-        return { ticket, repo, briefPath };
+        // R-76: planning a ticket is an interview first. `planTicketWithInterview` owns
+        // the whole hop -- it may answer `waiting` (a question is out with somebody) or
+        // `backend` (this ticket is not ours to build), and the queue handles both.
+        return await planTicketWithInterview(ticket, itemId, {
+          reasoner,
+          // R-101: only a repo with a declared kind has an app-versus-backend split.
+          backendRouteApplies: kindOf(repo) !== undefined,
+          inbox: new Inbox(inboxDir()),
+          records: new InterviewStore(interviewRecordsDir()),
+          packetFor: async () => packet,
+          scout: async (question) => {
+            // The checkout comes from the repository map, never from the repository's
+            // name: `checkoutFor`'s own contract. Guessing it from `workspaceRoot()` plus
+            // the basename produced a real directory on this machine and nowhere else,
+            // and a grep in a directory that is not there answers "(no matches)" -- which
+            // reads as "the code says nothing", and lands in the brief as settled fact.
+            // Found by code review, 2026-09-11.
+            const checkout = chainEnv ? checkoutFor(chainEnv, repo) : undefined;
+            if (!checkout) {
+              return {
+                answered: false,
+                text: `no checkout is configured for ${repo}, so the code could not be searched`,
+              };
+            }
+            return scoutAnswer(question, {
+              cwd: checkout,
+              owner: `interview-${itemId}`,
+              reasoner,
+            });
+          },
+          writeBriefFile: async ({ text }: { text: string }) => ({
+            briefPath: await writeBrief(briefIdFor(packet.id, itemId), text, kindOf(repo)),
+            repo,
+          }),
+          append: (row: { event: string; [key: string]: unknown }) => { journal.append(row as never); },
+        });
       } finally {
         journal.close();
       }
@@ -187,7 +265,7 @@ export function queuePlanner(configFn: () => JiraConfig | undefined = jiraConfig
       const ticket = ticketFromBrief(text) ?? id;
       const repo = repoFromBrief(text)
         ?? routeRepo(repoRules, { ticket, labels: [], components: [], issuetype: '' });
-      const briefPath = await writeBrief(id, text);
+      const briefPath = await writeBrief(id, text, kindOf(repo));
       return { ticket, repo, briefPath };
     },
 
@@ -204,6 +282,7 @@ export function queuePlanner(configFn: () => JiraConfig | undefined = jiraConfig
         id,
         `${text}\n\nThis is a hotfix: it ships to dev on Merge and to production only on a `
           + 'separate Promote click.',
+        kindOf(repo),
       );
       return { ticket, repo, briefPath };
     },
@@ -259,7 +338,7 @@ export function queueJiraDone(
   return async ({ item, pr, mergedAt }) => {
     const config = configFn();
     if (!config || !item.ticket) return;
-    const journal = new Journal(journalPath());
+        const journal = new Journal(journalPath());
     try {
       await runQueueDone(
         createJiraWriteClient(config),
@@ -270,6 +349,102 @@ export function queueJiraDone(
     } finally {
       journal.close();
     }
+  };
+}
+
+/**
+ * Item 16, 2026-09-12: at review, mark the pull request ready and post the ship
+ * prediction as a comment. Both are writes a person would otherwise do by hand, and
+ * leaving the pull request a draft means nobody can merge it at all.
+ *
+ * `readyPr` on an already-ready pull request is a no-op. The comment is NOT: a second
+ * pass over the same item leaves a second prediction. The body write this replaced
+ * carried a marker for that, and a comment has nowhere to put one -- named in the
+ * finishing work rather than left implied (code review, 2026-09-12).
+ */
+/**
+ * Item 16, 2026-09-12: whether a repo builds a mobile app, so a ship prediction means
+ * anything for it.
+ *
+ * Evidence rather than configuration, after two rounds of the configuration reading
+ * being wrong in opposite directions: `repoKindFor` means "not backend" and would have
+ * put an Android and iOS ship path on every Node repo here, and the declared kind is
+ * unset in the common case, which turned the feature off entirely without saying so.
+ * An `android` or `ios` directory in the checkout is the thing that actually decides
+ * whether there is a build to predict. A repo declaring `frontend` outright is taken
+ * at its word; a repo with no checkout configured cannot be read, and answers no.
+ */
+export function mobileRepoAt(chainEnv: ChainEnv | undefined, repo: string): boolean {
+  if (!chainEnv) return false;
+  // The declaration is NOT evidence (code review, 2026-09-12). `frontend` means only
+  // "not backend" -- it is what picks the terminal state in `terminalStateFor` -- so
+  // an operator declaring `owner/web-app=frontend` to get the frontend hand-off would
+  // have got an Android and iOS prediction on a repo with no mobile build. That is the
+  // defect this function exists to remove, re-entering through the declaration branch.
+  // Only the checkout decides.
+  // A declared backend is never readied out of draft, whatever its checkout holds
+  // (code review, 2026-09-12). It stops at draft-pr-open by design and its owner is
+  // pinged on the assumption it is still a draft, so readying it hands them a pull
+  // request the queue has already made mergeable.
+  if (declaredRepoKind(chainEnv, repo) === 'backend') return false;
+  const checkout = checkoutFor(chainEnv, repo);
+  if (!checkout) return false;
+  return existsSync(join(checkout, 'android')) || existsSync(join(checkout, 'ios'));
+}
+
+export function queueReadyPrWithPrediction(
+  gh: Pick<GhWriter, 'readyPr' | 'commentPr'> = REAL_GH,
+  onRefused?: (reason: string) => void,
+): NonNullable<QueueRuntimeDeps['readyPrWithPrediction']> {
+  return async ({ item, pr, prediction }) => {
+    if (!item.repo) return { readied: false };
+    const ready = await gh.readyPr(item.repo, pr.no);
+    // A non-zero exit here is usually "there was nothing to do": the gate readies and
+    // merges on the auto-merge path before this runs. The message for a merged pull
+    // request says it is CLOSED, so matching only on "merged" wrote a false failure row
+    // on every successful auto-merge (code review, 2026-09-12).
+    const nothingToDo = ready.returncode !== 0
+      // `ready for review` is gone: `gh pr ready`'s own usage text contains it, so an
+      // argument error printed help, matched, was swallowed, and the pull request was
+      // recorded ready while still a draft (code review, 2026-09-12).
+      && /not a draft|is closed|already merged/i.test(ready.stderr);
+    if (ready.returncode !== 0 && !nothingToDo) {
+      throw new Error(`gh pr ready failed: ${ready.stderr.slice(0, 300)}`);
+    }
+    // A closed pull request was never readied, and saying otherwise records it as
+    // mergeable when it is not. It still gets the prediction: whoever reopens it wants
+    // to know what merging costs.
+    const readied = ready.returncode === 0 || !/is closed/i.test(ready.stderr);
+
+    // The prediction is a COMMENT, not an edit to the body (2026-09-12). Appending to
+    // the body meant reading it back first, and the only read available merges stdout
+    // with stderr into one buffer -- a warning from the read would have been written
+    // into somebody's prose, silently, with nothing parsing the result. A comment
+    // needs no read at all, so the corruption class is gone rather than guarded.
+    //
+    // Through `guardedCommentPr`, which `council/gh.ts` states is the one gate every
+    // pull request comment goes through; calling `commentPr` directly skipped the
+    // readability verdict and its refusal row (code review, 2026-09-12).
+    // An empty prediction means there is nothing to predict -- a repository that builds no
+    // mobile app has no ship path -- and a pull request in one still has to be readied, or
+    // it stays a draft that nobody can merge. Readying and predicting are two things, and
+    // the caller decides them separately.
+    if (prediction.trim().length === 0) return { readied };
+
+    let refusedReason: string | undefined;
+    const commented = await guardedCommentPr(gh, item.repo, pr.no, prediction, (refusal) => {
+      refusedReason = refusal.reason;
+      onRefused?.(`${item.repo}#${pr.no}: ${refusal.reason}`);
+    });
+    // The reason travels with the error: it used to be dropped here and journaled on a
+    // row carrying no pull request, so correlating the two meant matching timestamps
+    // (code review, 2026-09-12).
+    if (refusedReason !== undefined) return { readied, predictionError: `refused by readability: ${refusedReason}` };
+    if (commented === null) return { readied, predictionError: 'refused by readability' };
+    if (commented.returncode !== 0) {
+      return { readied, predictionError: commented.stderr.slice(0, 300) };
+    }
+    return { readied };
   };
 }
 
@@ -290,6 +465,14 @@ export function queueJiraHandoff(
           ticket: item.ticket, prUrl: pr.url,
           what: `${item.ticket} reached review through the queue.`,
           testPlan: [],
+          // Item 13, 2026-09-12: the item's own changed-files list, fetched once for
+          // the overlap check earlier in this same hop. Refetching cost two more
+          // GitHub calls per item against the fleet-shared ceiling and could disagree
+          // with the stored list if the branch moved between the two reads. Left unset
+          // when the list is empty, since an empty list is not evidence of anything --
+          // `gh pr view --json files` pages at 100 and yields `[]` when the field is
+          // missing.
+          ...(item.changedFiles?.length ? { changedFiles: item.changedFiles } : {}),
         },
         {
           qaAccountId: process.env['FORGE_JIRA_QA_ACCOUNT'],
@@ -401,7 +584,83 @@ export function queueMergeDeps(deps: ForgeDeps, store: QueueRuntimeDeps['store']
     },
     clock: () => Date.now(),
     store,
+    // The squash pushes a new commit to the base, so GitHub never sees the branch as
+    // merged. Without this the pull request stays open, a draft, on a board that says the
+    // ticket is done.
+    closePr: async ({ repo, pr, comment }) => {
+      if (!REAL_GH.closePr) return { ok: false, reason: 'this gh writer cannot close a pull request' };
+      const result = await REAL_GH.closePr(repo, pr, comment);
+      return result.returncode === 0
+        ? { ok: true }
+        : { ok: false, reason: result.stderr.slice(0, 300) };
+    },
     ...(chainEnv ? { postMergeVerify: queuePostMergeVerify(chainEnv), gitMerge: queueGitMerge(chainEnv) } : {}),
+  };
+}
+
+/**
+ * Whether a repository runs any check on a pull request.
+ *
+ * Asked so a gate waiting on an empty check rollup can tell "no checks yet" from "no
+ * checks ever". Only an ACTIVE workflow counts: a repository whose Actions are disabled
+ * still lists its workflow files, and reading those as checks is how the gate came to
+ * wait twenty ticks for something that was never going to run.
+ *
+ * Any trouble at all answers `true`, which is the waiting answer. A lookup that failed is
+ * not evidence that a repository runs nothing, and this decides whether a merge gate is
+ * satisfied some other way.
+ */
+export function queueRepoRunsChecks(): NonNullable<QueueRuntimeDeps['repoRunsChecks']> {
+  return async (repo) => {
+    try {
+      // `actions/permissions` rather than the workflow list. A repository with Actions
+      // switched off still LISTS its workflow files as active -- this one does, and
+      // reading that as "runs checks" is what would leave the gate waiting for a run that
+      // cannot start. `enabled: false` is the repository-level switch itself.
+      const result = await execRun({
+        argv: ['gh', 'api', `repos/${repo}/actions/permissions`, '--jq', '.enabled'],
+        cwd: process.cwd(), owner: 'queue', cls: 'script', fullOutput: true, raw: true, wall: 20_000,
+      });
+      const text = (result.full ?? result.tail ?? '').trim();
+      if (result.returncode !== 0) return true;
+      return text !== 'false';
+    } catch {
+      return true;
+    }
+  };
+}
+
+/**
+ * Runs a repository's own verify in the working tree an item holds.
+ *
+ * The command is whatever `FORGE_REPO_VERIFY` names for that repository -- the same one
+ * a chain packet's brief already tells a worker to run -- so the gate and the worker are
+ * held to one standard rather than two. A repository with no command configured answers
+ * `ok: false` saying exactly that, and the item parks rather than passing on nothing.
+ */
+export function queueRunRepoVerify(
+  chainEnv: ChainEnv,
+  /** The runner, so a specimen can read what would be spawned without spawning it. */
+  exec: typeof execRun = execRun,
+): NonNullable<QueueRuntimeDeps['runRepoVerify']> {
+  return async ({ repo, worktreePath }) => {
+    const command = verifyCommandFor(chainEnv, repo);
+    if (!command) {
+      return { ok: false, output: `no FORGE_REPO_VERIFY command is configured for ${repo}` };
+    }
+    const result = await exec({
+      // Through a shell, not exec'd as one argument. The command is a sentence a person
+      // wrote into FORGE_REPO_VERIFY -- `npm run verify`, or two of those joined by `&&`
+      // -- and handing that to a direct exec looks for a program whose name is the whole
+      // line. Same call shape the worktree setup command already uses.
+      argv: [command],
+      shell: chainEnv.shell.length ? chainEnv.shell : true,
+      cwd: worktreePath, owner: 'queue', cls: 'script', fullOutput: true, raw: true,
+      // A whole suite, not a probe. Sized past the longest this repository's own verify
+      // has taken rather than against a tick.
+      wall: 20 * 60_000,
+    });
+    return { ok: result.returncode === 0, output: result.full ?? result.tail ?? '' };
   };
 }
 
@@ -439,13 +698,27 @@ export function buildQueueRuntimeDeps(
   maxInFlight: () => number = readQueueWidth,
 ): QueueRuntimeDeps {
   return {
-    planner: queuePlanner(),
+    // The tick's retry for a pull request the merge could not close at the time --
+    // the same closer `queueMergeDeps` carries a few dozen lines above. Wired here as
+    // well, because a close that failed during a GitHub outage had nothing to try it
+    // again and the board went on calling a merged ticket unmerged (2026-09-13).
+    closePr: async ({ repo, pr, comment }) => {
+      if (!REAL_GH.closePr) return { ok: false, reason: 'this gh writer cannot close a pull request' };
+      const result = await REAL_GH.closePr(repo, pr, comment);
+      return result.returncode === 0 ? { ok: true } : { ok: false, reason: result.stderr.slice(0, 300) };
+    },
+    planner: queuePlanner(jiraConfigFromEnv, chainEnv),
     launcher: chainLauncher(chainEnv, configDirFor),
     launchGoal: chainLaunchGoal(configDirFor),
     gh: chainGh(),
     rebaseOnBase: chainRebase(),
     council: chainCouncil(deps),
     gate: chainGate(deps),
+    // A repository whose Actions are off never leaves a pending check rollup, so the gate
+    // asks whether it runs any, and stands its own verify in their place when it does not
+    // (Aaron, 2026-09-12). Both are real calls; `noCiGate.ts` holds the decision.
+    repoRunsChecks: queueRepoRunsChecks(),
+    runRepoVerify: queueRunRepoVerify(chainEnv),
     clock: () => Date.now(),
     killSwitch: () => readKillSwitch(killSwitchPath()).engaged,
     paused: () => readQueuePaused(),
@@ -473,6 +746,15 @@ export function buildQueueRuntimeDeps(
     backendHandoff: queueBackendHandoff(),
     jiraHandoff: queueJiraHandoff(),
     jiraDone: queueJiraDone(),
+    mobileRepo: (repo) => mobileRepoAt(chainEnv, repo),
+    readyPrWithPrediction: queueReadyPrWithPrediction(REAL_GH, (reason) => {
+      const journal = new Journal(journalPath());
+      try {
+        journal.append({ event: 'readability.refused', actor: 'queue', reason });
+      } finally {
+        journal.close();
+      }
+    }),
     prSnapshot: queuePrSnapshot(),
     // BBZ, 2026-09-08: read fresh every tick (`autoMergeAllowed` re-reads
     // `FORGE_COUNCIL_AUTOMERGE` off `councilPolicy()` on each call), the same allow-list
@@ -488,6 +770,28 @@ export function buildQueueRuntimeDeps(
       if (!result.ok) throw new Error('gh could not read the PR');
       return Boolean((JSON.parse(result.full ?? result.tail) as { mergedAt?: string | null }).mergedAt);
     },
+    // Item 1 (2026-09-11): ONE `gh pr view --json statusCheckRollup`, never `REAL_GH.viewPr`
+    // -- that reader also downloads the whole `gh pr diff`, so wiring this to it spent two
+    // GitHub calls and a full diff per parked item per tick, against a rate limit every
+    // session on this machine shares. A throw is an unreadable sensor, never a green
+    // check, so it answers undefined and the recovery pass holds the item.
+    checksConclusion: async (repo, pr) => {
+      try {
+        const result = await execRun({
+          argv: ['gh', 'pr', 'view', String(pr), '--repo', repo, '--json', 'statusCheckRollup'],
+          cwd: process.cwd(), owner: 'queue', cls: 'script', fullOutput: true, raw: true,
+        });
+        if (!result.ok) return undefined;
+        const parsed = JSON.parse(result.full ?? result.tail) as { statusCheckRollup?: Parameters<typeof conclusionOf>[0] };
+        return conclusionOf(parsed.statusCheckRollup);
+      } catch {
+        return undefined;
+      }
+    },
+    // Items 1 and 2: the registry row's pid, and only when that process is actually
+    // alive. `hasRunRegistered` is not this question -- it answers "did this run ever
+    // start", which stays true for a run that died an hour ago.
+    runPid: (runKey) => liveRunPid(new Registry(registryDir()), runKey),
   };
 }
 

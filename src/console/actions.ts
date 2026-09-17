@@ -20,9 +20,9 @@ import * as api from './api.js';
 import type { Action as StoreAction, ActionLink, ActionOutcome, View } from './store.js';
 import { useStore } from './store.js';
 import type { SliceName } from '../shared/console-events.js';
-import type { AccountProvider, ActionResult, Message } from '../shared/console-model.js';
+import type { AccountProvider, ActionResult, Message, OpenPrResponse, TicketHandoffResponse } from '../shared/console-model.js';
 
-export type Effect = 'lane' | 'queue' | 'integration' | 'account' | 'caps' | 'conductor' | 'proposal' | 'blocker' | 'journal' | 'none';
+export type Effect = 'lane' | 'queue' | 'integration' | 'account' | 'caps' | 'conductor' | 'proposal' | 'blocker' | 'journal' | 'sync' | 'none';
 
 /** Which slices an effect makes stale, for the refetch that follows a result. The
  *  server publishes the same slices over `/events`; this is the page's own copy so a
@@ -37,6 +37,7 @@ export const EFFECT_SLICES: Record<Effect, SliceName[]> = {
   proposal: ['proposals', 'journal'],
   blocker: ['blockers', 'lanes'],
   journal: ['journal', 'lanes', 'caps', 'proposals'],
+  sync: ['sync'],
   none: [],
 };
 
@@ -114,6 +115,47 @@ export const ACTIONS = {
     text: (result) => (result.started ? 'audit started; the result lands as a new attestation' : (result.reason ?? 'audit did not start')),
     ok: (result) => result.started,
     link: ([id]) => laneLink(id),
+  }),
+  /**
+   * The sheet's Hand on button: comment, assign and transition in one press.
+   *
+   * The receipt names every step rather than reporting one verdict for three writes.
+   * Two of three landing is a different situation from none and from all, and a line
+   * saying only "handed on" would be the board lying in the one place somebody is
+   * relying on it. A refusal attempted nothing, so it says so instead of listing steps.
+   */
+  /**
+   * The sheet's Open a pull request button.
+   *
+   * The refusals are most of what this reports, and each is a different thing to do
+   * next: push the branch, look at the one that already exists, or trim the body. A
+   * single "could not open it" would send a person to GitHub to find out which.
+   */
+  openPullRequest: spec<[string, string, string, boolean], Gated<OpenPrResponse>>({
+    id: 'openPullRequest', label: 'Open a pull request', reversible: false, effect: 'lane',
+    call: ([run, title, body, draft], confirm) => api.openPullRequest(run, title, body, draft, confirm),
+    text: (result) => {
+      if (api.isConfirmPending(result)) return gatedText(result);
+      if (result.refused) return result.refused;
+      return result.advice
+        ? `opened #${result.number} -- worth a trim: ${result.advice}`
+        : `opened #${result.number}`;
+    },
+    ok: (result) => (api.isConfirmPending(result) ? false : result.ok),
+    link: (_args, result) => (result && !api.isConfirmPending(result) && result.url
+      ? { kind: 'url' as const, href: result.url, label: `#${result.number}` }
+      : null),
+  }),
+  handOffTicket: spec<[string, string, string], Gated<TicketHandoffResponse>>({
+    id: 'handOffTicket', label: 'Hand on', reversible: false, effect: 'lane',
+    call: ([key, to, comment], confirm) => api.handOffTicket(key, to, comment, confirm),
+    text: (result) => {
+      if (api.isConfirmPending(result)) return gatedText(result);
+      return result.refused
+        ? `nothing written: ${result.refused}`
+        : result.steps.map((step) => `${step.name}: ${step.detail}`).join('; ');
+    },
+    ok: (result) => (api.isConfirmPending(result) ? false : result.ok),
   }),
   postRetireFinished: spec<[], Gated<api.RetireFinishedResult>>({
     id: 'postRetireFinished', label: 'Clean up', reversible: false, effect: 'lane',
@@ -196,6 +238,14 @@ export const ACTIONS = {
   amendRun: spec<[string, string], ActionResult>({
     id: 'amendRun', label: 'Amend', reversible: true, effect: 'lane',
     call: ([id, text]) => api.amendRun(id, text), text: fromActionResult, ok: okOf, jid: jidOf, link: ([id]) => laneLink(id),
+  }),
+  setDefaultLoginOff: spec<[boolean], Awaited<ReturnType<typeof api.setDefaultLoginOff>>>({
+    id: 'setDefaultLoginOff', label: 'Use this login', reversible: true, effect: 'account',
+    call: ([off]) => api.setDefaultLoginOff(off),
+    text: (result) => (result.ok ? (result.off ? 'this login is out of the rotation' : 'this login is back in the rotation') : (result.error ?? 'that change was refused')),
+    ok: (result) => result.ok,
+    jid: () => null,
+    link: () => viewLink('settings', 'settings'),
   }),
   setCaps: spec<[{ dailyTokens?: number; runTokens?: number }], Gated<Awaited<ReturnType<typeof api.getCaps>>>>({
     id: 'setCaps', label: 'Save caps', reversible: false, effect: 'caps',
@@ -325,6 +375,38 @@ export const ACTIONS = {
     call: ([id, version, message], confirm) => api.promoteQueueItem(id, version, message, confirm),
     text: gatedText, ok: gatedOk, jid: gatedJid,
     link: () => viewLink('queue', 'queue'),
+  }),
+  fullResync: spec<[], Gated<{ started: boolean; id: string }>>({
+    id: 'fullResync', label: 'Full re-sync and start', reversible: false, effect: 'sync',
+    call: (_args, confirm) => api.fullResync(confirm),
+    text: (result) => (api.isConfirmPending(result) ? 'awaiting confirm' : 're-sync started'),
+    ok: (result) => (api.isConfirmPending(result) ? false : result.started),
+    jid: () => null,
+    link: () => null,
+  }),
+  resyncPage: spec<[Parameters<typeof api.resyncPage>[0]], Awaited<ReturnType<typeof api.resyncPage>>>({
+    id: 'resyncPage', label: 'Re-sync', reversible: true, effect: 'sync',
+    call: ([scope]) => api.resyncPage(scope),
+    text: () => 're-sync started',
+    ok: (result) => result.started,
+    jid: () => null,
+    link: () => null,
+  }),
+  watcherOn: spec<[], Awaited<ReturnType<typeof api.watcherOn>>>({
+    id: 'watcherOn', label: 'Jira feed on', reversible: true, effect: 'sync',
+    call: () => api.watcherOn(),
+    text: (status) => `watching ${status.project ?? 'no project'}`,
+    ok: () => true,
+    jid: () => null,
+    link: () => null,
+  }),
+  watcherOff: spec<[], Awaited<ReturnType<typeof api.watcherOff>>>({
+    id: 'watcherOff', label: 'Jira feed off', reversible: true, effect: 'sync',
+    call: () => api.watcherOff(),
+    text: () => 'watcher off',
+    ok: () => true,
+    jid: () => null,
+    link: () => null,
   }),
 } as const;
 

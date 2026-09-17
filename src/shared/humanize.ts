@@ -13,11 +13,22 @@
  *  is part of a longer path or branch segment (`feature/S-...`, `something-S-...`):
  *  a `/` or `-` right before it means the id is stuck to another word, not standing
  *  on its own. */
+import { runName } from './runName.js';
+
 const RUN_ID_PATTERNS: RegExp[] = [
   /(?<![/-])\bS-[0-9a-f]{12,}\b(?:-\d+)?/g,
   /(?<![/-])\bjira_([A-Z]{2,6}-\d+)_\d{10,}(?:-\d+)?\b/g,
-  /(?<![/-])\bqueue-([A-Z]{2,6}-\d+)(?:-\d+)?\b/g,
+  // The queue row's whole id, packet suffix included. Matching only the `queue-KEY` head
+  // left `-Q-34ddf8a4` standing on the screen beside the ticket key (2026-09-12).
+  /(?<![/-])\bqueue-([A-Z]{2,6}-\d+)(?:-Q-[0-9a-f]{6,})?(?:-\d+)?\b/g,
   /(?<![/-])\bqueue-brief-\d{10,}(?:-\d+)?\b/g,
+  // A dated brief id: `2026-09-09-forge-compaction-aware-warden`. It reached the board
+  // and the Needs-you strip untouched -- the run ids the rest of the board is built to
+  // hide were in its own body text all along (2026-09-12). Replaced by the lane's own
+  // label, or by the words in the id itself.
+  /(?<![/\w-])\d{4}-\d{2}-\d{2}-[a-z0-9]+(?:-[a-z0-9]+)+\b/g,
+  // The intake item's own id, as it appears on a blocker row: `item:Q-fc2090a8`.
+  /(?<![/-])\bitem:Q-[0-9a-f]{6,}\b/g,
 ];
 
 /** A bare hex key at least 16 long that is not a git sha (asks, packets, tokens).
@@ -74,7 +85,7 @@ function replaceRunIds(text: string, pattern: RegExp, labelFor: (id: string) => 
 export function stripMachineIds(text: string, options: StripOptions = {}): string {
   let out = text;
   for (const pattern of RUN_ID_PATTERNS) {
-    out = replaceRunIds(out, pattern, (id) => options.labelFor?.(id) ?? ticketInId(id) ?? 'this run');
+    out = replaceRunIds(out, pattern, (id) => options.labelFor?.(id) ?? ticketInId(id) ?? runName(id) ?? 'this run');
   }
   out = shortenShas(out);
   out = out.replace(JOURNAL_ID, '');
@@ -90,10 +101,83 @@ export function stripMachineIds(text: string, options: StripOptions = {}): strin
 /** "parking on 19a6c631cb7783d8: Probe: continue?" -> "Asked you: Probe: continue?"
  *  The asked text itself still carries whatever the run wrote into it, so it goes
  *  through `stripMachineIds` too, the same as any other reason. */
+/**
+ * A park reason written before 2026-09-12 named the measurement rather than saying what
+ * happened: "wall clock: 22.3 h over 3.0 h". `session-clock.ts` writes the plain sentence
+ * now, but a reason is journaled once and replayed for as long as the lane is on the
+ * board, so the two tiles carrying the old wording would have kept it for days. Rewritten
+ * at read time, the same way a machine id is.
+ */
+function plainWallClock(text: string): string {
+  // Written without a regex on purpose. The pattern this replaced lost its escapes
+  // somewhere between the source and the running function -- the body was right, the
+  // match never fired, and the test read green-looking prose over an unchanged string
+  // (2026-09-12). Two `indexOf` calls cannot be mangled that way.
+  const MARK = 'wall clock:';
+  let out = '';
+  let rest = text;
+  for (;;) {
+    const at = rest.toLowerCase().indexOf(MARK);
+    if (at === -1) break;
+    const after = rest.slice(at + MARK.length);
+    const over = after.indexOf(' over ');
+    if (over === -1) break;
+    const ran = after.slice(0, over).trim();
+    const tail = after.slice(over + ' over '.length);
+    // The budget runs to the end of the clause: a full stop, a semicolon, or the end.
+    const stop = tail.search(/[.;]|$/);
+    const expected = tail.slice(0, stop).trim();
+    out += `${rest.slice(0, at)}Running ${ran}, expected ${expected}`;
+    rest = tail.slice(stop);
+  }
+  return out + rest;
+}
+
+/**
+ * Words a run writes about itself that mean nothing to the person reading the board.
+ *
+ * A park reason is written once by whatever stopped the run and replayed on the tile for
+ * as long as the lane is there, so one bad phrase stays on screen for days. The pairs
+ * below are the ones seen on the live board; each keeps the meaning and drops the term.
+ */
+const PLAINER: ReadonlyArray<readonly [RegExp, string]> = [
+  [/\bdrift confirmed off-brief\b/gi, 'it went off the brief'],
+  [/\bconfirmed off-brief\b/gi, 'it went off the brief'],
+  [/\bthe transcript tail is\b/gi, 'its log is'],
+  [/\btranscript tail\b/gi, 'log'],
+  [/\bthe agent\b/gi, 'it'],
+  [/\bno actual tool calls or edits shown\b/gi, 'no work recorded'],
+];
+
+/** The longest a sentence on a tile may be. A tile is one line beside a state word and a
+ *  clock; past this it wraps over the card and buries what it sits next to. */
+export const TILE_SENTENCE_LIMIT = 120;
+
+/**
+ * One sentence, at most `limit` characters, ending cleanly.
+ *
+ * A reason arrives as however many sentences whatever stopped the run felt like writing.
+ * The board has room for one: a 250-character paragraph on a tile reads as noise, which
+ * is the same as reading as nothing (Aaron, 2026-09-13).
+ */
+export function oneSentence(text: string, limit = TILE_SENTENCE_LIMIT): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  // A run that ends its own sentence and then meets the template's full stop leaves two.
+  const collapsed = flat.replace(/([.!?])[.!?]+/g, '$1');
+  const stop = collapsed.search(/[.!?](\s|$)/);
+  const first = stop === -1 ? collapsed : collapsed.slice(0, stop + 1);
+  if (first.length <= limit) return first.trim();
+  const cut = first.slice(0, limit);
+  const space = cut.lastIndexOf(' ');
+  return `${(space > 40 ? cut.slice(0, space) : cut).replace(/[.,;:\s]+$/, '')}…`;
+}
+
 export function humanizeParkReason(reason: string): string {
   const asked = /^parking on [0-9a-f]{8,}:\s*(.+)$/is.exec(reason.trim());
-  if (asked) return `Asked you: ${stripMachineIds(asked[1]!.trim())}`;
-  return stripMachineIds(reason);
+  if (asked) return `Asked you: ${oneSentence(stripMachineIds(asked[1]!.trim()))}`;
+  let plain = plainWallClock(stripMachineIds(reason));
+  for (const [pattern, replacement] of PLAINER) plain = plain.replace(pattern, replacement);
+  return oneSentence(plain);
 }
 
 /** 24-hour `HH:MM`, zero-padded -- the same shape the browser's own `hm()` in

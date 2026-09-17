@@ -3,6 +3,7 @@ import { useState } from 'react';
 
 import { ACTIONS, useAction } from '../actions.js';
 import { hm } from '../freshness.js';
+import { Linkify } from './Linkify.js';
 import type { Blocker } from '../../shared/console-model.js';
 import { narratedField } from '../../shared/console-model.js';
 import { Marks } from './QuestionCard.js';
@@ -92,11 +93,11 @@ function BlockerCard({ blocker, onOpenSettings, onSendToLane, laneTitle, verbose
         <div style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)', marginTop: 8 }}>since {hm(blocker.since)}</div>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0 }}>
-        <h3 className="hd" style={{ margin: 0, fontSize: 'var(--fs-cardhead)', lineHeight: 1.15 }}>{blocker.title}</h3>
+        <h3 className="hd" style={{ margin: 0, fontSize: 'var(--fs-cardhead)', lineHeight: 1.15 }}><Linkify text={blocker.title} /></h3>
         <ul style={{ margin: 0, padding: 0, listStyle: 'none', color: 'var(--ink2)', display: 'flex', flexDirection: 'column', gap: 2 }}>
           {blocker.blocks.map((lane) => { const title = laneTitle?.(lane.laneId); return <li key={lane.laneId}><span className="hd" style={{ letterSpacing: '.05em', color: 'var(--ink)' }}>{lane.label}</span>{title && title !== lane.label ? ` ${title}` : ''}</li>; })}
         </ul>
-        <p style={{ margin: '2px 0 0' }}><span className="kick" style={{ marginRight: 8 }}>Clears when</span>{blocker.howToResolve} {blocker.thenWhat}</p>
+        <p style={{ margin: '2px 0 0' }}><span className="kick" style={{ marginRight: 8 }}>Clears when</span><Linkify text={`${blocker.howToResolve} ${blocker.thenWhat}`} /></p>
         <BlockerMore blocker={blocker} {...(verbose === undefined ? {} : { verbose })} />
         {result ? <span style={{ fontSize: 'var(--fs-meta)', color: result.ok ? 'var(--acc)' : 'var(--warn)' }}>{result.text}</span> : blocker.lastCheck ? <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>Last check: {blocker.lastCheck}</span> : null}
       </div>

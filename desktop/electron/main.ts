@@ -6,7 +6,7 @@ import { execFileSync, spawn as nodeSpawn } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { get as httpGet, type IncomingMessage } from 'node:http';
 
-import { locateCheckout, type LocateFs } from './locate-checkout';
+import { checkoutPrompt, locateCheckout, type LocateFs } from './locate-checkout';
 import {
   mergeForgeEnv, readSettings, updateSettings, type SettingsFs, type WindowBounds,
 } from './settings';
@@ -327,12 +327,13 @@ function focusExisting(): void {
   mainWindow.focus();
 }
 
-async function resolveCheckoutDir(): Promise<string | undefined> {
+async function resolveCheckoutDir(pickedDir?: string): Promise<string | undefined> {
   const settings = readSettings(fsAdapter, settingsPath());
   const installDir = dirname(app.getPath('exe'));
   const found = locateCheckout(fsAdapter, {
     env: { FORGE_REPO_DIR: process.env['FORGE_REPO_DIR'] },
     rememberedCheckoutDir: settings.checkoutDir,
+    ...(pickedDir ? { pickedDir } : {}),
     // Code-review finding, 2026-09-10: this call never read the canonical checkout
     // file at all -- item 4's "one checkout every launcher reads" reached dev.cjs
     // and dev-hidden.vbs but not the packaged app itself, the one users actually run.
@@ -340,18 +341,28 @@ async function resolveCheckoutDir(): Promise<string | undefined> {
     installDir,
     join,
   });
-  if (found) return found.dir;
+  const prompt = checkoutPrompt(found);
+  // Say which tree is about to serve and how it was chosen. Without this a console on a
+  // stale checkout looked identical to one on the trunk (Aaron, 2026-09-11).
+  logToStatus(prompt.log);
+  if (prompt.dir) return prompt.dir;
 
+  // A refusal still offers the picker. Refusing to guess is the point; leaving no way
+  // back would be an app that cannot start at all.
   statusWindow?.webContents.send('need-folder');
-  showStatus('Could not find a Forge checkout. Pick the repository folder to continue.');
+  showStatus(prompt.status ?? 'Could not find a Forge checkout. Pick the repository folder to continue.');
   return new Promise((resolve) => {
     ipcMain.once('pick-folder', async () => {
       if (!statusWindow) return resolve(undefined);
       const result = await dialog.showOpenDialog(statusWindow, { properties: ['openDirectory'] });
       if (result.canceled || result.filePaths.length === 0) return resolve(undefined);
       const picked = result.filePaths[0]!;
-      updateSettings(fsAdapter, settingsPath(), { checkoutDir: picked });
-      resolve(picked);
+      // Re-resolve THROUGH the picked path rather than returning it unchecked: a
+      // mis-pick written to settings became a broken candidate that refused every later
+      // launch, and an unverified directory was handed straight to `forge up` as its cwd.
+      const after = await resolveCheckoutDir(picked);
+      if (after) updateSettings(fsAdapter, settingsPath(), { checkoutDir: after });
+      resolve(after);
     });
   });
 }

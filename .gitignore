@@ -23,3 +23,8 @@ tests/e2e/__screenshots__/*.png
 
 # Runtime state written by a live run, never source.
 .forge/
+.verify-exit
+
+# Scratch browser drivers used to operate the console by hand; never part of a build.
+*.mjs
+!scripts/**/*.mjs

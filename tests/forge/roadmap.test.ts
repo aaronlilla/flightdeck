@@ -43,6 +43,17 @@ describe('citesRoadmapId', () => {
     expect(citesRoadmapId('fixes R-04 off-roadmap parking')).toBe(true);
   });
 
+  it('is true for a three-digit id (R-101 was invisible to the check)', () => {
+    expect(citesRoadmapId('R-101 escape found by the end-to-end run')).toBe(true);
+  });
+
+  it('parses and treats a three-digit row as open', () => {
+    const table = ['## Items', '', '| id | item | lever | status | pr | proof |', '|---|---|---|---|---|---|',
+      '| R-101 | the Jira feed | autonomy | review | #236 | tests |'].join('\n');
+    expect(parseRoadmapItems(table).map((item) => item.id)).toEqual(['R-101']);
+    expect(roadmapIdOpen(table, 'R-101')).toBe(true);
+  });
+
   it('is false when the text names no id', () => {
     expect(citesRoadmapId('a queue item with no roadmap line')).toBe(false);
   });

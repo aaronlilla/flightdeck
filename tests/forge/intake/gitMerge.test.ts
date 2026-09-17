@@ -27,6 +27,30 @@ function fakeGit(script: Record<string, { ok: boolean; stdout?: string }>): { ru
 describe('gitSquashMergeToBase: fake git', () => {
   const input = { checkoutDir: '/tmp/checkout', base: 'develop', branch: 'feature/abc-1', subject: 'Merge feature/abc-1 (#9)', body: '' };
 
+  // Measured 2026-09-12: every Merge on a ticket driven in through the console refused
+  // with "could not check out origin/main". The checkout it merges in is a worktree, and
+  // the repository's own main checkout already held `main`, so claiming the branch by name
+  // failed outright -- "fatal: 'main' is already used by worktree at ...". Detaching never
+  // collides, and nothing below the checkout needs the branch name locally.
+  it('detaches onto the base rather than claiming the branch another worktree may hold', async () => {
+    const { run, calls } = fakeGit({});
+    await gitSquashMergeToBase(input, run);
+    const checkout = calls.find((argv) => argv[0] === 'checkout');
+    expect(checkout, 'it never checked anything out').toBeDefined();
+    expect(checkout).toContain('--detach');
+    expect(checkout?.at(-1)).toBe('origin/develop');
+    expect(checkout, 'it claimed the branch by name').not.toContain('-B');
+    // `--force` joined it on 2026-09-13: a modified tracked file left in the merge
+    // checkout refused every merge of that repository. See the dirty-checkout specimen.
+    expect(checkout, 'a dirty checkout will refuse the merge again').toContain('--force');
+  });
+
+  it('still pushes to the base by name, since nothing local carries it now', async () => {
+    const { run, calls } = fakeGit({});
+    await gitSquashMergeToBase(input, run);
+    expect(calls.find((argv) => argv[0] === 'push')).toEqual(['push', 'origin', 'HEAD:develop']);
+  });
+
   it('aborts when fetch fails, without touching the checkout', async () => {
     const { run, calls } = fakeGit({ fetch: { ok: false } });
     const result = await gitSquashMergeToBase(input, run);
@@ -125,5 +149,54 @@ describe('gitSquashMergeToBase: real bare-remote fixture', () => {
       ? sh(seedDir, 'log', 'origin/develop', '-1', '--format=%s')
       : '';
     expect(log.trim()).toBe('Merge feature/abc-1 (#9)');
+  });
+
+  /**
+   * Aaron, 2026-09-13: clicked Merge on a ticket the board called ready, and got back
+   * "the merge did not complete: could not check out origin/develop". The checkout this
+   * merges in had one uncommitted tracked file -- a `package-lock.json` an install had
+   * rewritten -- and git refuses to move HEAD over a modified tracked file. Every merge
+   * of that repository refused the same way, and the sentence named the symptom rather
+   * than the cause.
+   *
+   * The checkout exists only to stage merges, so a local edit in it is never work anybody
+   * wants: it is what the last install or half-finished merge left. This is the doc
+   * comment on the function itself finally being true -- it has always claimed to reset
+   * the checkout onto `origin/<base>`, and it only ever detached.
+   */
+  it('merges even when the checkout was left with a modified tracked file', { timeout: 20000 }, async () => {
+    const root = mkdtempSync(join(tmpdir(), 'gitmerge-dirty-'));
+    const bareDir = join(root, 'origin.git');
+    const seedDir = join(root, 'seed');
+    const checkoutDir = join(root, 'checkout');
+
+    sh(root, 'init', '--bare', bareDir);
+    sh(root, 'clone', bareDir, seedDir);
+    sh(seedDir, 'config', 'user.email', 'test@example.com');
+    sh(seedDir, 'config', 'user.name', 'Test');
+    writeFileSync(join(seedDir, 'package-lock.json'), '{"v":1}' + String.fromCharCode(10));
+    sh(seedDir, 'add', 'package-lock.json');
+    sh(seedDir, 'commit', '-m', 'base commit');
+    sh(seedDir, 'branch', '-M', 'develop');
+    sh(seedDir, 'push', 'origin', 'develop');
+    sh(seedDir, 'checkout', '-b', 'feature/abc-2');
+    writeFileSync(join(seedDir, 'feature.txt'), 'feature content' + String.fromCharCode(10));
+    sh(seedDir, 'add', 'feature.txt');
+    sh(seedDir, 'commit', '-m', 'feature commit');
+    sh(seedDir, 'push', 'origin', 'feature/abc-2');
+
+    sh(root, 'clone', bareDir, checkoutDir);
+    sh(checkoutDir, 'config', 'user.email', 'test@example.com');
+    sh(checkoutDir, 'config', 'user.name', 'Test');
+    // The state the live checkout was in: one tracked file rewritten and never committed.
+    writeFileSync(join(checkoutDir, 'package-lock.json'), '{"v":2,"left":"by an install"}' + String.fromCharCode(10));
+
+    const result = await gitSquashMergeToBase(
+      { checkoutDir, base: 'develop', branch: 'feature/abc-2', subject: 'Merge feature/abc-2 (#9)', body: '' },
+      realGit,
+    );
+
+    expect(result.ok, `it refused: ${result.reason}`).toBe(true);
+    expect(sh(seedDir, 'ls-remote', bareDir, 'develop')).toContain(result.mergeSha?.slice(0, 8) ?? 'no sha');
   });
 });

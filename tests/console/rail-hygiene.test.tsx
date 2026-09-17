@@ -12,6 +12,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
 import { ConductorRail } from '../../src/console/components/ConductorRail.js';
+import { NeedsYou, buildNeeds } from '../../src/console/components/NeedsYou.js';
 import { StoreContext, initialState } from '../../src/console/store.js';
 import type { Feed, Message } from '../../src/shared/console-model.js';
 
@@ -53,6 +54,8 @@ function conversationFixture(): Message[] {
   return [
     { k: 'op1', type: 'operator', text: 'why is lane 3 stuck', ts: 100, source: 'operator' },
     { k: 'rep1', type: 'reply', text: 'still working', ts: 101, source: 'conductor' },
+    // R-75 item 3: a question is no longer conversation. It is kept in this fixture on
+    // purpose -- the rail must drop it rather than draw it, whatever it is handed.
     {
       k: 'q1', type: 'question', text: 'How should the long option row look?', ts: 102, source: 'FLT-9',
       askKey: 'ask-9',
@@ -72,7 +75,8 @@ describe('rail hygiene (W5)', () => {
 
     expect(screen.getByText('why is lane 3 stuck')).toBeInTheDocument();
     expect(screen.getByText('still working')).toBeInTheDocument();
-    expect(screen.getByText('How should the long option row look?')).toBeInTheDocument();
+    // R-75 item 3: the question card left the rail for the Needs-you strip.
+    expect(screen.queryByText('How should the long option row look?')).not.toBeInTheDocument();
 
     // No obs row is visible directly in the thread.
     expect(screen.queryByText(/the fleet lost track of it/)).not.toBeInTheDocument();
@@ -112,8 +116,16 @@ describe('rail hygiene (W5)', () => {
     }
   });
 
-  it('renders every long option as its own full-width row on the rail', () => {
-    renderRail(conversationFixture());
+  // R-75 item 3: the long-option row moved with the card. The rule it guards -- a long
+  // option gets its own full-width row, never a cramped inline pair -- is asserted where
+  // the question is now asked, on the strip's copy of the same shared component.
+  it('renders every long option as its own full-width row, now on the Needs-you strip', () => {
+    const question = conversationFixture().find((m) => m.type === 'question')!;
+    render(
+      <StoreContext.Provider value={{ state: { ...initialState(), links: { jiraSite: null, defaultRepo: null } }, dispatch: vi.fn() }}>
+        <NeedsYou items={buildNeeds([], [{ ...question, title: question.text, kicker: 'Question · FLT-9', btns: (question.opts ?? []).map((o) => ({ label: o, cmd: `answer ask-9 ${o}` })), type: 'blocker' }])} now={Date.now()} onCommand={vi.fn()} />
+      </StoreContext.Provider>,
+    );
     const list = screen.getByTestId('question-options');
     expect(list.children).toHaveLength(3);
     expect(list.style.flexDirection).toBe('column');

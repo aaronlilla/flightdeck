@@ -7,10 +7,10 @@
  * `alive` reuses `processAlive` (`registry.ts`), the one place this runner already
  * asks "is this pid still there" -- never a second definition of alive.
  */
-import type { FleetState } from '../journal.js';
+import type { FleetState, RunState } from '../journal.js';
 import type { RegistryRecord } from '../registry.js';
-import { processAlive } from '../registry.js';
-import type { LaneLive } from '../../shared/console-model.js';
+import { processAlive, runHasWorker } from '../registry.js';
+import type { LaneLive, QueueItem } from '../../shared/console-model.js';
 import { ticketFor } from './lanes.js';
 
 /**
@@ -61,6 +61,25 @@ export function lastEventAtFor(run: string, fleet: Pick<FleetState, 'events' | '
   return newest;
 }
 
+/** Journal run states a worker can still be behind. Every other state is an ending. */
+const OPEN_RUN_STATES: ReadonlySet<RunState['state']> = new Set(['started', 'paused', 'handed-off']);
+
+/** The journal's state for `run`, following its handoff successors to the newest one the
+ *  journal has folded, or `null` when the journal has never seen the run. */
+export function runStateFor(run: string, fleet: Pick<FleetState, 'runs'>): RunState['state'] | null {
+  let key = run;
+  let row = fleet.runs[key];
+  const seen = new Set<string>();
+  while (row?.successor && !seen.has(key)) {
+    seen.add(key);
+    const next = fleet.runs[row.successor];
+    if (!next) break;
+    key = row.successor;
+    row = next;
+  }
+  return row?.state ?? null;
+}
+
 export interface ComputeLiveDeps {
   fleet: FleetState;
   registryGet: (run: string) => RegistryRecord | undefined;
@@ -79,12 +98,76 @@ export function computeLive(run: string, deps: ComputeLiveDeps, now: number): La
   const pid = registryRow?.pid ?? null;
   const lastEventAt = lastEventAtFor(run, deps.fleet);
   // A run resumed by the console's reconcile keeps its old registry pid while a new
-  // worker does the work, so the pid alone under-reports. Fresh journal events are
-  // direct evidence of work; either signal makes the lane live.
-  const recentEvent = lastEventAt !== null && now - lastEventAt <= RECENT_EVENT_MS;
-  const alive = (pid !== null && isAlive(pid)) || recentEvent;
+  // worker does the work, so the pid alone under-reports; fresh journal events count too,
+  // unless the journal already records the run as ended (`runHasWorker`).
+  const state = runStateFor(run, deps.fleet);
+  const alive = runHasWorker({
+    pid, isAlive, lastWorkAt: lastEventAt, ended: state !== null && !OPEN_RUN_STATES.has(state),
+    now, quietMs: RECENT_EVENT_MS,
+  });
   return { alive, pid, lastEventAt, checkedAt: now };
 }
 
 /** How long after its last journal event a run still counts as working. */
 export const RECENT_EVENT_MS = 90_000;
+
+/** What a queue item's run is doing at read time: `computeLive`'s answer plus the
+ *  journal's own state for it. */
+export interface QueueRunReading extends LaneLive {
+  runState: RunState['state'] | null;
+  /** Whether `pid` itself is alive. A run can read live from fresh work rows alone, and a
+   *  card naming a dead pid points a person at a process that does not exist. */
+  pidAlive?: boolean;
+}
+
+export function readQueueRun(runKey: string, deps: ComputeLiveDeps, now: number): QueueRunReading {
+  const live = computeLive(runKey, deps, now);
+  return { ...live, runState: runStateFor(runKey, deps.fleet), pidAlive: live.pid !== null && (deps.isAlive ?? processAlive)(live.pid) };
+}
+
+/** How long a run with a dead pid must write no work row before its `running` item reads
+ *  parked. Far longer than `RECENT_EVENT_MS`: the journal writes one row when a tool call
+ *  starts and one when it ends, so a resumed worker inside a long build is silent the whole
+ *  time. Shape 3 (Q-fdeab07a) sat silent for twenty-four minutes. A kill does not wait. */
+export const ORPHAN_SILENCE_MS = 15 * 60_000;
+
+/** The sentence a queue card and a refused retry both carry for a run that is working. */
+export function liveRunReason(runKey: string, pid: number | null): string {
+  return pid !== null
+    ? `run ${runKey} is still running as pid ${pid}`
+    : `run ${runKey} is still writing work rows with no pid on record`;
+}
+
+/** Stored states a working run contradicts. */
+const STOPPED_QUEUE_STATES: ReadonlySet<QueueItem['state']> = new Set(['parked', 'failed', 'queued']);
+
+/** Run states the read leaves a `running` item alone in. `finished` and `parked` are endings
+ *  the queue's own gate hop routes on its next tick, to review or to a park carrying the
+ *  gate's reason. `paused` waits on a resume and `handed-off` on a successor the journal has
+ *  not folded yet: neither is an orphan, and reading one parked would offer a Retry that
+ *  launches a second worker on the same worktree. */
+const NOT_ORPHANED_RUN_STATES: ReadonlySet<RunState['state']> = new Set(['finished', 'parked', 'paused', 'handed-off']);
+
+/**
+ * A queue item as a person should see it: its stored state checked against its run at
+ * read time. A working run is never shown parked, failed or queued. A `running` item whose
+ * run was killed, or has no process and no recent work at all, reads `parked`, so Retry and
+ * Remove act on it without anyone editing the store by hand. Nothing is written here.
+ */
+export function deriveQueueItem(item: QueueItem, reading: QueueRunReading | undefined): QueueItem {
+  if (!item.runKey || !reading) return item;
+  if (reading.alive) {
+    return STOPPED_QUEUE_STATES.has(item.state)
+      ? { ...item, state: 'running', reason: liveRunReason(item.runKey, reading.pidAlive ? reading.pid : null) }
+      : item;
+  }
+  if (item.state !== 'running') return item;
+  if (reading.runState !== null && NOT_ORPHANED_RUN_STATES.has(reading.runState)) return item;
+  // A run killed after its PR was up still goes to the gate, which keeps the item `running`
+  // while checks are pending. An item carrying its PR or a pending-checks streak is the gate's.
+  if (item.pr || (item.pendingGatePolls ?? 0) > 0) return item;
+  if (reading.runState !== 'killed' && reading.lastEventAt !== null
+    && reading.checkedAt - reading.lastEventAt < ORPHAN_SILENCE_MS) return item;
+  const how = reading.runState === 'killed' ? 'was killed and has' : 'has';
+  return { ...item, state: 'parked', reason: `run ${item.runKey} ${how} no live process` };
+}

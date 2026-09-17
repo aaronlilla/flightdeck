@@ -4,6 +4,7 @@
  * sheet, the palette, a hover tip, a toast, the theme, composer drafts).
  */
 import { createContext, useContext, useReducer } from 'react';
+import { RAIL_TYPES } from '../shared/rail-kinds.js';
 import type { Dispatch } from 'react';
 import type {
   AccountItem,
@@ -18,6 +19,7 @@ import type {
   QueueItem,
 } from '../shared/console-model.js';
 import type { MachineResponse } from './api.js';
+import type { SyncStateResponse } from '../shared/sync-contract.js';
 
 export type View = 'board' | 'settings' | 'review' | 'queue' | 'blockers' | 'machine';
 export type Filter = 'all' | 'needs-me' | 'running' | 'finished' | string;
@@ -83,6 +85,10 @@ export interface State {
   localCards: Message[];
   feed: Feed;
   thread: Message[];
+  /** R-75 item 1: the status cards that left the rail -- blockers, confirms, plans,
+   *  decisions, PRs and open questions -- off `GET /thread`'s second field. The
+   *  Needs-you strip reads them; the rail never does. */
+  cards: Message[];
   journal: JournalEntry[];
   integrations: Integration[];
   accounts: AccountItem[];
@@ -97,6 +103,15 @@ export interface State {
   /** D2.4: `/state`'s own `queue_on` flag. Starts `true` so the "Queue is off" banner
    *  never flashes before the console's first `/state` fetch lands. */
   queueOn: boolean;
+  /** Queue-paused visibility fix: `/state`'s own `queue_paused` flag, independent of the
+   *  `/queue` slice's `queuePaused` (which the Queue view still uses). The header reads
+   *  this one so a failed `/queue` poll in a shared refresh cycle never leaves it stuck
+   *  on a stale value while `/state` keeps answering. Absent on `/state` (the stub
+   *  server) reads as `false`, same as `queueOn`'s own default. */
+  queuePausedOnState: boolean;
+  /** R-71: the whole `GET /sync` response -- every scope's last run plus the watcher.
+   *  `null` until the first fetch lands. */
+  sync: SyncStateResponse | null;
   /** How long the rail waits for the Conductor before its working row says it did not
    *  answer; `/state`'s own `conductor.timeoutMs`. */
   conductorTimeoutMs: number;
@@ -145,7 +160,7 @@ export interface State {
 
 export type Action =
   | { type: 'lanes'; lanes: Lane[]; tokensToday?: number; links?: State['links'] }
-  | { type: 'thread'; thread: Message[] }
+  | { type: 'thread'; thread: Message[]; cards?: Message[] }
   | { type: 'thread-append'; messages: Message[]; local?: boolean }
   /** Drops a card the page put up itself, from the thread and from the local list
    *  both. Filtering the thread alone puts it straight back: the `thread` case
@@ -170,6 +185,8 @@ export type Action =
   | { type: 'queue'; items: QueueItem[]; paused: boolean; maxInFlight: number; pauseReason?: string | null }
   | { type: 'blockers'; blockers: BlockersResponse }
   | { type: 'queue-on'; on: boolean }
+  | { type: 'queue-paused-on-state'; paused: boolean }
+  | { type: 'sync'; sync: SyncStateResponse }
   | { type: 'conductor-timeout'; timeoutMs: number }
   | { type: 'toggle-probes' }
   | { type: 'archived-lanes'; lanes: Lane[] }
@@ -223,6 +240,7 @@ export function initialState(): State {
     lanes: [],
     feed: { live: true, lostAt: null, reason: null, retryInS: null, lastHeartbeatAt: null },
     thread: [],
+    cards: [],
     journal: [],
     integrations: [],
     accounts: [],
@@ -235,6 +253,8 @@ export function initialState(): State {
     queuePauseReason: null,
     queueMaxInFlight: 2,
     queueOn: true,
+    queuePausedOnState: false,
+    sync: null,
     conductorTimeoutMs: 120_000,
     showProbes: false,
     archivedLanes: [],
@@ -271,7 +291,14 @@ export function reducer(state: State, action: Action): State {
       const cutoff = Date.now() - LOCAL_CARD_TTL_MS;
       const localCards = state.localCards.filter((card) => card.ts >= cutoff);
       let thread = action.thread;
-      for (const card of localCards) {
+      // R-75: a local card that is not a rail kind belongs to `cards`. Re-merging every
+      // local card into `thread` alone dropped a confirm gate the page had just put up:
+      // the poll replaced `cards`, and the rail filtered the re-merged copy straight out.
+      let cards = action.cards ?? state.cards;
+      for (const card of localCards.filter((m) => !RAIL_TYPES.has(m.type))) {
+        if (!cards.some((m) => m.k === card.k)) cards = [...cards, card];
+      }
+      for (const card of localCards.filter((m) => RAIL_TYPES.has(m.type))) {
         if (thread.some((m) => m.k === card.k)) continue;
         // The server persists the operator's own card too (`ConsoleWrites.command`),
         // under its own key: once that copy arrives, the local bubble for the same
@@ -279,32 +306,42 @@ export function reducer(state: State, action: Action): State {
         if (card.type === 'operator' && thread.some((m) => m.type === 'operator' && m.text === card.text && Math.abs(m.ts - card.ts) < LOCAL_CARD_TTL_MS)) continue;
         thread = [...thread, card];
       }
-      return { ...state, thread, localCards };
+      return { ...state, thread, cards, localCards };
     }
     case 'local-card-drop':
       return {
         ...state,
         thread: state.thread.filter((m) => m.k !== action.k),
+        cards: state.cards.filter((m) => m.k !== action.k),
         localCards: state.localCards.filter((m) => m.k !== action.k),
       };
     case 'local-card-text':
       return {
         ...state,
         thread: state.thread.map((m) => (m.k === action.k ? { ...m, text: action.text } : m)),
+        cards: state.cards.map((m) => (m.k === action.k ? { ...m, text: action.text } : m)),
         localCards: state.localCards.map((m) => (m.k === action.k ? { ...m, text: action.text } : m)),
       };
     case 'local-card-resolve':
       return {
         ...state,
         thread: state.thread.map((m) => (m.k === action.k ? { ...m, resolved: action.resolved } : m)),
+        cards: state.cards.map((m) => (m.k === action.k ? { ...m, resolved: action.resolved } : m)),
         localCards: state.localCards.map((m) => (m.k === action.k ? { ...m, resolved: action.resolved } : m)),
       };
-    case 'thread-append':
+    case 'thread-append': {
+      // R-75 item 1: a card that arrives by any path -- the command route's reply, a
+      // card the page put up itself -- is split the same way the thread response is.
+      // A refusal or a confirm appended here used to land straight in the rail.
+      const toRail = action.messages.filter((m) => RAIL_TYPES.has(m.type));
+      const toCards = action.messages.filter((m) => !RAIL_TYPES.has(m.type));
       return {
         ...state,
-        thread: [...state.thread, ...action.messages],
+        thread: [...state.thread, ...toRail],
+        cards: [...state.cards, ...toCards],
         localCards: action.local ? [...state.localCards, ...action.messages] : state.localCards,
       };
+    }
     case 'action-pending':
       return { ...state, actions: { ...state.actions, [action.key]: { pending: true, startedAt: Date.now(), result: null } } };
     case 'action-result':
@@ -339,6 +376,10 @@ export function reducer(state: State, action: Action): State {
       return { ...state, conductorTimeoutMs: action.timeoutMs };
     case 'queue-on':
       return { ...state, queueOn: action.on };
+    case 'queue-paused-on-state':
+      return { ...state, queuePausedOnState: action.paused };
+    case 'sync':
+      return { ...state, sync: action.sync };
     case 'toggle-probes':
       return { ...state, showProbes: !state.showProbes };
     case 'archived-lanes':

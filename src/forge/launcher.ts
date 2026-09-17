@@ -154,6 +154,26 @@ export function runtimeHead(): string {
   }
 }
 
+/**
+ * The root of the checkout this process is serving, for the startup banner. A console on
+ * a stale tree used to look identical in the log to one on the trunk (Aaron, 2026-09-11),
+ * so a start says which directory it came from. `run` is injectable for tests only.
+ */
+export function runtimeCheckout(
+  run: (args: string[], cwd: string) => string = (args, cwd) => execFileSync('git', args, {
+    encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'], cwd,
+  }),
+): string {
+  try {
+    const top = run(['rev-parse', '--show-toplevel'], FLIGHTDECK_SRC).trim();
+    return top || FLIGHTDECK_SRC;
+  } catch {
+    // Not a checkout (a packaged build), or git is missing: the directory is still the
+    // honest answer, and saying nothing is what this exists to stop.
+    return FLIGHTDECK_SRC;
+  }
+}
+
 export function runtimeVersion(): string {
   if (cachedVersion) return cachedVersion;
   if (process.env['FORGE_RUNTIME']) {

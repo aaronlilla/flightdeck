@@ -32,7 +32,7 @@ export function redactText(text: string): string {
  */
 export function redactErrorBody(body: string): string {
   try {
-    const parsed = JSON.parse(body) as { error?: unknown; reason?: unknown };
+    const parsed = JSON.parse(body) as { error?: unknown; reason?: unknown; message?: unknown };
     if (typeof parsed.error === 'string') {
       // A `reason` alongside `error` (e.g. `{"error":"not wired","reason":"no repo/PR
       // on record..."}`) is the actual explanation -- folded into one string here so
@@ -42,6 +42,14 @@ export function redactErrorBody(body: string): string {
       // reader; only a reason written as words is appended.
       const reason = typeof parsed.reason === 'string' && /\s/.test(parsed.reason.trim()) ? parsed.reason : null;
       return redactText(reason ? `${parsed.error}: ${reason}` : parsed.error);
+    }
+    // A gate that ran and exited non-zero answers `{ ok:false, message }` with no
+    // `error` at all (`run-actions.ts` gateAction, reopenRun). The last lines of the
+    // gate's own output are in `message`, and reading only `error` threw them away and
+    // told the operator the server said nothing about a refusal it had explained in
+    // full.
+    if (typeof parsed.message === 'string' && parsed.message.trim() !== '') {
+      return redactText(parsed.message);
     }
   } catch {
     // Not JSON. Fall through to the generic message below.

@@ -92,6 +92,21 @@ describe('B.5: gh UNKNOWN classification', () => {
     expect(classifyDrift('r1', '{"mergeable":"CONFLICTING"}').kind).toBe('blocker');
     expect(classifyDrift('r1', 'garbage').kind).toBe('blocker');
   });
+
+  // Aaron, 2026-09-14: every ticket reaching its first pull request raised "Base drift:
+  // the mergeable state ... could not be read" because `gh pr view` on a branch with no
+  // pull request prints this sentence and exits 1. Answering it did not stick: the next
+  // run to reach the step reopened it. No pull request means nothing to conflict with yet.
+  const NO_PR = 'no pull requests found for branch "feature/bbz-305"';
+
+  it('classifies a branch with no pull request yet as no-pr', () => {
+    expect(classifyUnknown(NO_PR)).toBe('no-pr');
+    expect(readMergeableDetailed(NO_PR)).toMatchObject({ state: 'UNKNOWN', reason: 'no-pr' });
+  });
+
+  it('classifyDrift: a branch with no pull request yet clears, never a base-drift blocker', () => {
+    expect(classifyDrift('r1', NO_PR)).toEqual({ kind: 'clear' });
+  });
 });
 
 describe('W1: the reason survives the read and the retry window', () => {

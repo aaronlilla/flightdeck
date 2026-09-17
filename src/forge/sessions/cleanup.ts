@@ -7,6 +7,7 @@
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 
+import { run as defaultExecRun, type RunRequest, type RunResult } from '../exec.js';
 import { workspaceRoot } from '../paths.js';
 
 export interface SweepResult {
@@ -52,8 +53,49 @@ export interface WorktreeStatus {
   pushed: boolean;
 }
 
+/**
+ * Async twin of `worktreeStatusFor`, for the one caller that runs on an HTTP request path
+ * at scale: the code-sync worktree sweep (`sync/code/real-deps.ts`), which probes ~90
+ * worktrees across every checkout. Each git read goes through `exec.ts`'s spawn-based
+ * `run` (non-blocking) instead of `execFileSync` (which froze the whole Node event loop
+ * for the length of the sweep -- the specimen behind `operator-experience.md` §10). The
+ * synchronous version below stays for the session-ingest path, which touches one terminal
+ * session at a time, not a full-tree sweep.
+ */
+export async function worktreeStatusForAsync(
+  _sessionId: string,
+  cwd: string | undefined,
+  execRun: (request: RunRequest) => Promise<RunResult> = defaultExecRun,
+): Promise<WorktreeStatus | undefined> {
+  if (!cwd) return undefined;
+
+  const git = async (dir: string, rest: string[]): Promise<string | undefined> => {
+    const result = await execRun({
+      argv: ['git', '-C', dir, ...rest], cwd: dir, owner: 'worktree-status', cls: 'script',
+      raw: true, fullOutput: true, wall: 20,
+    });
+    if (!result.ok) return undefined;
+    return (result.full ?? result.tail).trim();
+  };
+
+  const path = await git(cwd, ['rev-parse', '--show-toplevel']);
+  if (!path) return undefined;
+
+  const status = await git(path, ['status', '--porcelain']);
+  const clean = status !== undefined && status.length === 0;
+
+  const ahead = await git(path, ['rev-list', '@{u}..HEAD', '--count']);
+  // A missing upstream (git errors, `ahead` undefined) reads as not pushed -- a branch
+  // nobody can see on GitHub is exactly what `worktree.left` exists to surface.
+  const pushed = ahead === '0';
+
+  return { path, clean, pushed };
+}
+
 /** `undefined` when `cwd` is not inside a git worktree this machine can read. Never
- *  deletes anything -- reporting only, per the guardrail. */
+ *  deletes anything -- reporting only, per the guardrail. Synchronous: kept for the
+ *  session-ingest path (`sessions/ingest.ts`), one terminal session at a time. The
+ *  request-path sweep uses `worktreeStatusForAsync` above instead. */
 export function worktreeStatusFor(_sessionId: string, cwd: string | undefined): WorktreeStatus | undefined {
   if (!cwd) return undefined;
   let path: string;

@@ -144,14 +144,22 @@ async function consoleShots(browser: Browser, theme: Theme, shots: Record<string
   await shoot(page, board('1d'));
   await page.keyboard.press('Escape');
 
-  // The rail's card kinds at rest: the question and blocker cards are in the fixture's
-  // thread; the confirm card is the server's own gate answering the board's Merge click.
-  await page.locator('[data-testid="lane-NWR-96"] [data-testid="primary-action"]').click();
-  await page.waitForSelector('[data-testid="conductor-rail"] [data-card="confirm"]');
-  await shoot(page, board('1h'), '[data-testid="conductor-rail"] [data-card="question"]', 'the rail question card (the design draws 1h as a 680x520 dialog; turn 2 of the design replaced it with this card)');
-  await shoot(page, board('1i'), '[data-testid="conductor-rail"] [data-card="confirm"]', 'the rail confirm card, from the server gate behind the board\'s Merge click');
-  await shoot(page, board('1j'), '[data-testid="conductor-rail"] [data-card="blocker"]', 'the rail blocker card');
-  await shoot(page, board('1k'), '[data-testid="conductor-rail"] [data-card="decision"]', 'the rail decision card');
+  // R-75: these card kinds left the rail for the Needs-you strip, which shows one at a
+  // time in its own order -- blocker, then confirm, then question. Each shot walks the
+  // strip to the card it wants with the strip's own Next button. A `decision` card (1k)
+  // has no surface in this design: it is neither conversation nor something that needs a
+  // person, so it is named as skipped rather than shot from somewhere it does not live.
+  if (want('1h') || want('1i') || want('1j') || want('1k')) {
+    const strip = '[data-testid="needs-you"]';
+    await page.locator('[data-testid="lane-NWR-96"] [data-testid="primary-action"]').click();
+    await page.waitForSelector(strip);
+    await shoot(page, board('1j'), strip, 'the blocker, first in the strip');
+    await page.click('[data-testid="needs-you-next"]');
+    await shoot(page, board('1i'), strip, 'the confirm, from the server gate behind the board Merge click');
+    await page.click('[data-testid="needs-you-next"]');
+    await shoot(page, board('1h'), strip, 'the question in the strip (the design draws 1h as a 680x520 dialog; R-75 replaced it with this card)');
+    if (want('1k')) console.log('1k decision card: skipped -- R-75 leaves `decision` without a surface (not conversation, not something that needs a person)');
+  }
 
   // 1g: a conversation with the Conductor.
   await send(page, 'Why is NWR-141 stuck?');

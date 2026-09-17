@@ -1,8 +1,13 @@
 import type { JSX } from 'react';
 
-import { boardCta, boardStateWord, timeInStateText, tileHeadlineParts, kindLabel, type BoardCommand } from '../laneVM.js';
+import { boardCta, boardStateWord, timeInStateText, tileHeadlineParts, type BoardCommand } from '../laneVM.js';
+import { laneActionLiveness } from '../actionLiveness.js';
+import { actionable } from '../../shared/liveness.js';
+import { WhatIsHover } from './WhatIsCard.js';
+import { Linkify } from './Linkify.js';
 import type { Blocker, Lane } from '../../shared/console-model.js';
 import { Marks } from './QuestionCard.js';
+import { busyLabelFor, confirmLabelFor, useCommandConfirming, useCommandPending } from '../commandPending.js';
 
 /**
  * One card of the Board's running grid (`FD Board.dc.html`, the `lanes` loop): key, the
@@ -28,9 +33,24 @@ export interface LaneTileProps {
 export function LaneTile({ lane, now, blocker = null, onOpen, onCommand }: LaneTileProps): JSX.Element {
   const word = boardStateWord(lane);
   const cta = boardCta(lane, blocker);
+  const action = actionable(cta, laneActionLiveness({ lane, cmd: cta.cmd }));
+  // A click has to be felt before the next poll changes the row underneath it.
+  const busy = useCommandPending(lane.id, cta.cmd);
+  // An irreversible command answers with a question, and the question belongs on the
+  // button that asked it rather than only in the rail.
+  const confirmToken = useCommandConfirming(lane.id, cta.cmd);
   const head = tileHeadlineParts(lane);
-  const title = head.title?.trim() || (head.key ? head.key : 'Untitled run');
-  const keyText = head.key ?? `${kindLabel(lane.kind)} run`;
+  // No title and a ticket key means the key is all there is, and it is already in the
+  // kicker above -- printing it again gave the tile "BBZ-123" over "BBZ-123", which
+  // fills the most prominent line on the card with something already on screen. The
+  // line is dropped instead, and the tile's own status line moves up into it.
+  const title = head.title?.trim() || (head.key ? null : 'Untitled run');
+  // The kicker slot holds the ticket. A lane without one used to fill it with the lane's
+  // own kind -- "manual run", "brief run" -- which names an internal category and tells
+  // a person nothing they can act on. Aaron, 2026-09-12: every board item should be a
+  // ticket being worked on. Saying so out loud makes the untracked ones visible as
+  // untracked instead of dressing them up as a category.
+  const keyText = head.key ?? 'No ticket';
   return (
     <div
       data-testid={`lane-${lane.id}`}
@@ -42,21 +62,47 @@ export function LaneTile({ lane, now, blocker = null, onOpen, onCommand }: LaneT
     >
       <Marks />
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
-        <span className="key" data-testid="tile-key" title={keyText} style={{ minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{keyText}</span>
+        {/* The ticket key is what a reader hovers to ask what this is (Aaron,
+            2026-09-12). It is a plain span rather than a link here, so the hover is
+            attached directly; `No ticket` names nothing and gets none. */}
+        {head.key ? (
+          <WhatIsHover refText={head.key}>
+            <span className="key" data-testid="tile-key" title={keyText} style={{ minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{keyText}</span>
+          </WhatIsHover>
+        ) : (
+          <span className="key" data-testid="tile-key" title={keyText} style={{ minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{keyText}</span>
+        )}
         <span data-testid="tile-state" style={{ flex: 'none', fontSize: 'var(--fs-kicker)', fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: word.color }}>{word.word}</span>
       </div>
-      <div className="hd" data-testid="tile-title" dir="auto" title={title} style={{ fontSize: 'var(--fs-rowhead)', lineHeight: 1.1, flex: 'none', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{title}</div>
-      <p data-testid="tile-now" style={{ margin: 0, flex: 'none', color: 'var(--ink2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{lane.now || lane.plain || lane.stepText}</p>
+      {title === null ? null : (
+        <div className="hd" data-testid="tile-title" dir="auto" title={title} style={{ fontSize: 'var(--fs-rowhead)', lineHeight: 1.1, flex: 'none', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{title}</div>
+      )}
+      <p data-testid="tile-now" style={{ margin: 0, flex: 'none', color: 'var(--ink2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}><Linkify text={lane.now || lane.plain || lane.stepText} repo={lane.repo} /></p>
       <div data-testid="tile-footer" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 'auto' }}>
         <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', marginRight: 8 }}>
           {timeInStateText(lane, now, word.word)}{lane.attempts > 1 ? ` · attempt ${lane.attempt} of ${lane.attempts}` : ''}
         </span>
-        <button
-          type="button" className={`btn ${cta.kind}`} data-testid="primary-action" data-cmd={cta.cmd}
-          onClick={(e) => { e.stopPropagation(); onCommand(lane.id, cta.cmd); }}
-        >
-          {cta.label}
-        </button>
+        {/* The verdict decides whether this is a button at all. A tile offering Merge on
+            a pull request that merged an hour ago is not a broken button, it is the board
+            telling somebody to do a thing already done (Aaron, 2026-09-12). A dead action
+            renders as the reason instead, so the tile still says where it stands. */}
+        {action.liveness.live ? (
+          <button
+            type="button" className={`btn ${cta.kind}`} data-testid="primary-action" data-cmd={cta.cmd}
+            aria-busy={busy} disabled={busy}
+            onClick={(e) => { e.stopPropagation(); onCommand(lane.id, confirmToken ? `confirm:${confirmToken}` : cta.cmd); }}
+          >
+            {busy ? busyLabelFor(cta.cmd, cta.label) : confirmToken ? confirmLabelFor(cta.cmd, cta.label) : cta.label}
+          </button>
+        ) : (
+          <span
+            data-testid="primary-action-unavailable" data-cmd={cta.cmd}
+            title={action.liveness.why}
+            style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 200 }}
+          >
+            {action.liveness.why}
+          </span>
+        )}
       </div>
     </div>
   );

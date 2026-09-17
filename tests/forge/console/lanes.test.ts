@@ -289,7 +289,10 @@ describe('computeLanes', () => {
         runs: ['alpha'], goals: [], asked: 1, at: 500, disposition: 'park',
       }],
     }), 1_000).lanes[0]!;
-    expect(result.question).toEqual({ key: 'k1', text: 'staging or dev?', opts: ['staging', 'dev'], askedAt: 500 });
+    // R-75 item 4: the question also carries the four Pass to… fields, null when the ask
+    // has not been passed, so the console reads a value rather than a missing key.
+    expect(result.question).toMatchObject({ key: 'k1', text: 'staging or dev?', opts: ['staging', 'dev'], askedAt: 500 });
+    expect(result.question).toMatchObject({ passedTo: null, passedAt: null, passedThread: null, answeredBy: null });
   });
 
   it('flags runaway for a running lane over its resolved cap', () => {

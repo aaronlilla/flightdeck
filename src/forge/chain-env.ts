@@ -91,6 +91,21 @@ export function repoKindFor(chainEnv: ChainEnv, repo: string): 'backend' | 'fron
   return lookupRepoScoped(chainEnv.repoKinds, repo) === 'backend' ? 'backend' : 'frontend';
 }
 
+/**
+ * The kind this repository DECLARES, or `undefined` when it declares none.
+ *
+ * `repoKindFor` above answers `frontend` for anything not named as backend, which is
+ * the right default for the handoff it was written for -- but it means "not backend",
+ * not "this builds a mobile app". Reading it as the latter put an Android and iOS ship
+ * path into the body of a pull request on a Node repository with no mobile build at
+ * all (code review, 2026-09-12). A caller that needs the difference asks here.
+ */
+export function declaredRepoKind(chainEnv: ChainEnv, repo: string): 'backend' | 'frontend' | undefined {
+  const declared = lookupRepoScoped(chainEnv.repoKinds, repo);
+  if (declared === 'backend' || declared === 'frontend') return declared;
+  return undefined;
+}
+
 export function baseFor(chainEnv: ChainEnv, repo: string): string {
   return lookupRepoScoped(chainEnv.bases, repo) ?? DEFAULT_BASE;
 }
@@ -142,14 +157,18 @@ export function mergeAllowedFor(chainEnv: ChainEnv, repo: string): boolean {
  *  `<name-lower>--<ticket-lower>` -- the same shape this workspace already uses for
  *  every other repository's worktrees. `checkout` is the local clone's own path
  *  (`FORGE_REPO_CHECKOUTS`'s value for this repo), never derived from the repository
- *  name alone. */
+ *  name alone. A checkout that is itself a worktree already lives INSIDE a `worktrees`
+ *  directory; appending another produced `worktrees/worktrees/...` (live escape
+ *  2026-09-14), a depth the coordination board's listing never sees. */
 export function worktreePathFor(checkout: string, repo: string, ticket: string): string {
   const sep = checkout.includes('\\') && !checkout.includes('/') ? '\\' : '/';
   const parent = checkout.replace(/[/\\]+$/, '');
   const lastSep = Math.max(parent.lastIndexOf('/'), parent.lastIndexOf('\\'));
   const parentDir = lastSep === -1 ? '' : parent.slice(0, lastSep);
   const name = repo.split('/').pop()!.toLowerCase();
-  return `${parentDir}${sep}worktrees${sep}${name}--${ticket.toLowerCase()}`;
+  const parentName = parentDir.slice(Math.max(parentDir.lastIndexOf('/'), parentDir.lastIndexOf('\\')) + 1);
+  const base = parentName.toLowerCase() === 'worktrees' ? parentDir : `${parentDir}${sep}worktrees`;
+  return `${base}${sep}${name}--${ticket.toLowerCase()}`;
 }
 
 /** A run clone lives beside the worktrees, in a `runs` sibling directory, so the two

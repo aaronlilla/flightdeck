@@ -43,6 +43,13 @@ export function inboxDir(): string {
   return join(forgeHome(), 'inbox');
 }
 
+/** R-76: what one item's interview already settled, kept while the item waits on a
+ *  person. Beside the inbox rather than inside it, so nothing walking the inbox reads an
+ *  interview record as an ask. */
+export function interviewRecordsDir(): string {
+  return join(forgeHome(), 'interviews');
+}
+
 export function packetsDir(): string {
   return join(forgeHome(), 'packets');
 }
@@ -95,6 +102,28 @@ export function queuePath(): string {
  *  this stops only the queue from starting new work. */
 export function queuePausedPath(): string {
   return join(consoleDir(), 'queue-paused.json');
+}
+
+/** R-68: the last `SyncRunRecord` per scope, `sync/store.ts#SyncStore`. */
+export function syncStatePath(): string {
+  return join(consoleDir(), 'sync.json');
+}
+
+/** R-68: the Jira watcher's runtime on/off switch and last-poll status,
+ *  `sync/watcher-state.ts`. Separate from `queuePausedPath()`: this is a Jira poll, not
+ *  the intake queue's own worker. */
+export function watcherStatePath(): string {
+  return join(consoleDir(), 'watcher.json');
+}
+
+/** R-101: which Jira comments the feed has already handled, and when it started. */
+export function jiraFeedLedgerPath(): string {
+  return join(consoleDir(), 'jira-feed.json');
+}
+
+/** R-101: when the feed's self-test (answering the operator's own comments) ends. */
+export function jiraFeedSelfTestPath(): string {
+  return join(consoleDir(), 'jira-feed-self-test.json');
 }
 
 /** The queue's own width setting: `{ maxInFlight: N }` or absent. Separate from

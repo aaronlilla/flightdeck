@@ -67,7 +67,7 @@ interface JiraSearchIssue {
   fields: {
     summary?: string;
     description?: unknown;
-    status?: { name?: string };
+    status?: { name?: string; statusCategory?: { key?: string } };
     updated?: string;
     issuetype?: { name?: string };
     priority?: { name?: string };
@@ -90,6 +90,9 @@ function detailFor(issue: JiraSearchIssue): PollItemDetail {
     summary: issue.fields.summary ?? '',
     description,
     status: issue.fields.status?.name ?? '',
+    // R-101: the `status` field already carries its category. Without this the watcher's
+    // "a Done move closes the lane" never fired against the real feed, only in fixtures.
+    ...(issue.fields.status?.statusCategory?.key ? { statusCategory: issue.fields.status.statusCategory.key } : {}),
     issuetype: issue.fields.issuetype?.name ?? '',
     priority: issue.fields.priority?.name ?? '',
     // R1: what the repository router matches labels and components against.
@@ -183,10 +186,36 @@ export interface JiraCallResult {
   ok: boolean;
   status?: number;
   body?: string;
+  /** The created resource's id, when Jira returns one (a new comment's id). */
+  id?: string;
 }
 
 /** J3: the writes `forge gate --merge` (and, A.3, the queue's own `queueHandoff.ts`)
  *  make once a ticket clears. */
+/** One issue's own fields, for the console's "what is this" route. Read-only and
+ *  separate from the write client's methods so a reader can never reach a write. */
+export interface JiraIssueRead {
+  summary: string | null;
+  status: string | null;
+  assignee: string | null;
+  issueType: string | null;
+  priority: string | null;
+  updated: string | null;
+  description: string | null;
+}
+
+/**
+ * Reading one issue, kept off `JiraWriteClient` on purpose: a caller that only needs to
+ * show somebody what a ticket says should not be holding a handle that can comment on it
+ * or move it. The factory below returns an object satisfying both, so there is still one
+ * client and one set of credentials.
+ */
+export interface JiraReadClient {
+  /** Answers null when Jira refuses or does not have it -- a hover that cannot resolve
+   *  says so rather than showing a blank card. */
+  read(key: string): Promise<JiraIssueRead | null>;
+}
+
 export interface JiraWriteClient {
   comment(key: string, body: string): Promise<JiraCallResult>;
   assign(key: string, accountId: string): Promise<JiraCallResult>;
@@ -233,12 +262,43 @@ export function adfFromText(text: string): AdfDocument {
   return { type: 'doc', version: 1, content };
 }
 
-export function createJiraWriteClient(config: Pick<JiraConfig, 'site' | 'email' | 'token' | 'fetchFn'>): JiraWriteClient {
+export function createJiraWriteClient(config: Pick<JiraConfig, 'site' | 'email' | 'token' | 'fetchFn'>): JiraWriteClient & JiraReadClient {
   const fetchFn = config.fetchFn ?? fetch;
   const auth = basicAuth(config.email, config.token);
   const headers = { 'content-type': 'application/json', authorization: auth };
 
   return {
+    async read(key) {
+      // Only the fields the card shows. Asking for the whole issue pulls changelog,
+      // comments and every custom field the site has, which is a slow call for a hover.
+      const fields = 'summary,status,assignee,issuetype,priority,updated,description';
+      const response = await fetchFn(`${config.site}/rest/api/3/issue/${key}?fields=${fields}`, {
+        method: 'GET', headers: { authorization: auth },
+      });
+      if (!response.ok) return null;
+      try {
+        const body = await response.json() as { fields?: Record<string, any> };
+        const f = body.fields ?? {};
+        const text = (value: unknown): string | null => {
+          if (typeof value === 'string') return value;
+          if (value && typeof value === 'object' && 'name' in (value as object)) return String((value as { name: unknown }).name);
+          if (value && typeof value === 'object' && 'displayName' in (value as object)) return String((value as { displayName: unknown }).displayName);
+          return null;
+        };
+        const description = f['description'] ? flattenAdf(f['description']).trim() : '';
+        return {
+          summary: typeof f['summary'] === 'string' ? f['summary'] : null,
+          status: text(f['status']),
+          assignee: text(f['assignee']),
+          issueType: text(f['issuetype']),
+          priority: text(f['priority']),
+          updated: typeof f['updated'] === 'string' ? f['updated'] : null,
+          description: description.length > 0 ? description : null,
+        };
+      } catch {
+        return null;
+      }
+    },
     async comment(key, body) {
       // The backstop: whatever assembled `body` and whichever caller reached this
       // point, a DENY refuses the write here too, before `fetchFn` is ever called.
@@ -252,7 +312,17 @@ export function createJiraWriteClient(config: Pick<JiraConfig, 'site' | 'email' 
       const response = await fetchFn(`${config.site}/rest/api/3/issue/${key}/comment`, {
         method: 'POST', headers, body: JSON.stringify({ body: adfFromText(body) }),
       });
-      return callResultFor(response);
+      if (!response.ok) return callResultFor(response);
+      // R-101: the new comment's id, so the feed can recognise its own replies and never
+      // answer them when it is allowed to read the operator's comments.
+      let id: string | undefined;
+      try {
+        const created = (await response.json()) as { id?: unknown };
+        if (typeof created.id === 'string' || typeof created.id === 'number') id = String(created.id);
+      } catch {
+        // A created comment with an unreadable body is still created.
+      }
+      return { ok: true, status: response.status, ...(id ? { id } : {}) };
     },
     async assign(key, accountId) {
       const response = await fetchFn(`${config.site}/rest/api/3/issue/${key}/assignee`, {
@@ -273,4 +343,94 @@ export function createJiraWriteClient(config: Pick<JiraConfig, 'site' | 'email' 
       return callResultFor(response);
     },
   };
+}
+
+/**
+ * A ticket's own comment bodies, as plain text. Read before work starts on the ticket:
+ * a pull request opened for it is visible here long before the status field moves (see
+ * `inFlight.ts`). Atlassian Document Format bodies are flattened to text, because all
+ * this caller wants out of them is a URL.
+ */
+/**
+ * Every URL an Atlassian Document Format node carries in an attribute rather than in its
+ * text.
+ *
+ * `flattenAdf` returns text from `text` nodes only. Jira Cloud renders a pasted GitHub URL
+ * as an `inlineCard` (and the GitHub integration as a `blockCard`), which has an
+ * `attrs.url` and no text at all; a link written over words carries its target in
+ * `marks[].attrs.href` while its text reads "the PR". Both flatten to nothing, and a
+ * caller hunting for a pull request URL in a comment finds none — which is the case the
+ * in-flight check exists for (review, 2026-09-12).
+ */
+export function adfUrls(node: unknown): string[] {
+  if (node == null || typeof node !== 'object') return [];
+  const found: string[] = [];
+  const doc = node as {
+    attrs?: { url?: unknown };
+    marks?: { attrs?: { href?: unknown } }[];
+    content?: unknown[];
+  };
+  if (typeof doc.attrs?.url === 'string') found.push(doc.attrs.url);
+  for (const mark of Array.isArray(doc.marks) ? doc.marks : []) {
+    if (typeof mark?.attrs?.href === 'string') found.push(mark.attrs.href);
+  }
+  for (const child of Array.isArray(doc.content) ? doc.content : []) {
+    found.push(...adfUrls(child));
+  }
+  return found;
+}
+
+export async function fetchIssueComments(
+  config: Pick<JiraConfig, 'site' | 'email' | 'token' | 'fetchFn'>,
+  key: string,
+): Promise<string[]> {
+  const fetchFn = config.fetchFn ?? fetch;
+  const response = await fetchFn(`${config.site}/rest/api/3/issue/${key}/comment`, {
+    headers: { authorization: basicAuth(config.email, config.token) },
+  });
+  if (!response.ok) throw await jiraErrorFor(response);
+  const data = (await response.json()) as { comments?: { body?: unknown }[] };
+  return (data.comments ?? []).map((comment) => {
+    if (typeof comment.body === 'string') return comment.body;
+    // The rendered text plus every URL the nodes carry in attributes. A smart link has no
+    // text, so text alone loses exactly the comment this read exists to find.
+    return [flattenAdf(comment.body), ...adfUrls(comment.body)].filter(Boolean).join('\n');
+  });
+}
+
+/** A ticket's remote issue links, as URLs. The other place a pull request shows up on a
+ *  ticket whose status has not moved. */
+export async function fetchIssueRemoteLinks(
+  config: Pick<JiraConfig, 'site' | 'email' | 'token' | 'fetchFn'>,
+  key: string,
+): Promise<string[]> {
+  const fetchFn = config.fetchFn ?? fetch;
+  const response = await fetchFn(`${config.site}/rest/api/3/issue/${key}/remotelink`, {
+    headers: { authorization: basicAuth(config.email, config.token) },
+  });
+  if (!response.ok) throw await jiraErrorFor(response);
+  const data = (await response.json()) as { object?: { url?: string } }[];
+  return (Array.isArray(data) ? data : []).map((link) => link.object?.url ?? '').filter(Boolean);
+}
+
+/**
+ * R-101: one ticket's planning detail, read from the issue itself rather than a JQL
+ * search on its key. The Jira feed plans a ticket seconds after it is created, and the
+ * search index can lag that: on 2026-09-14 a key search two seconds after creation came
+ * back empty and the planner interviewed a bare key. Throws naming the ticket when Jira
+ * cannot return it, so the item fails visibly instead of being planned blind.
+ */
+export async function readTicketDetail(
+  config: Pick<JiraConfig, 'site' | 'email' | 'token' | 'fetchFn'>, key: string,
+): Promise<PollItemDetail> {
+  const fetchFn = config.fetchFn ?? fetch;
+  const fields = 'summary,description,status,updated,issuetype,priority,labels,components';
+  const response = await fetchFn(`${config.site}/rest/api/3/issue/${encodeURIComponent(key)}?fields=${fields}`, {
+    headers: { authorization: basicAuth(config.email, config.token) },
+  });
+  if (!response.ok) {
+    const error = await jiraErrorFor(response);
+    throw new Error(`could not read ${key} from Jira: ${error.message}`);
+  }
+  return detailFor((await response.json()) as JiraSearchIssue);
 }

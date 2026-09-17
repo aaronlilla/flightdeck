@@ -142,3 +142,30 @@ export function retireLane(id: string, retiring: boolean, deps: RetireLaneDeps):
   appendOnce(deps.journalPath, { event: 'lane.retired', run: id, actor: 'console', retired: retiring });
   return { status: 200, body: { ok: true, jid: null, message: `${retiring ? 'retired' : 'unretired'} ${id}`, undoable: retiring } };
 }
+
+/**
+ * Retires a lane that cleared itself, rather than one a person archived.
+ *
+ * Separate from `retireLane` on purpose. `retireEligible` is the operator's rule — a
+ * finished lane with no open PR — and an abandoned lane fails it by definition: it died
+ * without journaling `run.finished`, so its state is still `blocked`. That is the trap
+ * `retireEligible`'s own comment describes, where "the card could never leave the board".
+ *
+ * The caller establishes abandonment (`abandoned.ts`), which is a strictly stronger
+ * condition than eligibility: no process, no queue row, nothing unpushed. So this does
+ * not weaken the operator's rule, it answers a different question.
+ *
+ * The journal row is `lane.abandoned`, not `lane.retired`, so the board can always tell a
+ * lane a person archived from one that went on its own, and the reason is on the row.
+ * Retiring never deletes: `GET /lanes?archived=1` still finds it and one more row brings
+ * it back.
+ */
+export function retireAbandonedLane(id: string, why: string, deps: RetireLaneDeps): RetireLaneOutcome {
+  const at = (deps.now ?? Date.now)();
+  retireRun(retiredPath(deps.forgeHomeDir), id, at);
+  appendOnce(deps.journalPath, { event: 'lane.abandoned', run: id, actor: 'warden', retired: true, why });
+  return {
+    status: 200,
+    body: { ok: true, jid: null, message: `${id} cleared itself: ${why}`, undoable: true },
+  };
+}

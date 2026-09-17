@@ -91,8 +91,8 @@ function fakeGh(snapshots: PrSnapshot[], overrides: Partial<GhWriter> = {}): GhR
     },
     async mergePr() { return { returncode: 0, stderr: '' }; /* overridden per test when exercised */ },
     async readyPr() { return { returncode: 0, stderr: '' }; },
-    async viewPrState() { return { prState: 'OPEN' }; },
     async commentPr() { return { returncode: 0, stderr: '' }; },
+    async viewPrState() { return { prState: 'OPEN' }; },
     async requestReviewer() { return { returncode: 0, stderr: '' }; },
     ...overrides,
   };
@@ -372,6 +372,47 @@ describe('forge council', () => {
     expect(result.code).toBe(2);
     expect(result.lines.join(' ')).toMatch(/pending/);
     expect(result.data?.['pending']).toBe(true);
+  });
+
+  // Aaron, 2026-09-12: a repository with its Actions switched off reports an empty rollup
+  // for ever, so `pending` there is not "not yet" but "never" -- and refusing on it meant
+  // the council never read a pull request in such a repository at all. The queue runs that
+  // repository's own verify in place of the checks; this is the same decision on the review
+  // side, so the two agree on which repositories those are.
+  it('reads a pull request in a repository that runs no checks, instead of refusing for ever', async () => {
+    process.env['FORGE_COUNCIL_REPOS'] = REPO;
+    const result = await forge(['council', '--repo', REPO, '--pr', String(PR)], {
+      councilGh: {
+        ...fakeGh([smallSnapshot({ checks: { runId: 'r', headSha: 'head-1', conclusion: 'pending' } })]),
+        repoRunsChecks: async () => false,
+      },
+    });
+    expect(result.lines.join(' '), 'it refused on checks that can never arrive').not.toMatch(/not green/);
+    expect(result.data?.['pending']).toBeUndefined();
+  });
+
+  it('still waits on a pending rollup in a repository that does run checks', async () => {
+    process.env['FORGE_COUNCIL_REPOS'] = REPO;
+    const result = await forge(['council', '--repo', REPO, '--pr', String(PR)], {
+      councilGh: {
+        ...fakeGh([smallSnapshot({ checks: { runId: 'r', headSha: 'head-1', conclusion: 'pending' } })]),
+        repoRunsChecks: async () => true,
+      },
+    });
+    expect(result.code).toBe(2);
+    expect(result.data?.['pending']).toBe(true);
+  });
+
+  it('still refuses a rollup that actually failed, whatever the repository runs', async () => {
+    process.env['FORGE_COUNCIL_REPOS'] = REPO;
+    const result = await forge(['council', '--repo', REPO, '--pr', String(PR)], {
+      councilGh: {
+        ...fakeGh([smallSnapshot({ checks: { runId: 'r', headSha: 'head-1', conclusion: 'failure' } })]),
+        repoRunsChecks: async () => false,
+      },
+    });
+    expect(result.code).toBe(2);
+    expect(result.lines.join(' ')).toMatch(/not green/);
   });
 
   // Rival account 3, this plan: a bare hand-typed `forge council` never read

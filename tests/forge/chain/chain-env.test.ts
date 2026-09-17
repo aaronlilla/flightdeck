@@ -6,7 +6,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  baseFor, branchFor, checkoutFor, hotfixBaseFor, mergeAllowedFor, parseRepoScoped, readChainEnv,
+  baseFor, branchFor, checkoutFor, declaredRepoKind, hotfixBaseFor, mergeAllowedFor,
+  parseRepoScoped, readChainEnv,
   repoKindFor, verifyCommandFor, worktreePathFor, worktreeSetupFor,
 } from '../../../src/forge/chain-env.js';
 
@@ -76,6 +77,44 @@ describe('worktreePathFor', () => {
   it('places the worktree in a sibling "worktrees" directory, named <name-lower>--<ticket-lower>', () => {
     const path = worktreePathFor('D:/repos/Name', 'Owner/Name', 'ABC-1');
     expect(path).toBe('D:/repos/worktrees/name--abc-1');
+  });
+
+  // A checkout can itself be a worktree living inside a sibling "worktrees" directory
+  // (a merge-base checkout, say). Joining another "worktrees" segment onto its parent
+  // then doubles the path -- a depth a plain worktree listing never sees. Genericised
+  // from a live escape.
+  it('does not double the segment when the checkout already lives in a worktrees directory', () => {
+    const path = worktreePathFor('D:/repos/worktrees/name--merge-base', 'Owner/Name', 'ABC-1');
+    expect(path).toBe('D:/repos/worktrees/name--abc-1');
+  });
+
+  it('keeps the doubled-path behavior out of backslash checkouts too', () => {
+    const path = worktreePathFor('D:\\repos\\worktrees\\name--merge-base', 'Owner/Name', 'ABC-2');
+    expect(path).toBe('D:\\repos\\worktrees\\name--abc-2');
+  });
+});
+
+/**
+ * Item 16, 2026-09-12: `repoKindFor` answers `frontend` for anything not named as
+ * backend, which reads as "this builds a mobile app" and is not. A caller that put an
+ * Android and iOS ship path into a pull request body on that reading would have done
+ * it on every Node repository in the workspace.
+ */
+describe('declaredRepoKind', () => {
+  it('returns nothing for a repo that declares no kind, where repoKindFor says frontend', () => {
+    const env = readChainEnv({ FORGE_REPO_KIND: 'owner/backendrepo=backend' });
+    expect(repoKindFor(env, 'aaronlilla/flightdeck')).toBe('frontend');
+    expect(declaredRepoKind(env, 'aaronlilla/flightdeck')).toBeUndefined();
+  });
+
+  it('returns the kind a repo does declare', () => {
+    const env = readChainEnv({ FORGE_REPO_KIND: 'o/app=frontend,o/api=backend' });
+    expect(declaredRepoKind(env, 'o/app')).toBe('frontend');
+    expect(declaredRepoKind(env, 'o/api')).toBe('backend');
+  });
+
+  it('returns nothing when no repo declares a kind at all', () => {
+    expect(declaredRepoKind(readChainEnv({}), 'o/app')).toBeUndefined();
   });
 });
 

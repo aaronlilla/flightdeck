@@ -20,13 +20,20 @@ import { classFor, classNames, governorBudget, policyPath } from '../policy.js';
 import { QueueStore } from '../intake/queueStore.js';
 import { processAlive, Registry } from '../registry.js';
 import type { StuckSignal } from '../liveness.js';
+import { briefFacts, briefPathForLane } from './briefLookup.js';
+import type { JiraIssueRead } from '../intake/jira.js';
+import {
+  classifyRef, fromBoard, fromJira, mergeTicket, notFound, prNumberFrom,
+  pullRequestFromBoard, runFromBoard, type WhatIs,
+} from './whatis.js';
+import { askContextForRuns } from './askContext.js';
 import { computeLive } from './live.js';
 import { Lanes, type LaneRecord } from '../supervisor.js';
 import { RunInbox } from '../runinbox.js';
 import type {
   Caps, JournalResponse, Lane, LanePr, LaneStory, LanesResponse, LaneSummary, NarrationBag, NarrationFacts,
   ProposalsResponse, QueueItem,
-  RunCostResponse, RunJournalResponse, RunPrResponse, RunSandboxResponse, RunThreadResponse, ThreadResponse,
+  RunCostResponse, RunJournalResponse, RunPrResponse, RunSandboxResponse, RunThreadResponse,
 } from '../../shared/console-model.js';
 import { capsOverridesPath, computeCaps, readCapsOverrides } from './caps-read.js';
 import { ensureHardTokens } from './caps-write.js';
@@ -56,6 +63,7 @@ import { computeProposals, readRules, rulesPath } from './proposals.js';
 import { narrateReview } from './review-narrate.js';
 import { computeSandbox, newestLogFile, packetForRun, tailLogWithSeverity } from './sandbox.js';
 import { computeRunThread, computeThread, readThread, threadPath } from './thread.js';
+import type { ThreadSplit } from './thread.js';
 import { narrateThread } from './thread-narrate.js';
 import { computeLaneSummary, computeReadiness, type PrFacts } from './summary.js';
 import type { MergeReadyReport } from '../../shared/console-model.js';
@@ -68,6 +76,16 @@ export interface ConsoleReadsOptions {
    *  narrated field serves its own template in all three registers -- never a blank
    *  screen and never a model call. */
   narrator?: Narrator | null;
+  /** Whether `confirm <token>` would still find something to run. Wired by `server.ts`
+   *  to the write path's own pending map, which is the only authority: a token can be
+   *  live in this process's memory without ever having reached the durable store. Left
+   *  unset (a specimen, a test), the thread builder falls back to the token's lifetime.
+   *  Read through a callback rather than held, because the write path is constructed
+   *  after this class. */
+  confirmPending?: (token: string) => boolean;
+  /** Reads one Jira issue, for `GET /whatis`. Left unset, a ticket resolves from the
+   *  board alone rather than failing. */
+  jiraRead?: (key: string) => Promise<JiraIssueRead | null>;
   lanes?: Lanes;
   registry?: Registry;
   inbox?: Inbox;
@@ -310,9 +328,23 @@ function defaultAttestationReader(): AttestationReaderFn {
 
 /** The runs `GET /run/:id` matches, and everything under it -- `/run/:id/thread`,
  *  `/run/:id/pr`, `/run/:id/sandbox`, `/run/:id/cost`, `/run/:id/journal`. */
+/** How long a `/whatis` answer is reused. Long enough to cover a sweep across the
+ *  board, short enough that a ticket moved in Jira shows its new state promptly. */
+const WHATIS_CACHE_MS = 60_000;
+
 const RUN_SUBROUTE = /^\/run\/([^/]+)\/(thread|pr|sandbox|cost|journal|story|summary)$/;
 
 export class ConsoleReads {
+  private readonly confirmPendingFn: ((token: string) => boolean) | undefined;
+
+  /** Reads one Jira issue for the `/whatis` route. Absent (no credentials, a specimen)
+   *  means a ticket resolves from the board alone, which is still an answer. */
+  private readonly jiraReadFn: ((key: string) => Promise<JiraIssueRead | null>) | undefined;
+
+  /** `/whatis` answers, by reference. A reader sweeping the board hovers the same key
+   *  repeatedly and neither Jira nor they gain anything from a call each time. */
+  private readonly whatIsCache = new Map<string, { at: number; value: WhatIs }>();
+
   private readonly lanes: Lanes;
 
   private readonly registry: Registry;
@@ -400,6 +432,8 @@ export class ConsoleReads {
 
   constructor(options: ConsoleReadsOptions = {}) {
     this.narrator = options.narrator ?? null;
+    this.confirmPendingFn = options.confirmPending;
+    this.jiraReadFn = options.jiraRead;
     this.forgeHomeDir = options.forgeHomeDir ?? forgeHome();
     this.lanes = options.lanes ?? new Lanes(lanesDir());
     this.registry = options.registry ?? new Registry(registryDir());
@@ -564,7 +598,7 @@ export class ConsoleReads {
   static matches(path: string, method: string | undefined): boolean {
     if (method !== 'GET') return false;
     return path === '/lanes' || path === '/thread' || path === '/journal' || path === '/caps'
-      || path === '/proposals' || path === '/sessions' || RUN_SUBROUTE.test(path);
+      || path === '/proposals' || path === '/sessions' || path === '/whatis' || RUN_SUBROUTE.test(path);
   }
 
   /** True when a request matched a route this class owns and the response has already
@@ -600,6 +634,11 @@ export class ConsoleReads {
     }
     if (path === '/proposals') {
       json(response, 200, this.proposalsResponse());
+      return true;
+    }
+    if (path === '/whatis') {
+      const url = new URL(request.url ?? '/', 'http://localhost');
+      json(response, 200, await this.whatIsResponse(url.searchParams.get('ref') ?? ''));
       return true;
     }
     if (path === '/sessions') {
@@ -750,10 +789,20 @@ export class ConsoleReads {
       briefPath = this.registry.get(lane.id)?.briefPath ?? null;
     }
 
+    // No queue row holding the brief does not mean no brief. A pasted brief and a hotfix
+    // are written to a file named after the run key itself, and the queue row is pruned
+    // when the item finishes -- so a finished brief lane lost its title AND its ticket
+    // key at the moment somebody was most likely to be looking at it, and the tile read
+    // `No ticket` over `Untitled run` (measured 2026-09-12).
+    briefPath = briefPath ?? briefPathForLane(this.forgeHomeDir, lane.id);
     const briefHeading = briefPath ? readBriefHeading(briefPath, lane.ticket) : null;
-    const { title, sourceUrl } = titleFor({ kind: lane.kind, ticket: lane.ticket, briefHeading, jiraSite: this.jiraSite, prUrl });
+    // The brief's own `ticket:` line, for a lane the queue is no longer holding a ticket
+    // for. Every board item should name the ticket it is working on; this one always
+    // knew its own, one file away.
+    const ticket = lane.ticket ?? (briefPath ? briefFacts(briefPath).ticket : null);
+    const { title, sourceUrl } = titleFor({ kind: lane.kind, ticket, briefHeading, jiraSite: this.jiraSite, prUrl });
     const mergeable = mergeableFor({ pr, repo, mergeAllowed: this.mergeAllowedFn });
-    const patched: Lane = { ...lane, title, sourceUrl, mergeable, repo, pr };
+    const patched: Lane = { ...lane, ticket, title, sourceUrl, mergeable, repo, pr };
     // `plain` was built in `buildLane` off whatever `pr` the cache already had; a queue
     // lane's fallback `pr` above can change what it should say (a bare `pr` now exists
     // where there was none), so it is recomputed here rather than left stale.
@@ -777,9 +826,19 @@ export class ConsoleReads {
     // `planning`, `running`, `failed`), and the run-based sentence above stands there.
     if (queueItem && !mergedNow) {
       const verdict = this.queueVerdictFor({ ...queueItem, ...(repo ? { repo } : {}) });
-      // The checks clause reads the lane's own PR facts (the cache), which the queue
-      // item never carries.
-      const withChecks = pr && queueItem.pr ? { ...queueItem, pr: { ...queueItem.pr, ...(pr.checks !== undefined ? { checks: pr.checks } : {}), ...(pr.merged !== undefined ? { merged: pr.merged } : {}) } } : queueItem;
+      // The whole fresh reading wins, not a hand-picked pair of fields from it.
+      //
+      // This used to carry `checks` and `merged` across and nothing else, so `closed`
+      // stayed whatever the queue wrote when the pull request was opened -- and `closed`
+      // is the field that decides whether the sentence is true. A pull request closed
+      // hours earlier, its work already on main, went on reading "Draft PR 206 waiting
+      // for your merge" on the board, beside a mergeability verdict on the same lane that
+      // said "closed without merging" (Aaron, 2026-09-13: the console constantly has
+      // stale or wrong information).
+      //
+      // Spreading the whole record means a field added later is carried without anyone
+      // remembering to add it here, which is how the last one came to be missed.
+      const withChecks = pr && queueItem.pr ? { ...queueItem, pr: { ...queueItem.pr, ...pr } } : queueItem;
       // Only a repo that is off the allow-list AND has a named owner reads as
       // controlled code; an unconfigured allow-list alone is not a fact about the repo.
       const backendOwner = process.env['FORGE_GH_BACKEND_OWNER'];
@@ -927,7 +986,7 @@ export class ConsoleReads {
     };
   }
 
-  private threadResponse(verbose = false): ThreadResponse {
+  private threadResponse(verbose = false): ThreadSplit {
     const now = Date.now();
     const persisted = readThread(threadPath(this.forgeHomeDir));
     const fleet = this.journalCache.read(this.journalPath);
@@ -954,10 +1013,65 @@ export class ConsoleReads {
       }
     }
     const titleFor = (id: string): string | null => titles.get(id) ?? null;
+    // What every open question is about: the queue item it names, when that item is
+    // still on the board. Built once per read rather than per question.
+    const askInput = {
+      items: this.queueStore.all(),
+      laneIds: new Set(this.lanesResponse(true, true).lanes.map((lane) => lane.id)),
+    };
     const thread = computeThread(persisted, fleet.events, now, this.inbox.open(), titleFor, {
       verbose, allAsks: this.inbox.all(),
+      askContext: (runs) => askContextForRuns(runs, askInput),
+      ...(this.confirmPendingFn ? { confirmPending: this.confirmPendingFn } : {}),
     });
-    return { ...thread, messages: narrateThread(thread.messages, this.narrator) };
+    return {
+      ...thread,
+      messages: narrateThread(thread.messages, this.narrator),
+      cards: narrateThread(thread.cards, this.narrator),
+    };
+  }
+
+  /**
+   * `GET /whatis?ref=BBZ-169`: what the identifier under the reader's pointer refers to.
+   *
+   * Aaron, 2026-09-12: "when i hover over an item that has an acronym, like a bbz ticket
+   * number, i should be able to see full detail of the ticket or whatever it is."
+   *
+   * Cheapest source first. The board answers instantly and is never wrong about its own
+   * state; Jira is asked only for a ticket, and its answer is merged with the board's so
+   * the card carries both what the ticket says and what is being done about it here. A
+   * ticket nobody is working still resolves, through Jira alone.
+   *
+   * Answers are cached for a minute: a reader sweeping the board hovers the same key over
+   * and over, and neither Jira nor the reader benefits from a call each time.
+   */
+  private async whatIsResponse(ref: string): Promise<WhatIs> {
+    const key = ref.trim();
+    if (key.length === 0) return notFound('');
+    const hit = this.whatIsCache.get(key);
+    const now = Date.now();
+    if (hit && now - hit.at < WHATIS_CACHE_MS) return hit.value;
+
+    const lanes = this.lanesResponse(true, true).lanes;
+    const queue = this.queueStore.all();
+    let value: WhatIs;
+    switch (classifyRef(key)) {
+      case 'ticket': {
+        const board = fromBoard(key, lanes, queue);
+        const issue = this.jiraReadFn ? await this.jiraReadFn(key).catch(() => null) : null;
+        value = issue ? mergeTicket(fromJira(key, issue, this.jiraSite), board) : board ?? notFound(key);
+        break;
+      }
+      case 'pull-request': {
+        const no = prNumberFrom(key);
+        value = (no === null ? null : pullRequestFromBoard(no, lanes, queue)) ?? notFound(key);
+        break;
+      }
+      default:
+        value = runFromBoard(key, lanes) ?? fromBoard(key, lanes, queue) ?? notFound(key);
+    }
+    this.whatIsCache.set(key, { at: now, value });
+    return value;
   }
 
   private journalResponse(query: { since?: number; run?: string; limit?: number }): JournalResponse {

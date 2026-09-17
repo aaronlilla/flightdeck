@@ -22,7 +22,8 @@ import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
-  INHERITED, Worker, workerEnv, verificationCommands, resolveVerificationCommands, type FakeTurn,
+  INHERITED, NUDGE_LIMIT, NUDGE_REASON, WAIT_NUDGE_LIMIT, Worker, workerEnv,
+  verificationCommands, resolveVerificationCommands, type FakeTurn,
 } from '../../src/forge/worker.js';
 import { Journal, replay } from '../../src/forge/journal.js';
 import { Inbox } from '../../src/forge/inbox.js';
@@ -1190,6 +1191,19 @@ describe('I14: a segment that ends with no done, ceiling, park or kill gets one 
     expect(finished?.['verdict']).not.toBe('done');
   });
 
+  it('an uncapped session that stops after its nudges returns stopped, never exhausted', async () => {
+    // 2026-09-14: BBZ-303, 305, 307, 308 and 343 ran with no turn cap and were each
+    // reported "exhausted N turns" after `run.finished stopped`.
+    const worker = makeWorker([[{ text: 'idle', context: 100 }]], { maxContext: 60_000 });
+    const result = await worker.run() as unknown as { verdict: string; nudges: number };
+
+    expect(result.verdict).toBe('stopped');
+    expect(result.nudges).toBe(NUDGE_LIMIT);
+    const state = replay(journalPath);
+    const finished = state.events.find((event) => event.event === 'run.finished' && event.run === 'alpha');
+    expect(finished?.['nudges']).toBe(NUDGE_LIMIT);
+  });
+
   it('sends the nudge on the open session, never a fresh one', async () => {
     const worker = makeWorker([[{ text: 'idle', context: 100 }]], { maxContext: 60_000 });
     await worker.run();
@@ -1243,5 +1257,141 @@ describe('I14: a segment that ends with no done, ceiling, park or kill gets one 
     const state = replay(journalPath);
     const nudges = state.events.filter((event) => event.event === 'run.nudged' && event.run === 'alpha');
     expect(nudges[0]?.['reason']).toContain('Carries an em dash');
+  });
+
+  it('does not quote a refusal the worker already moved past with a later tool call', async () => {
+    // 2026-09-15: a refused call no longer ends the turn, so a denial can sit behind calls
+    // that went through. Quoting it then blames something the model already worked around.
+    const engine = {
+      started: [] as unknown[],
+      sent: [] as string[],
+      async run(config: { run: string }) {
+        this.started.push(config);
+        const journal = new Journal(journalPath);
+        journal.append({ event: 'tool.start', run: config.run, actor: 'worker', tool: 'Bash' });
+        journal.append({
+          event: 'rule.denied', run: config.run, actor: 'runner', tool: 'Bash',
+          rule: 'gitflow', reason: 'push to a controlled branch', sink: 'bash', command: 'git push origin main',
+        });
+        journal.append({ event: 'tool.start', run: config.run, actor: 'worker', tool: 'Bash' });
+        journal.close();
+        return {
+          sessionId: 'session-1', turns: [{ text: 'pushed the feature branch', context: 10 }],
+          send: async (prompt: string) => {
+            this.sent.push(prompt);
+            return [{ text: 'still here', context: 10 }];
+          },
+        };
+      },
+    };
+    const worker = new Worker({
+      run: 'alpha', brief: '# Goal\n\nDo the thing.\n', briefPath: join(dir, 'brief.md'),
+      cwd: dir, journalPath, engine: engine as never, maxContext: 60_000,
+    } as never) as unknown as { run: () => Promise<unknown> };
+
+    await worker.run();
+
+    expect(engine.sent.length).toBeGreaterThan(0);
+    expect(engine.sent[0]).not.toContain('push to a controlled branch');
+  });
+
+  it('a turn that ends while polling its own background task is a wait, not a stop: more nudges, never told to block', async () => {
+    // Aaron, 2026-09-14: the BBZ-303 run was mid-task, polled its own background job with
+    // TaskOutput, ended the turn, got two nudges and was finished `stopped`.
+    const engine = {
+      started: [] as unknown[],
+      sent: [] as string[],
+      async run(config: { run: string }) {
+        this.started.push(config);
+        const journal = new Journal(journalPath);
+        journal.append({ event: 'tool.start', run: config.run, actor: 'worker', tool: 'TaskOutput' });
+        journal.close();
+        return {
+          sessionId: 'session-1', turns: [{ text: 'waiting on the test run', context: 10 }],
+          send: async (prompt: string) => {
+            this.sent.push(prompt);
+            return [{ text: 'still waiting', context: 10 }];
+          },
+        };
+      },
+    };
+    const worker = new Worker({
+      run: 'alpha', brief: '# Goal\n\nDo the thing.\n', briefPath: join(dir, 'brief.md'),
+      cwd: dir, journalPath, engine: engine as never, maxContext: 60_000,
+    } as never) as unknown as { run: () => Promise<unknown> };
+
+    await worker.run();
+
+    expect(WAIT_NUDGE_LIMIT).toBeGreaterThan(NUDGE_LIMIT);
+    expect(engine.sent).toHaveLength(WAIT_NUDGE_LIMIT);
+    expect(engine.sent[0]).toMatch(/still running/);
+    expect(engine.sent[0]).not.toMatch(/block: true/);
+  });
+
+  it('the plain nudge never tells a worker to block on TaskOutput, which the liveness hook refuses', () => {
+    expect(NUDGE_REASON).not.toMatch(/block: true/);
+  });
+
+  it('BBZ-307, 2026-09-14: a worker waiting on its own background task is waited on, not nudged to a stop', async () => {
+    // Built from a real BBZ-307 transcript (lines 109-146): the verify chain went to the
+    // background; `TaskOutput block: true` came back "LIVENESS. A blocking TaskOutput waits
+    // on a timer ..."; the worker scheduled a wakeup and ended its turn to wait for the
+    // completion notification. The runner spent both ordinary nudges (15:20:02, 15:20:37)
+    // and journaled `run.finished stopped` at 15:21:19 with the task still running.
+    const segment = (journal: Journal, run: string) => {
+      journal.append({ event: 'tool.start', run, actor: 'worker', tool: 'TaskOutput' });
+      journal.append({ event: 'tool.end', run, actor: 'worker', tool: 'TaskOutput', isError: true });
+      journal.append({ event: 'tool.start', run, actor: 'worker', tool: 'TaskOutput' });
+      journal.append({ event: 'tool.end', run, actor: 'worker', tool: 'TaskOutput', isError: false });
+      journal.append({ event: 'tool.start', run, actor: 'worker', tool: 'ScheduleWakeup' });
+      journal.append({ event: 'tool.end', run, actor: 'worker', tool: 'ScheduleWakeup', isError: false });
+    };
+    const engine = {
+      started: [] as unknown[],
+      sent: [] as string[],
+      waited: 0,
+      async run(config: { run: string }) {
+        this.started.push(config);
+        const journal = new Journal(journalPath);
+        journal.append({ event: 'tool.start', run: config.run, actor: 'worker', tool: 'Bash', cls: 'script' });
+        journal.append({ event: 'tool.end', run: config.run, actor: 'worker', tool: 'Bash', isError: false });
+        journal.append({ event: 'task.backgrounded', run: config.run, actor: 'worker', taskId: 'bgb2ycjqq' });
+        segment(journal, config.run);
+        journal.close();
+        const engineRef = this;
+        return {
+          sessionId: '119ee052-6c9b-408f-a633-5e74306dea97',
+          turns: [{
+            text: 'Still running verify (tsc phase done, eslint/jest pending). Will resume automatically on completion notification.',
+            context: 90_000,
+          }],
+          send: async (prompt: string) => {
+            engineRef.sent.push(prompt);
+            const again = new Journal(journalPath);
+            segment(again, config.run);
+            again.close();
+            return [{ text: 'The background-task status tool itself rejects blocking calls.', context: 91_000 }];
+          },
+          // The task's own completion notification starts the next turn in the same session.
+          awaitTurn: async () => {
+            engineRef.waited += 1;
+            return [{ text: 'verify passed; draft PR opened', context: 95_000, done: true }];
+          },
+        };
+      },
+    };
+    const worker = new Worker({
+      run: 'queue-BBZ-307-Q-3b7bf3c4', brief: '# Goal\n\nDo the thing.\n', briefPath: join(dir, 'brief.md'),
+      cwd: dir, journalPath, engine: engine as never, maxContext: 150_000,
+    } as never) as unknown as { run: () => Promise<{ verdict: string }> };
+
+    const result = await worker.run();
+
+    const state = replay(journalPath);
+    const finished = state.events.filter((event) => event.event === 'run.finished');
+    expect(finished.map((event) => event['verdict'])).not.toContain('stopped');
+    expect(engine.waited).toBe(1);
+    expect(engine.sent).toHaveLength(0);
+    expect(result.verdict).not.toBe('exhausted');
   });
 });

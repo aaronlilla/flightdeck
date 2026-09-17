@@ -358,6 +358,37 @@ const FILE_TOOL_PATHS: Record<string, readonly string[]> = {
  */
 const PATH_FIELDS = ['file_path', 'notebook_path', 'path'] as const;
 
+/** Tools that only READ. Anything that WRITES is absent here on purpose. */
+const READ_ONLY_TOOLS = new Set(['Read', 'Grep', 'Glob', 'LS', 'NotebookRead']);
+
+/**
+ * The out-of-worktree paths a worker may READ: its own park record and run folder, its
+ * own saved tool output under an account config, and skill references.
+ *
+ * Deliberately a narrow allowlist rather than "defer reads to the other rules" -- that
+ * was tried and measured, and it let `Read ~/.aws/credentials` through. Anything not
+ * named here is still refused, so a new harness path has to be added on purpose.
+ */
+export function isRunOwnedReadPath(rawPath: string, home: string | undefined): boolean {
+  if (!home) return false;
+  const norm = (value: string) => value.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  const target = norm(rawPath);
+  const base = norm(home);
+  // A user's own scratch space, recognised by shape: Windows hands the harness an 8.3
+  // short name (`C:/Users/JOHNSM~1`) for a home containing a space, which never prefix-
+  // matches the long form, so keying this off `home` would deny a plain temp file.
+  if (/^[a-z]:\/users\/[^/]+\/appdata\/local\/temp\//.test(target)) return true;
+  if (!target.startsWith(`${base}/`)) return false;
+  const rest = target.slice(base.length + 1);
+  return rest.startsWith('.forge/runs/')
+    || rest.startsWith('.claude/skills/')
+    // Its own saved tool output. Account configs live under `.forge/accounts/`.
+    || /^\.forge\/accounts\/(?:[^/]+\/)*projects\/[^/]+\/[^/]+\/tool-results\//.test(rest)
+    // A plain file sitting in home (`.gitconfig`). One segment only, so this never
+    // reaches `.claude/...` or `.forge/...`, which the harness rules still police.
+    || !rest.includes('/');
+}
+
 /**
  * True when a file tool's target lies inside the worktree it is allowed to touch.
  *
@@ -478,6 +509,9 @@ export function needsRefWrite(command: string): boolean {
 export interface ShellContainmentOptions {
   /** The worktree the agent is working in: the only host path the command may reach. */
   cwd: string;
+  /** The harness home. Only used to recognise the run-owned paths a worker may READ
+   *  (`isRunOwnedReadPath`); omitted means none of them are allowed. */
+  home?: string;
   /** Defaults to `readSandboxConfig()`. Injected so a specimen needs no runtime. */
   config?: SandboxConfig;
   /**
@@ -544,6 +578,12 @@ export function createShellContainmentGuard(options: ShellContainmentOptions): G
         const target = call.input?.[field];
         if (typeof target !== 'string' || !target.trim()) continue;
         if (isPathInsideWorktree(target, options.cwd)) continue;
+        // A worker legitimately READS four things that do not live in its worktree: its
+        // own park file, its own saved tool output, a skill reference, and its own run
+        // folder. Measured, not assumed: deferring all reads to the harness-path rules
+        // instead let `Read ~/.aws/credentials` through, so the exemption is by PATH and
+        // read-only. A WRITE outside the worktree has no legitimate form and stays denied.
+        if (READ_ONLY_TOOLS.has(call.toolName) && isRunOwnedReadPath(target, options.home)) continue;
         return {
           kind: 'deny',
           reason: `refusing ${call.toolName} outside the ticket worktree: ${target}. `

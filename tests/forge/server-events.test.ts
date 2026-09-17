@@ -73,6 +73,9 @@ const SAMPLES: Sample[] = [
   { path: '/queue/ghost/promote', body: { version: '1.0.0', message: 'm' }, slices: ['queue'] },
   { path: '/blockers/ghost/resolve', slices: ['blockers'] },
   { path: '/blockers/ghost/check', slices: ['blockers'] },
+  { path: '/sync/queue', slices: ['sync'] },
+  { path: '/watcher/on', body: { project: 'BBZ' }, slices: ['sync'] },
+  { path: '/watcher/off', slices: ['sync'] },
 ];
 
 const idleActuator: Actuator = {
@@ -89,6 +92,13 @@ let published: Record<string, unknown>[];
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), 'forge-server-events-'));
   process.env['FORGE_HOME'] = dir;
+  // R-68: `/watcher/on` builds a real `JiraWatcher` on a bare specimen; with no Jira
+  // credentials it answers "no Jira credentials" from its own poll rather than ever
+  // calling `fetch`. Cleared here so a real FORGE_JIRA_* set in the ambient shell (this
+  // machine's console token) never lets this test reach the network.
+  delete process.env['FORGE_JIRA_SITE'];
+  delete process.env['FORGE_JIRA_EMAIL'];
+  delete process.env['FORGE_JIRA_TOKEN'];
   const journal = new Journal(join(dir, 'fleet.jsonl'));
   journal.close();
   // `implement` is the class the Conductor reasons on (`CONDUCTOR_CLASS`), and a class
@@ -148,6 +158,10 @@ describe('every console write publishes a slice event', () => {
     expect(named, `${sample.path} answered ${status} and published ${JSON.stringify(published.slice(before))}`)
       .toEqual(expect.arrayContaining(sample.slices));
     for (const event of slices) {
+      // A running sync scope emits its own `sync` slice per stage transition (live
+      // progress); those carry a different reason and are not the route-completion
+      // publish this test guards.
+      if (event.reason === 'a sync stage advanced') continue;
       expect(event.reason).toMatch(/answered \d{3}$/);
       expect(typeof event.at).toBe('number');
     }

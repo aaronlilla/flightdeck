@@ -125,6 +125,7 @@ function classifyClaudeLine(line: string): ProcessKind {
  */
 export function watchedProcesses(
   probe: ProcessProbe = probeProcessList(),
+  ownedPids?: ReadonlySet<number>,
 ): FleetProcess[] | { ok: false; reason: string } {
   if (!probe.ok) return { ok: false, reason: probe.reason };
   const lines = probe.lines;
@@ -154,6 +155,15 @@ export function watchedProcesses(
         return { pid, isLogin: true, kind, ...(credentialsMtime !== undefined ? { credentialsMtime } : {}) };
       }
       if (kind === 'worker') {
+        // A worker-shaped command line is any SDK-spawned claude on this machine --
+        // other sessions' subagents included. With an owned-pid set (the registry's
+        // rows), a pid the fleet never launched gets NO staleness marker: stamping the
+        // fleet sessions dir's global mtime onto foreign pids made every one of them
+        // trip `stale-session` on every tick (live escape 2026-09-14). Without a set,
+        // behavior is unchanged.
+        if (ownedPids && !ownedPids.has(pid)) {
+          return { pid, isLogin: false, kind, foreign: true };
+        }
         return {
           pid, isLogin: false, kind,
           ...(latestSessionMtime !== undefined ? { sessionFileMtime: latestSessionMtime } : {}),

@@ -28,9 +28,15 @@ import { evaluateAction } from '../rules/index.js';
 import { renderNotes } from '../council/renderNotes.js';
 import { terminalStateFor, type RepoKind } from './handoff.js';
 import { parseAfterLines, repoFromBrief, roadmapFromBrief } from './repoRoute.js';
+import { noCiVerdict } from './noCiGate.js';
 import type { QueueStore } from './queueStore.js';
 import { workspaceRoot } from '../paths.js';
 import { roadmapIdOpen } from '../roadmap.js';
+import { renderShipPrediction, shipPredictionFor } from './shipPrediction.js';
+import { parkReasonFor } from './parkReason.js';
+import { parkRecoverability, PARK_RECOVERY_CAP, type ParkRecoverability, type ParkRecheck } from '../../shared/parkRecoverability.js';
+export { parkRecoverability, PARK_RECOVERY_CAP };
+export type { ParkRecoverability, ParkRecheck };
 
 /**
  * A.1: `ChainCouncilResult` (`chain.ts`) carries no findings text, only a verdict and an
@@ -54,6 +60,34 @@ export const QUEUE_IN_FLIGHT_STATES: readonly QueueItemState[] = ['planning', 'r
  *  (a hung runner, a workflow nobody canceled) from holding an item forever, not to bound
  *  ordinary CI time. */
 export const PENDING_CHECKS_POLL_CAP = 20;
+
+/** Item 1 (2026-09-11): how many times the tick may HAND ONE ITEM BACK to the worker
+ *  before leaving it to a person for good. An item that parks, recovers and parks again
+ *  three times is not having a bad minute; something about it needs reading.
+ *
+ *  Counting successful recoveries only, never "not yet" readings: the tick runs every
+ *  `FORGE_QUEUE_POLL_S` seconds (default 15), so a budget spent on holds would be 45
+ *  seconds of wall clock, and a worker outliving its own retry click by a minute would
+ *  lose that retry for good -- the opposite of what item 2 promises. Holds are unbounded
+ *  and cost one journal row per DISTINCT reading instead. */
+
+/** How long the recovery pass waits before asking GitHub about one item's checks again,
+ *  and how many times it may ask at all.
+ *
+ *  Re-reading checks is a network call against a rate limit every session on this machine
+ *  shares. Holds are unbounded by design (item 2 needs an item to keep its retry however
+ *  long the worker outlives the click), so without these two the tick would spend a call
+ *  per parked item every 15 seconds forever -- and would reinstate exactly the endless
+ *  polling `PENDING_CHECKS_POLL_CAP` exists to stop. Reading the pid of a local process
+ *  costs nothing and is deliberately left unbounded. */
+export const PARK_CHECKS_RECHECK_MS = 5 * 60_000;
+export const PARK_CHECKS_RECHECK_CAP = 20;
+
+/** What re-reading would have to say before a parked item may move again. `checks` means
+ *  the park is about a pull request's checks; `run` means it is about a worker process
+ *  that may or may not still be alive. */
+
+
 
 // ---------------------------------------------------------------------------------------
 // Adding work
@@ -93,6 +127,41 @@ export interface QueuePlannedBrief {
   briefPath: string;
 }
 
+/** R-76: the planning hop is an interview before it is a brief, so it has two outcomes
+ *  besides a planned brief. `waiting` means the item asked a person something and is
+ *  holding at `planning` until it is answered -- one item held, never the queue.
+ *  `backend` means the ticket belongs to the backend and no worker should ever launch on
+ *  it. A planner that knows about neither still satisfies this union unchanged. */
+export type QueuePlanWaiting = { waiting: 'interview'; asks: number };
+export type QueuePlanBackend = { backend: true; ticket: string; ask: string };
+/** `inFlight` means the ticket already has a pull request open or merged for it, found
+ *  in its own comments or remote links rather than in its status field -- which is the
+ *  field that lied. No worker launches on it: the work exists. */
+export type QueuePlanInFlight = { inFlight: true; ticket: string; prUrl: string; reason: string };
+export type QueuePlanOutcome = QueuePlannedBrief | QueuePlanWaiting | QueuePlanBackend | QueuePlanInFlight;
+
+/** The reason an item held on an interview answer carries. One string, read in two
+ *  places (the hop that writes it and the tick that excludes it from the width), so it
+ *  is named rather than spelled twice. */
+export const INTERVIEW_WAIT_REASON = 'interview';
+
+/** True while this item is parked on a person's answer rather than doing work. */
+export function isWaitingOnInterview(item: QueueItem): boolean {
+  return item.state === 'planning' && item.reason === INTERVIEW_WAIT_REASON;
+}
+
+export function isPlanWaiting(outcome: QueuePlanOutcome): outcome is QueuePlanWaiting {
+  return 'waiting' in outcome;
+}
+
+export function isPlanBackend(outcome: QueuePlanOutcome): outcome is QueuePlanBackend {
+  return 'backend' in outcome;
+}
+
+export function isPlanInFlight(outcome: QueuePlanOutcome): outcome is QueuePlanInFlight {
+  return 'inFlight' in outcome;
+}
+
 export interface QueuePlanner {
   /** `itemId` is this queue item's own id (`Q-xxxxxxxx`), folded into the brief file's
    *  name alongside the ticket. A re-queued ticket, a fresh item added after an earlier
@@ -100,7 +169,7 @@ export interface QueuePlanner {
    *  Without `itemId`, `runOutcome` (`chain-wire.ts`) folds the new run onto the old
    *  one's terminal journal state, as happened at 13:35 on 2026-09-08: BBZ-233's new
    *  item Q-2181b071 read the removed item Q-0fff83b0's `parked` verdict as its own. */
-  planTicket(ticket: string, itemId: string): Promise<QueuePlannedBrief>;
+  planTicket(ticket: string, itemId: string): Promise<QueuePlanOutcome>;
   /** A pasted brief carries no ticket of its own; the planner mints one (or the caller
    *  passes the queue item's own id) so the rest of the pipeline has something to name
    *  the branch and the run after. */
@@ -113,8 +182,10 @@ export interface QueuePlanner {
   planHotfix?(text: string): Promise<QueuePlannedBrief>;
 }
 
-export function addTicketItem(store: QueueStore, ticket: string, now: number = Date.now()): QueueItem {
-  const item = blankItem(newItemId(), 'ticket', ticket, ticket, now);
+export function addTicketItem(
+  store: QueueStore, ticket: string, now: number = Date.now(), options?: { noMerge?: boolean },
+): QueueItem {
+  const item = { ...blankItem(newItemId(), 'ticket', ticket, ticket, now), ...(options?.noMerge ? { noMerge: true } : {}) };
   store.append({ ...item, at: now });
   return item;
 }
@@ -221,7 +292,16 @@ export function removeItem(store: QueueStore, id: string, now: number = Date.now
  *  a second real Codex subprocess, for the one item. No `runKey` yet means the item never
  *  got past planning or launch, and `queued` is correct: there is nothing in flight for a
  *  concurrent tick to collide with. */
-export function retryItem(store: QueueStore, id: string, now: number = Date.now()): QueueItem | undefined {
+export function retryItem(
+  store: QueueStore, id: string, now: number = Date.now(),
+  /** Set only by a route a person clicked. `retryItem` is the board sweep's path too
+   *  (`rounds.ts` `applyRounds`, `relaunchItem`, `blockers-restart.ts`), and handing the
+   *  recovery budgets back on an automatic retry makes every cap here unreachable: retry,
+   *  spend twenty check reads, park, retry, twenty more, for as long as the ticker runs.
+   *  A person asking again is a new decision and gets a fresh budget; a machine asking
+   *  again is the same decision and does not. */
+  opts: { askedByAPerson?: boolean } = {},
+): QueueItem | undefined {
   const item = store.get(id);
   if (!item || (item.state !== 'parked' && item.state !== 'failed')) return undefined;
   const state: QueueItemState = item.runKey ? 'running' : 'queued';
@@ -229,7 +309,23 @@ export function retryItem(store: QueueStore, id: string, now: number = Date.now(
   // tell a retry of a run that finished with no PR apart from the ordinary first read of
   // that same status, so the retry can clear the stale runKey and launch again instead of
   // reporting the same old verdict back to a person a second time.
-  const patch: Partial<QueueItem> = { state, reason: null, updatedAt: now, ...(item.runKey ? { retriedAt: now } : {}) };
+  // A person's retry gives the item its whole recovery budget back. Without this the
+  // read cap is a life sentence: the item parks on checks again and the recovery pass
+  // declines on the first tick, silently, because the decline row is suppressed for a
+  // reason it has already written once.
+  const patch: Partial<QueueItem> = {
+    state, reason: null, updatedAt: now,
+    // Always cleared: these three answer "have I already written this row", not "how much
+    // budget is left". Carrying them across a retry suppresses the next row about the next
+    // park, which is the silent branch `recoverParkedItems` promises not to have.
+    recoveryHeldOn: null, recoveryDeclinedFor: null, recoveryWidthHeld: false,
+    // Cleared only for a person. These three are budgets, and `retryItem` is the board
+    // sweep's path as well as a button: handing them back on every automatic retry makes
+    // every cap here unreachable. `pendingGatePolls` belongs with them -- left at its cap,
+    // the retry re-enters the gate, spends a real review round, and parks on the first pass.
+    ...(opts.askedByAPerson ? { recoveryAttempts: 0, checksReads: 0, checksReadAt: 0, pendingGatePolls: 0 } : {}),
+    ...(item.runKey ? { retriedAt: now } : {}),
+  };
   store.append({ id, at: now, ...patch });
   return { ...item, ...patch };
 }
@@ -257,8 +353,18 @@ export interface RebaseOutcome {
 }
 
 export interface QueueRuntimeDeps {
+  /** Closes a pull request this queue merged. The same closer `QueueMergeDeps` carries;
+   *  named here too so the tick can retry one whose close failed at merge time. Absent
+   *  means no retry runs at all, which is the honest answer for a console wired with no
+   *  GitHub writer. */
+  closePr?: (input: { repo: string; pr: number; comment: string }) => Promise<{ ok: boolean; reason?: string } | void>;
   planner: QueuePlanner;
   launcher: ChainLauncher;
+  /** Clears a run key's stored stop reason (the lane's `needs_aaron` and its park record),
+   *  the same reset `forge clear` does. Called before a retry relaunches the same run key:
+   *  on 2026-09-14 every relaunch was refused on the reason the first park had written.
+   *  Unset in a specimen with nothing on disk to clear. */
+  clearRunBlock?: (runKey: string) => void;
   gh: ChainGh;
   /** Brings the branch up to date with its base before the gate reads it, and answers
    *  whether that succeeded. A branch that has fallen behind while the work ran is the
@@ -266,6 +372,13 @@ export interface QueueRuntimeDeps {
    *  conflict, and the item parks for a person rather than anything being forced. */
   rebaseOnBase?: (input: { worktreePath: string; base: string }) => Promise<RebaseOutcome>;
   council: QueueCouncilFn;
+  /** Whether a repository runs any check on a pull request. Absent means the question is
+   *  never asked and a pending gate waits exactly as it always did. */
+  repoRunsChecks?: (repo: string) => Promise<boolean>;
+  /** Runs a repository's own verify against the working tree an item holds, for a
+   *  repository that runs no checks of its own. Absent means there is nothing to run in
+   *  place of them, and such an item parks saying so. */
+  runRepoVerify?: (input: { repo: string; worktreePath: string }) => Promise<{ ok: boolean; output: string }>;
   /** A.1: relaunches the worker on the item's own worktree with the round's findings as
    *  its brief -- one fix round, never a from-scratch replan. Absent means this
    *  environment never wires a fix round; a FIX FIRST then always parks, the behaviour
@@ -296,6 +409,23 @@ export interface QueueRuntimeDeps {
   jiraDone?: (input: {
     item: QueueItem; pr: { no: number; url: string }; mergedAt: number;
   }) => Promise<void>;
+  /** Item 16, 2026-09-12: marks the pull request ready at review and writes the ship
+   *  prediction into its body. The pull request used to be left a draft with nothing
+   *  said about whether merging publishes an update or triggers a rebuild, though the
+   *  decide job had already resolved one. Absent means this environment never wires it,
+   *  and the pull request stays a draft exactly as before. A refusal is journalled
+   *  (`queue.pr-ready-failed`) rather than swallowed: a pull request nobody can merge
+   *  because it is still a draft is the stall this item exists to remove. */
+  /** Item 16, 2026-09-12: whether this repo builds a mobile app, so a ship prediction
+   *  means anything for it. Evidence, not configuration: `repoKindFor` answers
+   *  `frontend` for anything not named as backend, and the declared kind is unset in
+   *  the common case, so reading either one had the prediction land on every Node repo
+   *  or on none at all. Absent means the caller cannot tell, and the skip is journaled
+   *  rather than silent. */
+  mobileRepo?: (repo: string) => boolean;
+  readyPrWithPrediction?: (input: {
+    item: QueueItem; pr: { no: number; url: string }; prediction: string;
+  }) => Promise<{ readied: boolean; predictionError?: string } | void>;
   /** A.8/A.9: the PR's own changed files and line counts. Fetched once per item, right
    *  after the PR is found and before the council reads it, so A.9's overlap check runs
    *  against real data and A.8's figures at `review` need no second fetch. Absent means
@@ -307,6 +437,16 @@ export interface QueueRuntimeDeps {
    *  hand (the CLI gate, GitHub itself) lands on `done` on the next sweep instead of
    *  sitting in review with a Merge button forever (seen live 2026-09-07). */
   prMerged?: (repo: string, pr: number) => Promise<boolean>;
+  /** Item 1 (2026-09-11): the PR's current check conclusion, re-read when deciding
+   *  whether a park about checks has cleared. Undefined answers, and an absent
+   *  dependency, both read as "not green" -- this never guesses a check passed. */
+  checksConclusion?: (repo: string, pr: number) => Promise<string | undefined>;
+  /** Items 1 and 2 (2026-09-11): the live pid behind a run key, or undefined when no
+   *  process is alive for it. The registry's own liveness check (`registry.ts`
+   *  `processAlive`), handed in rather than read here so this file still spawns nothing.
+   *  Absent means this environment cannot tell, and the relaunch guard stands down --
+   *  the behaviour every caller had before the guard existed. */
+  runPid?: (runKey: string) => number | undefined;
   /** Reused from `chain.ts` unchanged. Whether `advanceItem` passes `merge: true` is
    *  this file's own decision (see `mergeAllowed` below), not whatever the caller wires
    *  this to. */
@@ -394,6 +534,11 @@ function writeTransition(
   item: QueueItem, patch: Partial<QueueItem>, deps: QueueRuntimeDeps, event: string,
   extra: Record<string, unknown> = {},
 ): QueueItem {
+  // R-101: a hop works from the copy it was handed. When the item was closed while that
+  // hop ran (a Jira cancel the watcher recorded mid-plan), writing its stale patch would
+  // put a cancelled ticket back to work. Closed stays closed; the hop's result is dropped.
+  const stored = deps.store.get(item.id);
+  if (stored?.state === 'done' && patch.state !== 'done') return stored;
   const written = deps.append({ event, actor: 'queue', itemId: item.id, ...extra });
   const now = deps.clock();
   const journalIds = written.id ? [...item.journalIds, written.id] : item.journalIds;
@@ -415,13 +560,42 @@ async function relaunchOnRetryOrPark(
   item: QueueItem, deps: QueueRuntimeDeps, reason: string, extra: Record<string, unknown>,
 ): Promise<QueueItem> {
   if (item.retriedAt) {
+    // Item 2 (2026-09-11): the relaunch below clears `runKey` and provisions a fresh run
+    // on the SAME worktree. Doing that while the first worker's process is still alive
+    // puts two agents on one working tree; it happened live on 2026-09-11 and cost eight
+    // minutes of a worker's uncommitted work. The retry is not thrown away -- the marker
+    // stays set, so the next tick tries again once the process is gone.
+    const pid = item.runKey ? deps.runPid?.(item.runKey) : undefined;
+    if (pid !== undefined) {
+      return writeTransition(
+        item, { state: 'parked', reason: `retry refused: ${item.runKey} is still running as pid ${pid}` },
+        deps, 'queue.relaunch-refused', { runKey: item.runKey, pid },
+      );
+    }
+    if (item.runKey) deps.clearRunBlock?.(item.runKey);
     const relaunching = writeTransition(
       item, { runKey: null, retriedAt: null }, deps, 'queue.relaunch-on-retry',
       { previousRunKey: item.runKey, parkReason: reason },
     );
     return advanceItem(relaunching, deps);
   }
+  // 2026-09-14 (BBZ-303, Q-842f5b17): a run's status can read finished while its worker
+  // process keeps working. The item parked ten seconds after a relaunch and the worker ran
+  // five more minutes, so the card offered Retry on a live run -- a second worker on the
+  // same worktree one click away. A live pid holds the item where it is; the next tick reads
+  // again and parks once the process is gone. A run that has ended parks exactly as before.
+  const livePid = item.runKey ? deps.runPid?.(item.runKey) : undefined;
+  if (livePid !== undefined) {
+    const held = heldOnLiveWorker(item.runKey!, livePid);
+    if (item.reason === held) return item;
+    return writeTransition(item, { reason: held }, deps, 'queue.park-held', { ...extra, pid: livePid, parkReason: reason });
+  }
   return writeTransition(item, { state: 'parked', reason }, deps, 'queue.parked', extra);
+}
+
+/** The reason a park held on a live worker carries, and the gate hop's test for it. */
+function heldOnLiveWorker(runKey: string, pid: number): string {
+  return `run ${runKey} is still running as pid ${pid}`;
 }
 
 /** Whole-slug match only: `after: BBZ-20` names BBZ-20, never BBZ-205. A slug matches an
@@ -496,6 +670,11 @@ async function unresolvedAfterReason(
 export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Promise<QueueItem> {
   let item = itemIn;
 
+  // R-101: the caller's copy can be older than the store. An item closed since that copy
+  // was read (a Jira cancel mid-plan) never provisions, launches or plans again.
+  const latest = deps.store.get(item.id);
+  if (latest?.state === 'done' && item.state !== 'done') return latest;
+
   // 2026-09-08: a `goal` item skips planning, provisioning, the council and the gate
   // entirely -- a goal brief already claimed its own worktree with `/workon` and
   // carries its own guardrails and acceptance criteria as its `/goal` condition, so
@@ -517,6 +696,9 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
         // to reuse the previous run's key and directory, so the new launch's own
         // `waitForLaunchToRegister` read the OLD run as already registered.
         const runKey = `${runKeyForBrief(goalPath)}-${item.id}`;
+        // A run key can carry a stop reason an earlier run under it left behind; the
+        // launcher refuses on it before any session starts (BBZ-304, 2026-09-14).
+        deps.clearRunBlock?.(runKey);
         const launched = await deps.launchGoal({
           goalPath, block: item.goalBlock ?? '', cwd: workspaceRoot(), runKey,
         });
@@ -543,7 +725,10 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
     // and it always failed. An operator's retry (`item.retriedAt`) still clears `runKey`
     // and relaunches on the same goal path via `launchGoal`, the same way a retried brief
     // relaunches via `launcher.launch`.
-    return relaunchOnRetryOrPark(item, deps, status.verdict ?? 'unknown', { hop: 'run' });
+    // The verdict is one token, written for a switch. `parkReasonFor` turns it into the
+    // sentence a person reads: a card carrying only the word "stopped" is what the queue
+    // handed over on 2026-09-13 after telling somebody to go and read it.
+    return relaunchOnRetryOrPark(item, deps, parkReasonFor(status.verdict, 'run'), { hop: 'run', verdict: status.verdict ?? null });
   }
 
   if (!item.briefPath) {
@@ -555,7 +740,7 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
     if (item.state !== 'planning') {
       item = writeTransition(item, { state: 'planning', reason: null, after: [] }, deps, 'queue.planning');
     }
-    let planned: QueuePlannedBrief;
+    let planned: QueuePlanOutcome;
     try {
       planned = item.source === 'brief'
         ? await deps.planner.planBrief(item.input)
@@ -565,9 +750,45 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
     } catch (error) {
       return writeTransition(item, { state: 'failed', reason: tailOf(messageOf(error)) }, deps, 'queue.failed', { hop: 'plan' });
     }
-    if (planned.repo === 'unknown') {
+    // R-76: the interview asked somebody something. The item HOLDS at `planning` rather
+    // than parking -- `runQueueTick` advances only `planning`, `running` and `queued`, so
+    // a parked item would wait for an operator's Retry click even after the answer
+    // arrived. Every other item on this tick is untouched: one question holds one row.
+    // The `queue.waiting` row is written once, on the tick the reason first changes, so
+    // an item held for a day does not write a row a minute.
+    if (isPlanWaiting(planned)) {
+      const reason = INTERVIEW_WAIT_REASON;
+      if (item.reason === reason) return item;
+      return writeTransition(item, { reason }, deps, 'queue.waiting', { hop: 'plan', asks: planned.asks });
+    }
+    // R-76: the ticket is the backend's. `terminalStateFor('backend')` is the same
+    // governance boundary the gate hop already reads -- a backend ticket stops at a draft
+    // PR and pings its owner, never merges -- and reaching that conclusion at planning
+    // means no worker should launch on it at all. It parks with the interviewer's own
+    // sentence as its reason, which is correct here in a way it is not for a question: a
+    // backend ticket is waiting on a person outside this queue, not on an answer that
+    // wakes it.
+    if (isPlanBackend(planned)) {
+      const terminal = terminalStateFor('backend');
       return writeTransition(
-        item, { ticket: planned.ticket, briefPath: planned.briefPath, repo: planned.repo, state: 'parked', reason: 'unrouted' },
+        item, { ticket: planned.ticket, repo: 'backend', state: 'parked', reason: `backend: ${planned.ask}` },
+        deps, 'queue.parked', { hop: 'plan', route: 'backend', pings: terminal.pings },
+      );
+    }
+    // The ticket already carries a pull request. Parking rather than planning is the
+    // whole point: a status field that never moved when the work landed is what offered
+    // this ticket in the first place, and the reason line quotes the pull request so a
+    // person can see what is already there.
+    if (isPlanInFlight(planned)) {
+      return writeTransition(
+        item, { ticket: planned.ticket, state: 'parked', reason: planned.reason },
+        deps, 'queue.parked', { hop: 'plan', route: 'in-flight', pr: planned.prUrl },
+      );
+    }
+    const brief: QueuePlannedBrief = planned;
+    if (brief.repo === 'unknown') {
+      return writeTransition(
+        item, { ticket: brief.ticket, briefPath: brief.briefPath, repo: brief.repo, state: 'parked', reason: 'unrouted' },
         deps, 'queue.parked', { hop: 'plan' },
       );
     }
@@ -576,14 +797,21 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
     // `chain.ts`'s own planning hop (`runChainTick`) never launches in the same pass
     // that wrote `intake.planned`.
     return writeTransition(
-      item, { ticket: planned.ticket, briefPath: planned.briefPath, repo: planned.repo, state: 'running' },
-      deps, 'queue.planned', { repo: planned.repo },
+      // `reason: null` clears the interview's own "waiting on an answer" line the moment
+      // the item stops waiting -- the same staleness the after-gate `reason` above had to
+      // be taught to clear, and this hop is the only place it can happen, because an item
+      // held at `planning` never re-enters `planning` and so never hits that clear.
+      item, { ticket: brief.ticket, briefPath: brief.briefPath, repo: brief.repo, state: 'running', reason: null },
+      deps, 'queue.planned', { repo: brief.repo },
     );
   }
 
   if (!item.runKey) {
     let provisioned: ChainProvisionResult | undefined;
     try {
+      // The launcher derives this run's key from the brief path; a stop reason an earlier
+      // run under the same key left behind refuses the launch before any session starts.
+      if (item.briefPath) deps.clearRunBlock?.(runKeyForBrief(item.briefPath));
       provisioned = await deps.launcher.provision({ packetId: item.id, ticket: item.ticket!, repo: item.repo! });
       const launched = await deps.launcher.launch({
         packetId: item.id, ticket: item.ticket!, repo: item.repo!, briefPath: item.briefPath!,
@@ -616,6 +844,10 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
 
   const status = await deps.launcher.status(item.runKey);
   if (!status.finished) return item;
+  // A park already held on a live worker (`relaunchOnRetryOrPark`) waits on that process.
+  // Reading the PR again on every tick until it exits is a GitHub call per tick per item.
+  const heldPid = deps.runPid?.(item.runKey);
+  if (heldPid !== undefined && item.reason === heldOnLiveWorker(item.runKey, heldPid)) return item;
 
   // A run that ended `unverified` (its session finished without `forge_done`) may still
   // have pushed and opened its PR first -- seen live on 2026-09-07, where a successor
@@ -632,7 +864,7 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
     if (pr && status.verdict !== undefined) {
       deps.append({ event: 'queue.unverified-pr', actor: 'queue', itemId: item.id, pr: pr.number, url: pr.url, verdict: status.verdict });
     } else {
-      return relaunchOnRetryOrPark(item, deps, status.verdict ?? 'unknown', { hop: 'gate' });
+      return relaunchOnRetryOrPark(item, deps, parkReasonFor(status.verdict, 'gate'), { hop: 'gate', verdict: status.verdict ?? null });
     }
   }
   if (!pr) {
@@ -704,7 +936,26 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
     }
   }
 
-  const council = await deps.council({
+  // A repository with its Actions switched off reports an empty check rollup for ever, so
+  // an item there polled twenty times and parked saying the checks "never settled" -- a
+  // sentence about a wait that never happened. Aaron's decision, 2026-09-12: run that
+  // repository's own verify on the head and treat it as the check.
+  //
+  // Asked BEFORE the council, not after it: the council's own refusal on a non-green
+  // rollup is what has to be satisfied, and the review side reads the same switch
+  // (`cli.ts`'s council command), so the two agree on which repositories these are.
+  const noCi = await noCiVerdict(
+    { repo: item.repo ?? null, worktreePath: item.worktreePath ?? null },
+    { ...(deps.repoRunsChecks ? { repoRunsChecks: deps.repoRunsChecks } : {}),
+      ...(deps.runRepoVerify ? { runVerify: deps.runRepoVerify } : {}) },
+  );
+  if (noCi.kind === 'failed' || noCi.kind === 'cannot-check') {
+    return writeTransition(
+      item, { state: 'parked', reason: noCi.why }, deps, 'queue.parked', { hop: 'gate' },
+    );
+  }
+
+  let council = await deps.council({
     repo: item.repo!, pr: pr.number, forceCodex: true,
     ...(item.worktreePath ? { cwd: item.worktreePath } : {}),
     // `origin/<base>`, never the bare branch name: the local ref is whatever this
@@ -719,6 +970,14 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
   // a plain non-pass and park it the same way a real failure does): leaving `state`
   // untouched keeps the item in `QUEUE_IN_FLIGHT_STATES`, so the next tick calls the
   // council again instead of leaving it stuck.
+  if (noCi.kind === 'passed' && council.pending) {
+    // The checks this council is waiting on are never going to arrive, and this
+    // repository's own verify has already answered for them on this head. A council that
+    // read the pull request anyway (the review side skips the same refusal) carries a real
+    // verdict, which is what decides below -- this only stops the waiting.
+    council = { ...council, pending: false };
+    item = { ...item, pendingGatePolls: undefined };
+  }
   if (council.pending) {
     const polls = (item.pendingGatePolls ?? 0) + 1;
     if (polls >= PENDING_CHECKS_POLL_CAP) {
@@ -771,7 +1030,9 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
   // a human running `forge gate --merge`. Every other repo, including the controlled-code
   // management system, gets `merge: false` here exactly as before: unset `mergeAllowed`
   // reads as false, and so does a `mergeAllowed` that simply doesn't name this repo.
-  const merge = deps.mergeAllowed?.(item.repo!) ?? false;
+  // R-101: a held item (a hold label on its ticket) stops at its pull request whatever
+  // the allow-list says.
+  const merge = !item.noMerge && (deps.mergeAllowed?.(item.repo!) ?? false);
   const gateResult = await deps.gate({ repo: item.repo!, pr: pr.number, merge });
 
   // A.2: the council's own notes land on the PR before the item shows as `review`, so a
@@ -797,12 +1058,83 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
   // `if (repo === ...)`, so which repos are backend stays this environment's own
   // `repoKindFor` wiring, never a name baked into this file (agnostic check).
   let handoffAt = item.handoffAt;
-  if (deps.jiraHandoff && !handoffAt && item.ticket) {
+  if (deps.jiraHandoff && !handoffAt && item.ticket && !item.noMerge) {
     try {
       await deps.jiraHandoff({ item, pr: { no: pr.number, url: pr.url } });
       handoffAt = deps.clock();
     } catch {
       // Best effort, same discipline as the review comment and the backend ping above.
+    }
+  }
+
+  // Item 16, 2026-09-12: ready the pull request and say what merging is predicted to
+  // cost, per platform. Built from the item's own changed-files list, already fetched
+  // for the overlap check, so this costs no extra call. Unlike the courtesies above, a
+  // failure here is journalled: a pull request left a draft cannot be merged at all.
+  // Not for a backend item: `terminalStateFor('backend')` says it stops at
+  // draft-pr-open and the owner ping below assumes a draft, so readying it here would
+  // hand a backend owner a pull request the queue had already made mergeable (code
+  // review, 2026-09-12). The mobile prediction is meaningless on those repos anyway.
+  // Whether this repo builds a mobile app, read off the checkout rather than off
+  // configuration (code review, 2026-09-12, twice). `repoKindFor` means "not backend"
+  // and put an Android and iOS ship path on every Node repo; the declared kind is
+  // unset in the common case and turned the whole thing off instead. Neither failure
+  // said anything, so a skip is journaled now.
+  // Not once the gate has merged (code review, 2026-09-12). `gh pr ready` is then
+  // spent on a merged pull request, and a comment saying what MERGING will cost lands
+  // after the merge. Nor twice: a FIX FIRST round leaves the item `running` and the
+  // next tick re-enters this hop, and where `gh pr ready` is idempotent a comment is
+  // not -- two predictions, which can disagree, since the file list is re-fetched each
+  // pass. `predictionAt` is the mark that it has already been posted.
+  let readied = false;
+  const alreadyMerged = merge && gateResult.merged === true;
+  const alreadyPredicted = item.predictionAt !== undefined && item.predictionAt !== null;
+  const isMobile = deps.mobileRepo?.(item.repo!) ?? false;
+  let predictionAt = item.predictionAt;
+  if (deps.readyPrWithPrediction && item.repo && !alreadyPredicted) {
+    // Every branch that does not run says why. A silent skip is how a feature that
+    // never runs looks exactly like one that did, which is the fault the row exists to
+    // remove -- and the first version of this block skipped the row too on the
+    // auto-merge path, so the case most likely to hide was the one left uncovered.
+    // Readying a draft and predicting a ship path are two things, and they used to share
+    // one branch: a repository that builds no mobile app skipped BOTH, so its pull request
+    // stayed a draft nobody could merge. Measured 2026-09-12 on a ticket driven in through
+    // the console -- it reached review, the Merge button did nothing, and the row said
+    // "no mobile build found for this repo, so no ship path to predict".
+    //
+    // Nothing to ready is the one case that skips: the gate has already merged it.
+    const skip = alreadyMerged
+      ? 'the gate already merged this pull request, so there is nothing to ready and no merge to predict'
+      : null;
+    if (skip) {
+      deps.append({
+        event: 'queue.pr-ready-skipped', actor: 'queue', itemId: item.id, pr: pr.number, reason: skip,
+      });
+    } else {
+      // Empty for a repository with no mobile build: it is readied, and nothing is posted.
+      const prediction = isMobile ? renderShipPrediction(shipPredictionFor(item.changedFiles ?? [])) : '';
+      if (!isMobile) {
+        deps.append({
+          event: 'queue.pr-ready-skipped', actor: 'queue', itemId: item.id, pr: pr.number,
+          reason: 'no mobile build found for this repo, so it is readied with no ship path predicted',
+        });
+      }
+      try {
+        const outcome = await deps.readyPrWithPrediction({ item, pr: { no: pr.number, url: pr.url }, prediction });
+        readied = outcome?.readied === true;
+        predictionAt = deps.clock();
+        if (outcome?.predictionError) {
+          deps.append({
+            event: 'queue.pr-prediction-failed', actor: 'queue', itemId: item.id,
+            pr: pr.number, error: outcome.predictionError,
+          });
+        }
+      } catch (error) {
+        deps.append({
+          event: 'queue.pr-ready-failed', actor: 'queue', itemId: item.id,
+          pr: pr.number, error: messageOf(error),
+        });
+      }
     }
   }
 
@@ -855,6 +1187,7 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
           ...(prDel !== undefined ? { del: prDel } : {}),
         },
         ...(handoffAt ? { handoffAt } : {}),
+        ...(predictionAt ? { predictionAt } : {}),
         ...(council.attestationPath ? { attestationPath: council.attestationPath } : {}),
       },
       deps, 'queue.done', { hop: 'gate', ...(gateResult.mergeSha ? { mergeSha: gateResult.mergeSha } : {}) },
@@ -887,12 +1220,13 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
       // the board reads "checks/files not read yet" instead of a fabricated zero diff.
       state: 'review',
       pr: {
-        no: pr.number, url: pr.url, draft: true,
+        no: pr.number, url: pr.url, draft: !readied,
         ...(item.changedFiles ? { files: item.changedFiles.length } : {}),
         ...(prAdd !== undefined ? { add: prAdd } : {}),
         ...(prDel !== undefined ? { del: prDel } : {}),
       },
       ...(handoffAt ? { handoffAt } : {}),
+      ...(predictionAt ? { predictionAt } : {}),
       ...(council.attestationPath ? { attestationPath: council.attestationPath } : {}),
     },
     deps, 'queue.review', {},
@@ -925,14 +1259,180 @@ export function queueBusy(): boolean {
   return advancing.size > 0;
 }
 
+/**
+ * Item 1 (2026-09-11): one pass over the parked rows, re-reading whatever the park was
+ * about and deciding, per item, whether it may move again. Everything it does is
+ * journalled -- `queue.recovered` when an item is handed back to the worker,
+ * `queue.recovery-held` when the re-read says not yet, `queue.recovery-declined` once
+ * for a park no machine can clear. A recovery that leaves no row is how a pipeline lies
+ * to its operator, so there is no silent branch here.
+ *
+ * Bounded by `PARK_RECOVERY_CAP` attempts per item, counted on the item itself, so a
+ * park that never clears costs three rows and then stops rather than one row per tick
+ * for as long as the console runs.
+ */
+async function recoverParkedItems(deps: QueueRuntimeDeps, items: QueueItem[], slots: number): Promise<number> {
+  let recovered = 0;
+  for (const item of items) {
+    if (item.state !== 'parked') continue;
+    const verdict = parkRecoverability(item.reason);
+    const reason = item.reason ?? '';
+    if (!verdict.recoverable) {
+      // Once per REASON, not once per item and not once per tick: an item that parks on a
+      // second, different reason a machine cannot clear still has to say so.
+      if (item.recoveryDeclinedFor !== reason) {
+        writeTransition(item, { recoveryDeclinedFor: reason }, deps, 'queue.recovery-declined', { why: verdict.why, parkReason: item.reason });
+      }
+      continue;
+    }
+    const recoveries = item.recoveryAttempts ?? 0;
+    if (recoveries >= PARK_RECOVERY_CAP) {
+      // Never a silent stop. One row says the budget is gone and why, then nothing more.
+      const why = `recovered ${recoveries} times already and parked again; a person needs to read this one`;
+      if (item.recoveryDeclinedFor !== reason) {
+        writeTransition(item, { recoveryDeclinedFor: reason }, deps, 'queue.recovery-declined', { why, parkReason: item.reason });
+      }
+      continue;
+    }
+    // Item 1, finding 5: a recovery ends in a relaunched worker, so it spends a slot the
+    // same way a queued item does. Without this, ten parked rows whose runs are dead
+    // provision ten workers on one tick. Journalled once, like every other decision here:
+    // an item held back by the width is a decision, and skipping it in silence is the
+    // thing this function's own comment promises not to do.
+    // Only a `run` recovery ends in a relaunched worker; a `checks` recovery re-enters
+    // the gate hop and provisions nothing, so it neither needs a slot nor spends one.
+    // Charging it a slot starved the relaunches the width is actually there to bound.
+    const needsSlot = verdict.reRead === 'run';   // checks and overlap re-enter the gate hop and provision nothing
+    if (needsSlot && slots <= 0) {
+      // Its own marker, not `recoveryHeldOn`: overwriting the real reading with the width
+      // made a queue oscillating around its cap write a row on every flip, which is what
+      // the one-row-per-reading rule exists to stop.
+      if (!item.recoveryWidthHeld) {
+        writeTransition(
+          item, { recoveryWidthHeld: true }, deps, 'queue.recovery-held',
+          { reRead: verdict.reRead, found: 'no room at this width', parkReason: item.reason },
+        );
+      }
+      continue;
+    }
+
+    let found: string;
+    let clear = false;
+    let checksRead = false;
+    if (verdict.reRead === 'checks') {
+      const reads = item.checksReads ?? 0;
+      if (reads >= PARK_CHECKS_RECHECK_CAP) {
+        const why = `asked GitHub about these checks ${reads} times without them going green`;
+        if (item.recoveryDeclinedFor !== reason) {
+          writeTransition(item, { recoveryDeclinedFor: reason }, deps, 'queue.recovery-declined', { why, parkReason: item.reason });
+        }
+        continue;
+      }
+      // Silent on purpose, and the only silent branch here: nothing was re-read and
+      // nothing was decided, so there is no decision to journal. The window is what keeps
+      // this off the rate limit; a row per skipped tick would be four an hour per item
+      // saying "did not look yet".
+      // `0` means never read -- `JSON.stringify` drops an undefined value, so a reset
+      // writes 0 rather than removing the field, and 0 must not read as a recent timestamp.
+      if (item.checksReadAt && deps.clock() - item.checksReadAt < PARK_CHECKS_RECHECK_MS) continue;
+      if (!deps.checksConclusion || !item.repo || !item.pr) {
+        found = 'no checks reader wired';
+      } else {
+        checksRead = true;
+        found = (await deps.checksConclusion(item.repo, item.pr.no)) ?? 'unknown';
+        // Case-insensitive on purpose. The wired reader answers `conclusionOf`'s own
+        // lowercase verdict (`council/gh.ts`), and comparing against 'SUCCESS' made this
+        // whole branch dead in production while the specimen stayed green.
+        clear = found.toLowerCase() === 'success';
+      }
+    } else if (!deps.runPid) {
+      found = 'no liveness reader wired';
+    } else {
+      const pid = item.runKey ? deps.runPid(item.runKey) : undefined;
+      found = pid === undefined ? 'no live process' : `run still alive (pid ${pid})`;
+      clear = pid === undefined;
+    }
+
+    const readMarks = checksRead
+      ? { checksReadAt: deps.clock(), checksReads: (item.checksReads ?? 0) + 1 }
+      : {};
+    if (!clear) {
+      // One row per distinct reading. The tick fires every 15 seconds; a row each time
+      // would bury the journal, and a cap on holds would abandon the item.
+      if (item.recoveryHeldOn !== found) {
+        writeTransition(
+          // The width marker is deliberately NOT cleared here. A queue sitting at its cap
+          // oscillates around it, and clearing the marker on each real reading wrote a row
+          // on every flip. One row per park; a person's retry is what says it again.
+          item, { recoveryHeldOn: found, ...readMarks }, deps, 'queue.recovery-held',
+          { reRead: verdict.reRead, found, parkReason: item.reason },
+        );
+      } else if (checksRead) {
+        // No decision changed, so no journal row, but the read still has to be counted or
+        // the window and the cap both stop working.
+        deps.store.append({ id: item.id, at: deps.clock(), ...readMarks });
+      }
+      continue;
+    }
+    // Same landing rule `retryItem` uses: a run already exists means this item re-enters
+    // at the status/gate hop (`running`), never at the plan/launch hop.
+    const state: QueueItemState = item.runKey ? 'running' : 'queued';
+    writeTransition(
+      item,
+      {
+        state, reason: null, recoveryAttempts: recoveries + 1, recoveryHeldOn: null, recoveryDeclinedFor: null,
+        recoveryWidthHeld: false,
+        // The read budget belongs to THIS park, not to the item's whole life: an item
+        // that parks on checks three times over a week must not be refused on the third
+        // for reads it spent on the first.
+        checksReads: 0, checksReadAt: 0,
+        // `retriedAt` means "a person asked for this run to be looked at again", and
+        // `relaunchOnRetryOrPark` answers it by provisioning a NEW worker. That is right
+        // for a run that died and wrong for checks that went green: there the run
+        // finished correctly and the item only needs its gate hop read again.
+        ...(item.runKey && verdict.reRead === 'run' ? { retriedAt: deps.clock() } : {}),
+        ...(item.pendingGatePolls ? { pendingGatePolls: 0 } : {}),
+      },
+      deps, 'queue.recovered',
+      { reRead: verdict.reRead, found, parkReason: item.reason, recovery: recoveries + 1, decided: `moved to ${state}` },
+    );
+    recovered += 1;
+    if (needsSlot) slots -= 1;
+  }
+  return recovered;
+}
+
 export async function runQueueTick(deps: QueueRuntimeDeps, items: QueueItem[]): Promise<QueueTickResult> {
   if (deps.killSwitch()) return { started: 0, advanced: 0, killSwitchEngaged: true, paused: false };
   if (deps.paused()) return { started: 0, advanced: 0, killSwitchEngaged: false, paused: true };
 
   items = items.filter((item) => !advancing.has(item.id));
+  // Item 1: parked rows are re-read first, so an item handed back this tick is advanced
+  // on this tick rather than the next one. A recovery ends in a relaunched worker, so it
+  // is given only the slots the width has left over after everything already in flight.
+  const busy = items.filter((item) => QUEUE_IN_FLIGHT_STATES.includes(item.state) && !isWaitingOnInterview(item));
+  if (await recoverParkedItems(deps, items, Math.max(0, deps.maxInFlight() - busy.length))) {
+    items = deps.store.all().filter((item) => !advancing.has(item.id));
+  }
+  // A pull request this queue merged and could not close at the time -- GitHub was down,
+  // or the call failed once. Nothing used to try again, so the board went on reporting a
+  // merged ticket as waiting for a merge (2026-09-13, BBZ-169, an hour after it landed).
+  // Never awaited by the rest of the pass: closing somebody's pull request is not worth
+  // holding up starting work, and a failure here comes round on the next tick.
+  void retryOpenPrCloses(items, {
+    ...(deps.closePr ? { closePr: deps.closePr } : {}),
+    ...(deps.append ? { append: deps.append } : {}),
+  }).catch(() => undefined);
+
   const inFlight = items.filter((item) => QUEUE_IN_FLIGHT_STATES.includes(item.state));
   const queued = items.filter((item) => item.state === 'queued');
-  let slots = Math.max(0, deps.maxInFlight() - inFlight.length);
+  // R-76: an item waiting on an interview answer is in `planning` and therefore counts as
+  // in flight, but it is not doing any work -- it is waiting on a person. Counting it
+  // against the width meant enough unanswered questions starved every queued item behind
+  // them, which is the opposite of "one question holds one item". It is still advanced
+  // below, so the tick that answers it still wakes it.
+  const waitingOnAnswer = inFlight.filter(isWaitingOnInterview);
+  let slots = Math.max(0, deps.maxInFlight() - (inFlight.length - waitingOnAnswer.length));
   const toAdvance = [...inFlight];
   let started = 0;
   for (const item of queued) {
@@ -1016,6 +1516,9 @@ export interface QueueMergeDeps {
    *  here calls `gh`. Absent means the pre-R-22 `deps.gate({merge:true})` path runs
    *  unchanged, so every existing gate-based specimen keeps passing. */
   gitMerge?: (input: { repo: string; pr: number; branch: string; base: string; subject: string; body: string }) => Promise<{ ok: boolean; mergeSha?: string; reason?: string }>;
+  /** Closes a pull request whose content the merge above already pushed to the base.
+   *  Absent leaves it open, which is what happened before this existed. */
+  closePr?: (input: { repo: string; pr: number; comment: string }) => Promise<{ ok: boolean; reason?: string }>;
   clock(): number;
   store: QueueStore;
 }
@@ -1046,6 +1549,34 @@ export async function mergeItem(item: QueueItem, deps: QueueMergeDeps): Promise<
       subject: `Merge ${item.branch} (#${item.pr.no})`, body: '',
     });
     result = gm.ok ? { merged: true, mergeSha: gm.mergeSha } : { merged: false, reason: gm.reason ? [gm.reason] : undefined };
+    // The squash pushed a NEW commit straight to the base, so GitHub never recognises the
+    // branch as merged and leaves the pull request open for ever -- a draft, on a board
+    // that says the ticket is done, counted by every check that reads open pull requests.
+    // Measured 2026-09-13: the first ticket driven in through the console merged to main
+    // and left its own pull request open behind it.
+    //
+    // Best effort. A close that fails never un-merges anything, so it is journaled and the
+    // item carries on.
+    if (gm.ok && deps.closePr) {
+      const where = gm.mergeSha ? ` as ${gm.mergeSha}` : '';
+      try {
+        const closed = await deps.closePr({
+          repo: item.repo!, pr: item.pr.no,
+          comment: `Merged into ${base}${where}. Closing this, since the squash lands a new commit and GitHub cannot see the branch in it.`,
+        });
+        if (closed?.ok === false) {
+          deps.append?.({
+            event: 'queue.pr-close-failed', actor: 'queue', itemId: item.id,
+            pr: item.pr.no, error: closed.reason ?? 'no reason given',
+          });
+        }
+      } catch (error) {
+        deps.append?.({
+          event: 'queue.pr-close-failed', actor: 'queue', itemId: item.id,
+          pr: item.pr.no, error: messageOf(error),
+        });
+      }
+    }
   } else {
     result = await deps.gate({ repo: item.repo!, pr: item.pr.no, merge: true });
 
@@ -1150,4 +1681,61 @@ export async function promoteItem(
   }
   await deps.promote({ item, version: input.version, message: input.message });
   return { ok: true, code: 200, message: `production publish dispatched for ${input.version}` };
+}
+
+/** What `retryOpenPrCloses` needs: the same closer `mergeItem` uses, and somewhere to
+ *  record a retry that failed again. Both optional -- a caller with neither does nothing,
+ *  which is the honest answer for a console with no GitHub writer wired. */
+export interface RetryCloseDeps {
+  closePr?: (input: { repo: string; pr: number; comment: string }) => Promise<{ ok: boolean; reason?: string } | void>;
+  append?: (event: Record<string, unknown>) => void;
+}
+
+/**
+ * Close the pull requests this queue merged and could not close at the time.
+ *
+ * The squash pushes a new commit to the base, so GitHub never sees the branch inside it
+ * and never closes the pull request on its own. `mergeItem` closes it explicitly, and on
+ * 2026-09-13 that call met a GitHub outage: the merge landed, the close failed, the
+ * failure was journaled once, and nothing ever tried again. The board went on saying
+ * "Draft PR #159 is waiting for your Merge" for a ticket that had merged an hour before.
+ *
+ * Run on the queue's own tick. Closing an already-closed pull request changes nothing, so
+ * a retry is safe; the filters below exist to keep it quiet rather than to keep it correct.
+ * A failure here never propagates: the next item still gets its turn and this one comes
+ * round again on the following tick.
+ */
+export async function retryOpenPrCloses(items: QueueItem[], deps: RetryCloseDeps): Promise<string[]> {
+  if (!deps.closePr) return [];
+  const closed: string[] = [];
+  for (const item of items) {
+    const pr = item.pr;
+    // Only what this queue merged itself. A pull request somebody else owns is not the
+    // console's to close, however open it looks.
+    if (!pr || !item.repo || !item.mergedBy || !item.mergedAt) continue;
+    if (pr.closed === true || pr.merged === true) continue;
+    const sha = (item as { mergeSha?: string }).mergeSha;
+    const where = sha ? ` as ${sha}` : '';
+    const base = item.base ?? 'develop';
+    try {
+      const result = await deps.closePr({
+        repo: item.repo, pr: pr.no,
+        comment: `Merged into ${base}${where}. Closing this, since the squash lands a new commit and GitHub cannot see the branch in it.`,
+      });
+      if (result && result.ok === false) {
+        deps.append?.({
+          event: 'queue.pr-close-failed', actor: 'queue', itemId: item.id,
+          pr: pr.no, error: result.reason ?? 'no reason given', retry: true,
+        });
+        continue;
+      }
+      closed.push(item.id);
+    } catch (error) {
+      deps.append?.({
+        event: 'queue.pr-close-failed', actor: 'queue', itemId: item.id,
+        pr: pr.no, error: messageOf(error), retry: true,
+      });
+    }
+  }
+  return closed;
 }

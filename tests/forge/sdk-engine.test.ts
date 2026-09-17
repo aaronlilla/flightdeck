@@ -1443,6 +1443,47 @@ describe('a worker session refuses the Monitor tool outright, the same as a webs
   });
 });
 
+describe('a worker session waits on its own background task by blocking, never by polling', () => {
+  // Aaron, 2026-09-14: the BBZ-343 run spent 15 of its 47 tool calls on TaskOutput polls
+  // with block: false against its own two background test runs, and ran out of turns
+  // (49, one session) before it could open a pull request. Every poll costs a turn.
+  it('denies a TaskOutput poll with block: false, telling the worker to block instead', async () => {
+    const parked = new Map<string, string>();
+    const journal = new Journal(journalPath);
+    const inbox = new Inbox(join(home, 'inbox-taskoutput-poll'));
+    const hook = buildPreToolUseHook({ run: 'r-poll', goal: 'r-poll', parked, journal, inbox, deliverVia: 'hook' });
+
+    const verdict = await hook({
+      toolName: 'TaskOutput',
+      input: { task_id: 'bafe0929l', block: false, timeout: 5000 },
+      toolUseId: 'tu-poll',
+    });
+
+    expect(verdict.decision).toBe('deny');
+    expect(verdict.reason).toMatch(/block: true/);
+    journal.close();
+    const state = replay(journalPath);
+    expect(state.events.some((e) => e.event === 'permission.denied' && e.run === 'r-poll'
+      && e['tool'] === 'TaskOutput')).toBe(true);
+  });
+
+  it('lets a blocking TaskOutput wait through', async () => {
+    const parked = new Map<string, string>();
+    const journal = new Journal(journalPath);
+    const inbox = new Inbox(join(home, 'inbox-taskoutput-block'));
+    const hook = buildPreToolUseHook({ run: 'r-block', goal: 'r-block', parked, journal, inbox, deliverVia: 'hook' });
+
+    const verdict = await hook({
+      toolName: 'TaskOutput',
+      input: { task_id: 'bafe0929l', block: true, timeout: 600000 },
+      toolUseId: 'tu-block',
+    });
+
+    expect(verdict.decision).not.toBe('deny');
+    journal.close();
+  });
+});
+
 describe('P4.7/I4: the Council rules library runs on every Bash and Edit/Write PreToolUse call', () => {
   it('denies a git push to main in a controlled repo, with the gitflow reason, and journals rule.denied', async () => {
     const parked = new Map<string, string>();
@@ -2094,5 +2135,58 @@ describe('cross-model review findings, held as regressions', () => {
     const open = new Inbox(inboxDir).open();
     expect(open).toHaveLength(1);
     expect(open[0]?.goals).toContain('goal-id');
+  });
+});
+
+describe('the ticket moves when a pull request opens', () => {
+  it('fires onPullRequestOpened with the checkout, on a successful gh pr create', async () => {
+    const { fn } = fakeQuery([[{
+      text: 'opening it',
+      toolUse: { name: 'Bash', input: { command: 'gh pr create --fill --draft' } },
+    }]]);
+    const opened: string[] = [];
+    const engine = new SdkEngine({
+      journalPath, inboxDir: join(home, 'inbox-pr'), gotchasDir: join(home, 'gotchas-pr'),
+      queryFn: fn,
+      onPullRequestOpened: (cwd) => { opened.push(cwd); },
+    });
+
+    await engine.run({ ...REQUEST, env: { PATH: '/usr/bin' } });
+
+    expect(opened).toEqual([REQUEST.cwd]);
+  });
+
+  it('does not fire on a git push, which moves no ticket', async () => {
+    const { fn } = fakeQuery([[{
+      text: 'pushing',
+      toolUse: { name: 'Bash', input: { command: 'git push -u origin feature/x' } },
+    }]]);
+    const opened: string[] = [];
+    const engine = new SdkEngine({
+      journalPath, inboxDir: join(home, 'inbox-pr2'), gotchasDir: join(home, 'gotchas-pr2'),
+      queryFn: fn,
+      onPullRequestOpened: (cwd) => { opened.push(cwd); },
+    });
+
+    await engine.run({ ...REQUEST, env: { PATH: '/usr/bin' } });
+
+    expect(opened).toEqual([]);
+  });
+
+  it('does not fire when the create failed', async () => {
+    const { fn } = fakeQuery([[{
+      text: 'trying',
+      toolUse: { name: 'Bash', input: { command: 'gh pr create --fill' }, isError: true },
+    }]]);
+    const opened: string[] = [];
+    const engine = new SdkEngine({
+      journalPath, inboxDir: join(home, 'inbox-pr3'), gotchasDir: join(home, 'gotchas-pr3'),
+      queryFn: fn,
+      onPullRequestOpened: (cwd) => { opened.push(cwd); },
+    });
+
+    await engine.run({ ...REQUEST, env: { PATH: '/usr/bin' } });
+
+    expect(opened).toEqual([]);
   });
 });

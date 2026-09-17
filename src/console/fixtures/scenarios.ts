@@ -405,6 +405,29 @@ export function emptyRules(): Rule[] {
 
 /** A run thread far taller than any screen, on the seed board's first lane: the
  *  ticket sheet must stay inside the viewport and scroll the thread within itself. */
+/** R-75 item 2: a long CONVERSATION, so the rail itself has more rows than fit and
+ *  the bottom is somewhere a reader has to be taken to. `longThread` is observations,
+ *  which live in the Activity drawer and never make the rail scroll. */
+export function longConversation(): Message[] {
+  const now = Date.now();
+  const messages: Message[] = [];
+  for (let i = 0; i < 60; i += 1) {
+    const operator = i % 2 === 0;
+    messages.push({
+      k: `talk-${i}`,
+      type: operator ? 'operator' : 'reply',
+      text: operator ? `Turn ${i + 1}: what is the lane doing?` : `Turn ${i + 1}: it is on the unit suite.`,
+      ts: now - (60 - i) * 30_000,
+      source: operator ? 'operator' : 'conductor',
+    });
+  }
+  messages.push({
+    k: 'talk-last', type: 'reply', text: 'The last word in the rail.',
+    ts: now - 1_000, source: 'conductor',
+  });
+  return messages;
+}
+
 export function longThread(): Message[] {
   const now = Date.now();
   const messages: Message[] = [];

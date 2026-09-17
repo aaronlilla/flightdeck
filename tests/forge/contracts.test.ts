@@ -173,11 +173,21 @@ describe('ForgeEventSchema', () => {
 
   it('every event literal actually written under src/forge is in the closed union', () => {
     const forgeDir = fileURLToPath(new URL('../../src/forge/', import.meta.url));
-    const files = readdirSync(forgeDir).filter((name) => name.endsWith('.ts'));
+    // Recursive since 2026-09-11 (/code-review high): the flat read skipped every
+    // subdirectory, so `intake/`, `console/` and `council/` could write an event name
+    // the closed union had never heard of and `replayEvents` would quarantine each row
+    // -- counting it as a torn tail when it was the last line.
+    const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true })
+      .flatMap((entry) => {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) return walk(full);
+        return entry.name.endsWith('.ts') ? [full] : [];
+      });
+    const files = walk(forgeDir);
     const literal = /event:\s*'([^']+)'/g;
     const found = new Set<string>();
-    for (const name of files) {
-      const text = readFileSync(join(forgeDir, name), 'utf8');
+    for (const file of files) {
+      const text = readFileSync(file, 'utf8');
       for (const match of text.matchAll(literal)) {
         const name = match[1];
         if (name) found.add(name);
@@ -185,8 +195,25 @@ describe('ForgeEventSchema', () => {
     }
     // A scan that found nothing proves nothing, so check the sensor before trusting it.
     expect(found.size).toBeGreaterThan(0);
+    // The backlog the widened scan uncovered on 2026-09-11: twelve event names written
+    // under `src/forge/**/` subdirectories that the flat scan never read, so the closed
+    // union never heard of them and `replayEvents` quarantines every one. They belong to
+    // modules outside R-81's brief and are listed rather than registered here, so this
+    // check ratchets: anything NEW fails. This set may only shrink.
+    const knownUnregistered = new Set([
+      'accounts.probed', 'narration.failed', 'narration.rejected', 'queue.recouncil',
+      'queue.width', 'queue.wiped', 'sync.cleanup-error', 'sync.finished',
+      'sync.plan-reused', 'sync.stage', 'sync.started', 'voice.refused',
+    ]);
     for (const name of found) {
+      if (knownUnregistered.has(name)) continue;
       expect(FORGE_EVENT_NAMES, `event literal '${name}' found in src/forge/**`).toContain(name);
+    }
+    // A stale exemption is an exemption that stopped meaning anything. Every name on the
+    // list must still be written somewhere, and must still be missing from the union.
+    for (const name of knownUnregistered) {
+      expect(found, `'${name}' is exempted but no longer written`).toContain(name);
+      expect(FORGE_EVENT_NAMES, `'${name}' is registered now; drop it from the list`).not.toContain(name);
     }
   });
 });

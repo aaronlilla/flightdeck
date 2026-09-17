@@ -3,7 +3,12 @@ import { useEffect, useState } from 'react';
 
 import * as api from '../api.js';
 import { hm } from '../freshness.js';
+import type { BoardCommand } from '../laneVM.js';
 import { boardStateWord, durationWords, laneHeadline } from '../laneVM.js';
+import { laneActionLiveness } from '../actionLiveness.js';
+import { ACTIONS, useAction } from '../actions.js';
+import { busyLabelFor, confirmLabelFor, useCommandConfirming, useCommandPending } from '../commandPending.js';
+import { HANDOFF_DESTINATIONS } from '../../shared/console-model.js';
 import type { Lane, LaneStory, LaneSummary } from '../../shared/console-model.js';
 import { Marks } from './QuestionCard.js';
 import { NarratedLine } from './Narrated.js';
@@ -25,6 +30,305 @@ export interface TicketSheetProps {
   onSendLane: (id: string, text: string) => void | Promise<unknown>;
   /** `?verbose=1`: every narrated sentence also shows its own fact record. */
   verbose?: boolean;
+}
+
+/**
+ * Everything a person can do to this lane, in one place.
+ *
+ * A tile carries one button, chosen by the lane's state, so anything the state did not
+ * call for could not be clicked at all: a running lane offered no Pause, a finished one
+ * no Retire, and nothing anywhere offered a re-audit. Taking a ticket from the queue to a
+ * merge meant leaving the console for a terminal.
+ *
+ * Every button is gated by the same verdict the board uses, so one that cannot do
+ * anything shows why instead of failing on the click.
+ */
+const LANE_ACTIONS: ReadonlyArray<{ cmd: BoardCommand; label: string }> = [
+  { cmd: 'merge', label: 'Merge' },
+  { cmd: 'verify', label: 'Verify' },
+  { cmd: 'recheck', label: 'Re-check' },
+  { cmd: 'reaudit', label: 'Re-audit' },
+  { cmd: 'pause', label: 'Pause' },
+  { cmd: 'resume', label: 'Resume' },
+  { cmd: 'compact', label: 'Compact' },
+  { cmd: 'kill', label: 'Stop' },
+  { cmd: 'reopen', label: 'Reopen' },
+  { cmd: 'retire', label: 'Retire' },
+  { cmd: 'unretire', label: 'Unretire' },
+];
+
+/** One button in the bar, which says so the moment it is pressed rather than waiting for
+ *  the next poll to change the sheet underneath it (Aaron, 2026-09-13). */
+function LaneDo({ lane, cmd, label, onCommand }: {
+  lane: Lane; cmd: BoardCommand; label: string;
+  onCommand: (id: string, cmd: string) => void;
+}): JSX.Element {
+  const busy = useCommandPending(lane.id, cmd);
+  const confirmToken = useCommandConfirming(lane.id, cmd);
+  return (
+    <button
+      type="button" className={`btn ${confirmToken ? 'warn' : ''}`} data-testid={`lane-do-${cmd}`}
+      aria-busy={busy} disabled={busy}
+      onClick={() => onCommand(lane.id, confirmToken ? `confirm:${confirmToken}` : cmd)}
+    >
+      {busy ? busyLabelFor(cmd, label) : confirmToken ? confirmLabelFor(cmd, label) : label}
+    </button>
+  );
+}
+
+function LaneActions({ lane, onCommand }: {
+  lane: Lane; onCommand: (id: string, cmd: string) => void;
+}): JSX.Element {
+  const verdicts = LANE_ACTIONS.map((action) => ({
+    ...action, verdict: laneActionLiveness({ lane, cmd: action.cmd }),
+  }));
+  const live = verdicts.filter((row) => row.verdict.live);
+  const dead = verdicts.filter((row) => !row.verdict.live);
+  return (
+    <div data-testid="lane-actions" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <span className="kick">Do</span>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        {live.map((row) => (
+          <LaneDo key={row.cmd} lane={lane} cmd={row.cmd} label={row.label} onCommand={onCommand} />
+        ))}
+        {live.length === 0 ? <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>Nothing to do here</span> : null}
+      </div>
+      {dead.length > 0 ? (
+        <details data-testid="lane-actions-unavailable">
+          <summary className="kick" style={{ cursor: 'pointer', color: 'var(--ink3)' }}>{`${dead.length} not available`}</summary>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, paddingTop: 6 }}>
+            {dead.map((row) => (
+              <span key={row.cmd} style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>
+                {`${row.label} — ${row.verdict.live === false ? row.verdict.why : ''}`}
+              </span>
+            ))}
+          </div>
+        </details>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Opening a pull request, from the lane that has the branch.
+ *
+ * The only `gh pr create` in this codebase runs inside a worker's own turn, so a branch a
+ * worker pushed and then stopped short of could only become a pull request from a
+ * terminal (Aaron, 2026-09-13). Shown only on a lane that has no pull request yet: with
+ * one, the thing to do is look at it, not open another.
+ *
+ * Irreversible and outward-facing, so it asks first, and editing after the ask takes the
+ * confirm away rather than opening the text that was there before.
+ */
+function LaneOpenPr({ lane }: { lane: Lane }): JSX.Element | null {
+  const open = useAction(ACTIONS.openPullRequest, lane.id);
+  const [title, setTitle] = useState(lane.ticket ? `${lane.ticket} ` : '');
+  const [body, setBody] = useState('');
+  const [draft, setDraft] = useState(true);
+  if (lane.pr) return null;
+  const asking = open.result?.kind === 'confirm';
+  const result = open.result?.kind === 'done' ? open.result : null;
+  const ready = title.trim().length > 0 && body.trim().length > 0;
+  return (
+    <details data-testid="lane-open-pr">
+      <summary className="kick" style={{ cursor: 'pointer', color: 'var(--ink3)' }}>Open a pull request</summary>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingTop: 10 }}>
+        <label className="kick" htmlFor={`openpr-title-${lane.id}`}>Title</label>
+        <input
+          id={`openpr-title-${lane.id}`} data-testid="lane-open-pr-title" type="text"
+          placeholder="BBZ-000 what changes"
+          value={title} onChange={(event) => { setTitle(event.target.value); open.clear(); }}
+          style={{ font: 'inherit', fontSize: 'var(--fs-body)', padding: '8px 10px', border: '1px solid var(--line)', background: 'var(--panel)', color: 'var(--ink)' }}
+        />
+        <label className="kick" htmlFor={`openpr-body-${lane.id}`}>What breaks, and what changes</label>
+        <textarea
+          id={`openpr-body-${lane.id}`} data-testid="lane-open-pr-body" rows={5}
+          placeholder="What a caller sees today, then what changes"
+          value={body} onChange={(event) => { setBody(event.target.value); open.clear(); }}
+          style={{ font: 'inherit', fontSize: 'var(--fs-body)', padding: '8px 10px', border: '1px solid var(--line)', background: 'var(--panel)', color: 'var(--ink)', resize: 'vertical' }}
+        />
+        <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 'var(--fs-meta)', color: 'var(--ink2)' }}>
+          <input
+            type="checkbox" data-testid="lane-open-pr-draft" checked={draft}
+            onChange={(event) => { setDraft(event.target.checked); open.clear(); }}
+          />
+          Open it as a draft
+        </label>
+        <button
+          type="button" className="btn" data-testid="lane-open-pr-submit"
+          disabled={!ready || open.pending}
+          onClick={() => { void (asking ? open.confirm() : open.run(lane.id, title.trim(), body.trim(), draft)); }}
+          style={{ alignSelf: 'flex-start' }}
+        >
+          {open.pending ? 'Opening…' : asking ? 'Confirm — open it' : 'Open a pull request'}
+        </button>
+        {asking && open.result?.kind === 'confirm' ? (
+          <>
+            <span data-testid="lane-open-pr-blast" role="alert" style={{ fontSize: 'var(--fs-meta)', color: 'var(--warn)' }}>
+              {open.result.blast}
+            </span>
+            <button
+              type="button" className="btn" data-testid="lane-open-pr-dismiss"
+              onClick={() => { open.dismiss(); }} style={{ alignSelf: 'flex-start' }}
+            >
+              Not now
+            </button>
+          </>
+        ) : null}
+        {result ? (
+          <div
+            data-testid="lane-open-pr-result" role="status"
+            style={{ fontSize: 'var(--fs-meta)', color: result.ok ? 'var(--ink2)' : 'var(--warn)' }}
+          >
+            {result.text}
+          </div>
+        ) : null}
+      </div>
+    </details>
+  );
+}
+
+/**
+ * Handing the ticket on: a comment, an assignment and a move, in one press.
+ *
+ * All three writes existed for the background worker long before this and nothing could
+ * ask for them from a screen, so finishing a ticket meant leaving the console for a
+ * terminal (Aaron, 2026-09-13). Shown only on a lane that names a ticket, because there
+ * is nothing to hand on otherwise.
+ *
+ * The receipt lists every step rather than one verdict for three writes. Two of three
+ * landing is a different situation from none and from all, and "handed on" over a
+ * half-written ticket is the board lying where somebody is relying on it.
+ */
+function LaneHandoff({ lane }: { lane: Lane }): JSX.Element | null {
+  const handoff = useAction(ACTIONS.handOffTicket, lane.id);
+  const [to, setTo] = useState('qa');
+  const [comment, setComment] = useState('');
+  const ticket = lane.ticket;
+  if (!ticket) return null;
+  const result = handoff.result?.kind === 'done' ? handoff.result : null;
+  // Irreversible, so the first press asks and the second writes. A comment cannot be
+  // unposted and a transition cannot be taken back from here.
+  const asking = handoff.result?.kind === 'confirm';
+  return (
+    <details data-testid="lane-handoff">
+      <summary className="kick" style={{ cursor: 'pointer', color: 'var(--ink3)' }}>{`Hand ${ticket} on`}</summary>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingTop: 10 }}>
+        <label className="kick" htmlFor={`handoff-to-${lane.id}`}>Who takes it next</label>
+        <select
+          id={`handoff-to-${lane.id}`} data-testid="lane-handoff-to"
+          value={to} onChange={(event) => { setTo(event.target.value); handoff.clear(); }}
+          style={{ font: 'inherit', fontSize: 'var(--fs-body)', padding: '8px 10px', border: '1px solid var(--line)', background: 'var(--panel)', color: 'var(--ink)' }}
+        >
+          {HANDOFF_DESTINATIONS.map((who) => (
+            <option key={who.id} value={who.id}>{who.name}</option>
+          ))}
+        </select>
+        <label className="kick" htmlFor={`handoff-comment-${lane.id}`}>What they are looking at</label>
+        <textarea
+          id={`handoff-comment-${lane.id}`} data-testid="lane-handoff-comment" rows={3}
+          placeholder="What changed, and what to check"
+          value={comment} onChange={(event) => { setComment(event.target.value); handoff.clear(); }}
+          style={{ font: 'inherit', fontSize: 'var(--fs-body)', padding: '8px 10px', border: '1px solid var(--line)', background: 'var(--panel)', color: 'var(--ink)', resize: 'vertical' }}
+        />
+        <button
+          type="button" className="btn" data-testid="lane-handoff-submit"
+          disabled={comment.trim().length === 0 || handoff.pending}
+          onClick={() => { void (asking ? handoff.confirm() : handoff.run(ticket, to, comment.trim())); }}
+          style={{ alignSelf: 'flex-start' }}
+        >
+          {handoff.pending ? 'Handing on…' : asking ? `Confirm — hand ${ticket} on` : `Hand ${ticket} on`}
+        </button>
+        {asking && handoff.result?.kind === 'confirm' ? (
+          <>
+            <span data-testid="lane-handoff-blast" role="alert" style={{ fontSize: 'var(--fs-meta)', color: 'var(--warn)' }}>
+              {handoff.result.blast}
+            </span>
+            <button
+              type="button" className="btn" data-testid="lane-handoff-dismiss"
+              onClick={() => { handoff.dismiss(); }}
+              style={{ alignSelf: 'flex-start' }}
+            >
+              Not now
+            </button>
+          </>
+        ) : null}
+        {result ? (
+          <div
+            data-testid="lane-handoff-result" role="status"
+            style={{ fontSize: 'var(--fs-meta)', color: result.ok ? 'var(--ink2)' : 'var(--warn)' }}
+          >
+            {result.text}
+          </div>
+        ) : null}
+      </div>
+    </details>
+  );
+}
+
+/**
+ * The two things a lane takes that are not a single click: a change to what it was asked
+ * to do, and a ceiling on what it may spend doing it.
+ *
+ * Both had a server route and a registry entry and no control anywhere, so steering a run
+ * without stopping it meant a terminal. Folded away rather than laid out, because most
+ * visits to a sheet are to read it.
+ */
+function LaneSteering({ lane }: { lane: Lane }): JSX.Element {
+  const amend = useAction(ACTIONS.amendRun, lane.id);
+  const cap = useAction(ACTIONS.setRunCap, lane.id);
+  const [text, setText] = useState('');
+  const [tokens, setTokens] = useState('');
+  const capNumber = Number.parseInt(tokens, 10);
+  const capValid = Number.isInteger(capNumber) && capNumber > 0;
+  return (
+    <details data-testid="lane-steering">
+      <summary className="kick" style={{ cursor: 'pointer', color: 'var(--ink3)' }}>Change what it is doing</summary>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12, paddingTop: 10 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <label className="kick" htmlFor={`amend-${lane.id}`}>Add to the brief</label>
+          <textarea
+            id={`amend-${lane.id}`} data-testid="lane-amend-input" rows={2}
+            placeholder="What it should also do"
+            value={text} onChange={(event) => { setText(event.target.value); }}
+            style={{ font: 'inherit', fontSize: 'var(--fs-body)', padding: '8px 10px', border: '1px solid var(--line)', background: 'var(--panel)', color: 'var(--ink)', resize: 'vertical' }}
+          />
+          <button
+            type="button" className="btn" data-testid="lane-amend-submit"
+            disabled={text.trim().length === 0 || amend.pending}
+            onClick={() => { void amend.run(lane.id, text.trim()).then(() => setText('')); }}
+            style={{ alignSelf: 'flex-start' }}
+          >
+            {amend.pending ? 'Sending…' : 'Add to the brief'}
+          </button>
+          {amend.result?.kind === 'done' && !amend.result.ok ? (
+            <span role="alert" style={{ fontSize: 'var(--fs-meta)', color: 'var(--warn)' }}>{amend.result.text}</span>
+          ) : null}
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <label className="kick" htmlFor={`cap-${lane.id}`}>Stop it after this many tokens</label>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <input
+              id={`cap-${lane.id}`} data-testid="lane-cap-input" type="number" min={1} inputMode="numeric"
+              placeholder="no ceiling"
+              value={tokens} onChange={(event) => { setTokens(event.target.value); }}
+              style={{ width: 140, font: 'inherit', fontSize: 'var(--fs-body)', padding: '7px 10px', border: '1px solid var(--line)', background: 'var(--panel)', color: 'var(--ink)' }}
+            />
+            <button
+              type="button" className="btn" data-testid="lane-cap-submit"
+              disabled={!capValid || cap.pending}
+              onClick={() => { void cap.run(lane.id, capNumber); }}
+            >
+              {cap.pending ? 'Saving…' : 'Set the ceiling'}
+            </button>
+          </div>
+          {cap.result?.kind === 'done' && !cap.result.ok ? (
+            <span role="alert" style={{ fontSize: 'var(--fs-meta)', color: 'var(--warn)' }}>{cap.result.text}</span>
+          ) : null}
+        </div>
+      </div>
+    </details>
+  );
 }
 
 export function TicketSheet({ lane, now, onClose, onCommand, onSendLane, verbose }: TicketSheetProps): JSX.Element {
@@ -54,7 +358,9 @@ export function TicketSheet({ lane, now, onClose, onCommand, onSendLane, verbose
   const submitNote = (): void => {
     const text = note.trim();
     if (!text) return;
-    void Promise.resolve(onSendLane(lane.id, text)).then(() => setSent(text));
+    // The page's command path rejects on a refusal since R-75; a bare `.then` here would
+    // raise an unhandled rejection the moment the fleet turned a note down.
+    void Promise.resolve(onSendLane(lane.id, text)).then(() => setSent(text)).catch(() => undefined);
     setNote('');
   };
   const entries = story?.entries ?? [];
@@ -73,6 +379,10 @@ export function TicketSheet({ lane, now, onClose, onCommand, onSendLane, verbose
           <p style={{ margin: 0 }}><span className="kick" style={{ display: 'inline-block', width: 54 }}>Now</span><NarratedLine bag={summary?.narration ?? lane.narration} field={summary?.narration?.['status'] ? 'status' : 'now'} glance={summary?.status ?? lane.now ?? ''} verbose={verbose} testid="sheet-status" /></p>
           <p style={{ margin: 0 }}><span className="kick" style={{ display: 'inline-block', width: 54 }}>Next</span><NarratedLine bag={summary?.narration ?? lane.narration} field={summary?.narration?.['next'] ? 'next' : 'you'} glance={summary?.next ?? lane.you ?? ''} verbose={verbose} testid="sheet-next" /></p>
         </div>
+        <LaneActions lane={lane} onCommand={onCommand} />
+        <LaneSteering lane={lane} />
+        <LaneOpenPr key={`openpr-${lane.id}`} lane={lane} />
+        <LaneHandoff key={lane.id} lane={lane} />
         {question ? (
           <div style={{ position: 'relative', border: '1px solid var(--warn)', background: 'var(--warnTint)', padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 6 }}>
             <Marks />

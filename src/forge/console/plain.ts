@@ -8,7 +8,7 @@
  * clock time) or a full clause a person can act on.
  */
 import type { Lane, NarrationFacts, QueueItem } from '../../shared/console-model.js';
-import { clock } from '../../shared/humanize.js';
+import { clock, humanizeParkReason, oneSentence } from '../../shared/humanize.js';
 
 export interface PlainContext {
   now: number;
@@ -53,6 +53,12 @@ export function prMergedSentence(pr: Lane['pr']): string {
 function closedPrSentence(pr: Lane['pr']): string | null {
   if (!pr?.closed) return null;
   return `PR #${pr.no} was closed without merging.`;
+}
+
+/** One full stop at the end, whether or not the text brought its own. */
+function endOnce(text: string): string {
+  const trimmed = text.trim();
+  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
 }
 
 function reviewSentence(lane: Lane): string | null {
@@ -125,9 +131,20 @@ export function plainStatus(lane: Lane, context: PlainContext): string {
     }
     case 'blocked': {
       const day = dayLabel(lane.since, context.now);
-      const reason = lane.reason ?? 'the reason has not been recorded';
+      // Through the same read-time humanizer the rail uses, so a reason journaled before
+      // the wording changed reads in plain words here too. The two tiles carrying
+      // "wall clock: 22.3 h over 3.0 h" kept it for three days otherwise, because a
+      // reason is written once and replayed for as long as the lane is on the board
+      // (Aaron, 2026-09-12: no jargon in anything on screen).
+      const reason = lane.reason ? humanizeParkReason(lane.reason) : 'the reason has not been recorded';
       const prefix = lane.kind === 'chain' ? 'Blocked since' : 'Stuck since';
-      return `${prefix} ${day}: ${reason}.`;
+      // Capped on the WHOLE line, not on the reason alone. Capping the reason and then
+      // adding "Stuck since today: " in front of it put 137 characters on a card sized
+      // for 120 -- the limit has to be measured where the text actually lands.
+      //
+      // The reason may also end its own sentence, and adding a second full stop on top is
+      // how the board came to carry "... verification steps.." (Aaron, 2026-09-13).
+      return endOnce(oneSentence(`${prefix} ${day}: ${reason}`));
     }
     case 'killed': {
       const reason = lane.reason ? ` (${lane.reason})` : '';
@@ -162,7 +179,29 @@ export interface QueueVerdict {
  * a council verdict word, a coverage count or the item's own reason, in a full sentence
  * a person can act on.
  */
+/**
+ * What has already happened to a pull request, when something has.
+ *
+ * Merged and closed are facts about the past, and they outrank every sentence about what
+ * to do next. Kept in one place so a branch added later cannot forget one of them: the
+ * defect this exists for was a `review` branch that checked neither.
+ */
+function settledPrSentence(pr: NonNullable<QueueItem['pr']>): string | null {
+  if (pr.merged) return `Merged: draft PR #${pr.no} landed.`;
+  if (pr.closed) return `PR #${pr.no} was closed without merging.`;
+  return null;
+}
+
 export function plainForQueueItem(item: QueueItem, verdict: QueueVerdict | null, owner: string | null = null): string | null {
+  // Before anything else: what has already happened to this pull request outranks what
+  // the item's own state says is next. A `review` row whose pull request closed or merged
+  // underneath it asked for a merge that could never happen -- the board read "Draft PR
+  // 206 waiting for your merge" beside its own verdict of "closed without merging"
+  // (Aaron, 2026-09-13). `done` already read this way; `review` did not, and a row sits in
+  // `review` for exactly as long as somebody has not merged it, which is the whole window
+  // in which it can close.
+  const settled = item.pr ? settledPrSentence(item.pr) : null;
+  if (settled) return settled;
   switch (item.state) {
     case 'review': {
       const pr = item.pr;
@@ -181,10 +220,7 @@ export function plainForQueueItem(item: QueueItem, verdict: QueueVerdict | null,
     case 'done': {
       const pr = item.pr;
       if (!pr) return null;
-      if (pr.merged) return `Merged: draft PR #${pr.no} landed.`;
-      // Follow-up to R-61: same reasoning as the `merged` branch above -- a PR closed
-      // without merging is done, never "open" or "waiting for your Merge."
-      if (pr.closed) return `PR #${pr.no} was closed without merging.`;
+      // Merged and closed are both answered by `settledPrSentence` above.
       return `Draft PR #${pr.no} is open; the queue never merges on its own, so it is waiting for your Merge.`;
     }
     case 'parked':

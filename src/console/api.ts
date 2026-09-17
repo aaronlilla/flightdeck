@@ -5,6 +5,8 @@
  * goal brief: "all of that lives behind one `api.ts`").
  */
 import { redactErrorBody } from './redact.js';
+import type { WhatIs } from '../forge/console/whatis.js';
+import type { SyncScope, SyncStateResponse, WatcherStatus as WatcherStatusModel } from '../shared/sync-contract.js';
 import type {
   AccountProvider,
   AccountsResponse,
@@ -26,6 +28,8 @@ import type {
   LaneStory,
   LanesResponse,
   LaneSummary,
+  OpenPrResponse,
+  TicketHandoffResponse,
   MergeReadyReport,
   Message,
   ProposalsResponse,
@@ -77,8 +81,14 @@ export function getLanes(params?: { all?: boolean; archived?: boolean }): Promis
   return call<LanesResponse>(params?.all ? '/lanes?all=1' : '/lanes');
 }
 
-export function getThread(opts?: { verbose?: boolean }): Promise<ThreadResponse> {
-  return call<ThreadResponse>(opts?.verbose ? '/thread?verbose=1' : '/thread');
+/** R-75 item 1: `GET /thread` carries the rail's own list plus the status cards that
+ *  left it. An older server that answers with `messages` alone reads as no cards. */
+export interface ThreadSplitResponse extends ThreadResponse {
+  cards?: Message[];
+}
+
+export function getThread(opts?: { verbose?: boolean }): Promise<ThreadSplitResponse> {
+  return call<ThreadSplitResponse>(opts?.verbose ? '/thread?verbose=1' : '/thread');
 }
 
 export function getJournal(params?: { since?: number; run?: string; limit?: number }): Promise<JournalResponse> {
@@ -180,6 +190,35 @@ export function recheckRun(id: string): Promise<LaneSummary> {
  *  audit's own `head` matches the PR's current head. */
 export function reauditRun(id: string): Promise<ReauditResponse> {
   return post<ReauditResponse>(`/run/${encodeURIComponent(id)}/reaudit`, {});
+}
+
+/**
+ * The sheet's Open a pull request button.
+ *
+ * Irreversible and outward-facing -- it notifies reviewers, and on the app repository it
+ * spends a build -- so it goes through the same confirm as merge and kill.
+ */
+export function openPullRequest(
+  run: string, title: string, body: string, draft: boolean, confirm?: string,
+): Promise<Gated<OpenPrResponse>> {
+  return post<Gated<OpenPrResponse>>(
+    `/run/${encodeURIComponent(run)}/open-pr`, withConfirm({ title, body, draft }, confirm),
+  );
+}
+
+/**
+ * The sheet's Hand on button: comments, assigns and transitions the ticket in one press.
+ *
+ * Every step is reported on its own, because two of three landing is a different
+ * situation from none and from all. A 400 or 503 means nothing was written at all; the
+ * body says which, and the caller shows `refused` rather than a step list.
+ */
+export function handOffTicket(
+  key: string, to: string, comment: string, confirm?: string,
+): Promise<Gated<TicketHandoffResponse>> {
+  return post<Gated<TicketHandoffResponse>>(
+    `/ticket/${encodeURIComponent(key)}/handoff`, withConfirm({ to, comment }, confirm),
+  );
 }
 
 /** H2.3: what a bulk retire would do (`GET /retire-finished`), and doing it
@@ -423,6 +462,12 @@ export function disconnectAccount(id: string): Promise<DisconnectResponse> {
   return post<DisconnectResponse>(`/accounts/${encodeURIComponent(id)}/disconnect`, {});
 }
 
+/** Takes the machine's own login out of the rotation, or puts it back. It stays logged
+ *  in either way. Refused with a reason while no other Claude account is linked. */
+export function setDefaultLoginOff(off: boolean): Promise<{ ok: boolean; off?: boolean; error?: string }> {
+  return post<{ ok: boolean; off?: boolean; error?: string }>('/accounts/default-login', { off });
+}
+
 /** How much of this login the fleet may take. An omitted field is left alone;
  *  `maxConcurrent: 0` clears the ceiling. */
 export function updateAccount(id: string, patch: AccountUpdateRequest): Promise<AccountUpdateResponse> {
@@ -435,10 +480,42 @@ export function getLeftovers(): Promise<LeftoversResponse> {
   return call<LeftoversResponse>('/accounts/leftovers');
 }
 
+/** R-71: the board's own sync/watcher surfaces. `GET /sync` is the whole
+ *  `SyncStateResponse`; the console never learns anything about a run beyond it. */
+export function getSync(): Promise<SyncStateResponse> {
+  return call<SyncStateResponse>('/sync');
+}
+
+/** The confirm-gated full re-sync: the first call posts without a token and gets
+ *  back the same `ConfirmPending` shape every other irreversible action uses; the
+ *  second call carries the server-issued token. */
+export function fullResync(confirm?: string): Promise<Gated<{ started: boolean; id: string }>> {
+  return post<Gated<{ started: boolean; id: string }>>('/sync/full', withConfirm({}, confirm));
+}
+
+/** A single page's re-sync. Never gated -- only the full wipe-and-restart is. */
+export function resyncPage(scope: Exclude<SyncScope, 'full'>): Promise<{ started: boolean; id: string }> {
+  return post<{ started: boolean; id: string }>(`/sync/${scope}`, {});
+}
+
+export function watcherOn(): Promise<WatcherStatusModel> {
+  return post<WatcherStatusModel>('/watcher/on', {});
+}
+
+export function watcherOff(): Promise<WatcherStatusModel> {
+  return post<WatcherStatusModel>('/watcher/off', {});
+}
+
 /** Removes one unlinked login's files. Takes the directory's NAME, never a path -- the
  *  console never learns where the configs root is, and the server never accepts one. */
 export function deleteLeftover(name: string, confirm?: string): Promise<Gated<DeleteFilesResponse>> {
   return post<Gated<DeleteFilesResponse>>(
     `/accounts/leftovers/${encodeURIComponent(name)}/delete`, withConfirm({}, confirm),
   );
+}
+
+/** `GET /whatis?ref=…`: what the identifier under the reader's pointer refers to.
+ *  A ticket key, a pull request number, or a run's own name — see `forge/console/whatis.ts`. */
+export function whatIs(ref: string): Promise<WhatIs> {
+  return call<WhatIs>(`/whatis?ref=${encodeURIComponent(ref)}`);
 }

@@ -12,7 +12,11 @@ html,body{margin:0;height:100%}
 [data-theme="light"]{--bg:#f2f2f3;--panel:#e9e9ea;--ink:#1d1f20;--ink2:#5d5d60;--ink3:#7a7a7d;--line:rgba(29,31,32,.16);--line2:rgba(29,31,32,.34);--mark:rgba(29,31,32,.55);--acc:#5980a6;--accInk:#f2f2f3;--accTint:#eef6ff;--warn:oklch(.52 .13 45);--warnInk:#f2f2f3;--warnTint:oklch(.52 .13 45/.08);--scrim:rgba(43,43,45,.55)}
 [data-theme="dark"]{--bg:#1d1f20;--panel:#26282b;--ink:#e9e9ea;--ink2:#b7b7ba;--ink3:#8a8a8d;--line:rgba(233,233,234,.16);--line2:rgba(233,233,234,.34);--mark:rgba(233,233,234,.55);--acc:#94bce3;--accInk:#1d1f20;--accTint:rgba(148,188,227,.12);--warn:oklch(.8 .12 45);--warnInk:#1d1f20;--warnTint:oklch(.8 .12 45/.1);--scrim:rgba(0,0,0,.6)}
 [data-theme]{--mk:linear-gradient(var(--mark),var(--mark)) 5px 0/1px 100% no-repeat,linear-gradient(var(--mark),var(--mark)) 0 5px/100% 1px no-repeat}
-body{background:var(--bg)}
+/* The document's own typography, not the app's. Anything drawn outside `.app` -- a
+   hover card portalled to the body so a scrolling ancestor cannot clip it --
+   inherits from here, and without it rendered in the browser's default serif
+   (screenshotted 2026-09-12). `.app` keeps its own, so nothing inside it moves. */
+body{background:var(--bg);color:var(--ink);font-family:Barlow,system-ui,sans-serif;font-size:var(--fs-body);line-height:1.45}
 .app{width:100%;height:100vh;display:flex;flex-direction:column;background:var(--bg);color:var(--ink);font-family:Barlow,system-ui,sans-serif;font-size:var(--fs-body);line-height:1.45;overflow:hidden}
 .app *{box-sizing:border-box}
 a{color:var(--acc);text-decoration:none;cursor:pointer}
@@ -39,7 +43,12 @@ input,textarea{outline:none}
 .btn.ghost{color:var(--ink2);border-color:transparent}
 .btn.ghost:hover{border-color:transparent;color:var(--ink)}
 .btn.primary:hover,.btn.warn:hover{filter:brightness(1.06)}
-.btn[aria-busy="true"],.btn[aria-disabled="true"]{opacity:.55;cursor:default}
+/* A button that cannot be pressed has to look it. The dimming keyed on aria-disabled
+   alone, so the nine buttons across the console that use the native attribute --
+   Answer with no option picked, Send with an empty box, Add with an empty box --
+   rendered at full strength and read as live. */
+.btn[aria-busy="true"],.btn[aria-disabled="true"],.btn:disabled{opacity:.55;cursor:default}
+.btn:disabled:hover{border-color:var(--line2);filter:none}
 /* A multiple-choice option row (the Board's Needs-you card and the lane sheet). */
 .opt{font:inherit;font-size:var(--fs-body);line-height:1.35;text-align:left;padding:9px 12px;min-height:40px;width:100%;background:transparent;border:1px solid var(--line2);color:var(--ink);border-radius:0;cursor:pointer;display:flex;gap:10px;align-items:flex-start}
 .opt:hover{border-color:var(--warn);background:var(--warnTint)}
@@ -109,4 +118,10 @@ textarea.inp{line-height:1.45;padding:8px 10px;resize:vertical}
 .machine-session-header{display:flex;gap:12px;flex-wrap:wrap;font-size:var(--fs-ui)}
 .machine-session-empty{color:var(--ink2);font-size:var(--fs-ui)}
 .machine-unregistered{border:1px solid var(--line2);padding:10px 12px;display:flex;flex-direction:column;gap:8px}
+/* The re-sync cards (R-71): one row per stage, colored by its own status. */
+.sync-stage{color:var(--ink2)}
+.sync-stage--ok{color:var(--ink2)}
+.sync-stage--failed{color:var(--warn)}
+.sync-stage--running{color:var(--acc)}
+.sync-stage--skipped{color:var(--ink3)}
 .machine-unregistered-label{color:var(--ink2);font-size:var(--fs-ui)}

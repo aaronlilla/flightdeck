@@ -52,53 +52,67 @@ import type { FakePollFeed } from './intake/poller.js';
 import { planFromPacket } from './intake/planner.js';
 import { parseRepoMap } from './intake/repoRoute.js';
 import { resolvePlanProvider } from './intake/reasoner.js';
-import { readWatermark, writeWatermark, fileWatermarkStore } from './intake/watermarkStore.js';
+import { readWatermark, writeWatermark } from './intake/watermarkStore.js';
 import { fetchInboxIssues, classifyInbox } from './intake/inbox.js';
 import { serverRequest } from './server-request.js';
 import { readProcessList, watchedProcesses, probeProcessListCached } from './fleetwatch.js';
 import { Gotchas } from './gotcha.js';
 import { Inbox, isAskStale } from './inbox.js';
-import { replay, Journal, JournalCache } from './journal.js';
+import { replay, appendOnce, Journal, JournalCache } from './journal.js';
+import { journalInterviewAnswer } from './intake/interviewPlanner.js';
 import { initReadabilityAndJournal, readabilityStatusLine } from './console/readability-status.js';
 import { getReadabilityContractState } from './intake/readability.js';
 import { probeAlivePidLiveness, scanSessions } from './sessions/registry.js';
 import { journalRegistryRows, planRegistryRows } from './sessions/reconcile.js';
 import { type IngestDeps } from './sessions/ingest.js';
 import { sweepAndCollectLocks, worktreeStatusFor } from './sessions/cleanup.js';
-import { checkLaunch, launchEnv, loginInFlight, pinnedRuntime, runtimeHead, runtimeVersion } from './launcher.js';
+import { checkLaunch, launchEnv, loginInFlight, pinnedRuntime, runtimeCheckout, runtimeHead, runtimeVersion } from './launcher.js';
 import { assess, LivenessSupervisor } from './liveness.js';
 import { loadConsoleEnv } from './console-env.js';
 import { titleFromHeading } from './console/lanes.js';
 import {
   ensureHome, fleetConfigDirChoice, forgeHome, gotchasDir, inboxDir, intakeBriefsDir, journalPath,
-  killSwitchPath, lanesDir, operatorConfigDir, queuePath, registryDir, runsDir,
+  killSwitchPath, lanesDir, operatorConfigDir, queuePath, registryDir, runsDir, watcherStatePath,
 } from './paths.js';
 import { runQueueTick } from './intake/queue.js';
 import { acquireQueueLock } from './intake/queueLock.js';
+import { notTickingHere, QueueTickRunner } from './intake/queueTickRunner.js';
 import { QueueStore } from './intake/queueStore.js';
-import { buildQueueRuntimeDeps, queueMergeDeps, queuePromoteDeps, jiraConfigFromEnv } from './queue-wire.js';
-import { readWatcherPollSeconds, watcherFeed, watcherTick } from './intake/watcherWire.js';
+import { buildQueueRuntimeDeps, queueMergeDeps, queuePromoteDeps, jiraConfigFromEnv, queueSearch } from './queue-wire.js';
+import { slackConfigFromEnv } from './intake/slack.js';
+import { readSlackReplies } from './intake/slackReturn.js';
+import { fileWatermarkStore } from './intake/watermarkStore.js';
+import { readWatcherState, shouldAutoStartWatcher, writeWatcherState } from './sync/watcher-state.js';
+import { ThreadTicketPoller } from './sync/watcher-thread-host.js';
+import { readHoldLabels, readWatcherPollSeconds } from './intake/watcherWire.js';
 import { buildSelfLoop } from './self-wire.js';
 import { QueueTickBackoff } from './queue-backoff.js';
 import { loadPolicy, maxWallMsFor, modelFor, modelIdFor, tierOfBrief } from './policy.js';
 import { attestationCoversHead, checkHandoff, providerFor, redact, verified } from './contracts.js';
 import type { CouncilAttestation, HaipingHandoff, JoeHandoff } from './contracts.js';
 import { evaluateAction } from './rules/index.js';
-import { readParkRecord } from './parkrecord.js';
+import { clearParkRecord, readParkRecord } from './parkrecord.js';
 import { processAlive, reconcileRegistry, Registry, relaunchAbandonedGoal } from './registry.js';
 import { reasonerFor } from './reasoner-claude.js';
 import { deliverAnswer, RunInbox } from './runinbox.js';
 import { SdkEngine } from './sdkengine.js';
 import { FORGE_PORT, ForgeServer } from './server.js';
-import { Breaker, clearKillSwitch, Fleet, Lanes, readKillSwitch } from './supervisor.js';
+import { Breaker, clearKillSwitch, clearStaleBlock, Fleet, Lanes, readKillSwitch } from './supervisor.js';
 import { WardenActuator } from './warden.js';
 import { DriftCadenceTracker, WardenTick, type WardenTickRun } from './warden-tick.js';
 import { renderToolCall } from './tool-target.js';
-import { Worker, type EngineLike, type WorkerConfig } from './worker.js';
+import { Worker, describeResult, type EngineLike, type WorkerConfig } from './worker.js';
 import {
   chainStatusLines, foldChainState, runChainTick, runKeyForBrief,
 } from './chain.js';
 import { readChainEnv, repoKindFor, verifyCommandForCwd } from './chain-env.js';
+import { checkOutwardDraft, draftReportLines, type OutwardDraft } from './intake/draftCheck.js';
+import { runPrOpenedHandoff } from './intake/prOpened.js';
+import { handlePullRequestOpened, readPrAtCheckout } from './intake/prOpenedWatch.js';
+import { run as execRun } from './exec.js';
+import { realOpenPrDeps } from './console/open-pr.js';
+import { readabilityVerdict } from './intake/readability.js';
+import { whereRunLives } from './console/run-actions.js';
 import { buildChainDeps, hasRunRegistered } from './chain-wire.js';
 import { isGoalFile } from './intake/goalFile.js';
 import { installShutdown } from './service/shutdown.js';
@@ -106,8 +120,9 @@ import { realProcessTable } from './service/process-table.js';
 import { SessionClock } from './session-clock.js';
 import { sweepFinishedRun } from './sweep.js';
 import { extractDoD, TRANSCRIPT_TAIL_LINES, TranscriptDrift } from './conformance-drift.js';
-import { readTranscriptTail, transcriptPathFor } from './transcript-path.js';
+import { findTranscriptPath, readTranscriptTail } from './transcript-path.js';
 import { CodexAdvisor, realCodexAdvisorRunner } from './council/codexAdvisor.js';
+import { scheduleAccountsProbeTick } from './sync/pages/accounts.js';
 
 
 /** The port the console is actually served on: `FORGE_PORT` when a second `forge up` was
@@ -211,7 +226,18 @@ const JIRA_ENV_VARS = ['FORGE_JIRA_SITE', 'FORGE_JIRA_EMAIL', 'FORGE_JIRA_TOKEN'
  * probe outright, since a supplied argument always wins over a default one.
  */
 function fleetSnapshot(deps: ForgeDeps): ReturnType<typeof watchedProcesses> {
-  return watchedProcesses(deps.processes ? { ok: true, lines: deps.processes() } : probeProcessListCached());
+  // The registry's pids are the workers this fleet actually launched. Without the set,
+  // every SDK-spawned claude on the machine -- other sessions' subagents included --
+  // classified as a fleet worker and tripped `stale-session` against the sessions dir's
+  // global mtime, forever (live escape 2026-09-14). A registry read failure falls back
+  // to watching everything: a hiccup must not silence real monitoring.
+  let ownedPids: ReadonlySet<number> | undefined;
+  try {
+    ownedPids = new Set(new Registry(registryDir()).all().map((row) => row.pid));
+  } catch {
+    ownedPids = undefined;
+  }
+  return watchedProcesses(deps.processes ? { ok: true, lines: deps.processes() } : probeProcessListCached(), ownedPids);
 }
 
 /**
@@ -225,10 +251,12 @@ function fleetNoticeLine(fleet: Awaited<ReturnType<typeof watchedProcesses>>): s
   if (!Array.isArray(fleet)) return undefined;
   const interactive = fleet.filter((proc) => proc.kind === 'interactive').length;
   const nativeHost = fleet.filter((proc) => proc.kind === 'native-host').length;
-  if (!interactive && !nativeHost) return undefined;
+  const foreign = fleet.filter((proc) => proc.foreign).length;
+  if (!interactive && !nativeHost && !foreign) return undefined;
   const parts: string[] = [];
   if (interactive) parts.push(`${interactive} interactive claude session${interactive === 1 ? '' : 's'}`);
   if (nativeHost) parts.push(`${nativeHost} native host${nativeHost === 1 ? '' : 's'}`);
+  if (foreign) parts.push(`${foreign} other session${foreign === 1 ? '\'s' : 's\''} worker${foreign === 1 ? '' : 's'}`);
   return `${parts.join(' and ')}, not fleet, not watched`;
 }
 
@@ -574,9 +602,27 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         && envQueueMaxInFlight >= 1 && envQueueMaxInFlight <= 12
         ? envQueueMaxInFlight
         : undefined;
+      // `GET /whatis` reads one issue so hovering a ticket key shows what it says. Built
+      // once here rather than per request, and absent without credentials -- a ticket then
+      // resolves from the board alone.
+      const whatIsJira = jiraConfigFromEnv();
+      const whatIsReader = whatIsJira ? createJiraWriteClient(whatIsJira) : null;
+
       const server = new ForgeServer({
         lanes, inbox, journalPath: journalPath(), journalCache: sharedJournalCache, registry,
+        // R-101: the Jira ticket poll runs on its own thread, so a new ticket reaches the
+        // queue on time even while this thread is held by a long read.
+        watcherPoller: new ThreadTicketPoller({
+          pollSeconds: readWatcherPollSeconds(), holdLabels: readHoldLabels(), journal: new Journal(journalPath()),
+        }),
         stuck: () => liveness.stuck(),
+        ...(whatIsReader ? { jiraRead: (key: string) => whatIsReader.read(key) } : {}),
+        // The queue's own Jira search. `queueSearch` has existed and been exported since
+        // the `query`/`backlog` sources were written, and nothing ever passed it here, so
+        // every such add hit the server's throwing stub and answered "jira not configured"
+        // -- with the credentials sitting right there, and the Settings row reading
+        // Connected beside it (Aaron, 2026-09-13: typed a search into the Add box).
+        queueSearch: queueSearch(),
         reasoner,
         // R-55: the Codex advisor's routes. The advisor itself never spends unless a
         // caller hits /codex/ask; `ask` never awaits the Codex turn (codexAdvisor.ts).
@@ -589,6 +635,23 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           return Array.isArray(read) ? read.map((proc) => ({ ...proc })) : read;
         },
         queueStore,
+        // R-91: `POST /run/:id/open-pr`. The lane read is the same `whereRunLives` every
+        // other run action uses -- a second copy is exactly how Merge came to refuse on
+        // a queue lane whose repository the queue was holding all along. The readability
+        // rule runs here so a body that would be denied is refused before the request
+        // exists, rather than after it is open for Joe to read.
+        openPrDeps: () => realOpenPrDeps(
+          (input) => execRun({ ...input, cls: input.cls as 'script' }),
+          (run) => {
+            const where = whereRunLives(run, { journalPath: journalPath(), queueStore });
+            return where.repo || where.branch
+              ? { repo: where.repo, branch: where.branch, base: where.base, ticket: where.ticket }
+              : null;
+          },
+          (repo, title, body) => readabilityVerdict(
+            'pr-body', repo, title, body, undefined, new Date().toISOString().slice(0, 10),
+          ),
+        ),
         ...(queueMaxInFlight !== undefined ? { queueMaxInFlight } : {}),
         // A.7: Merge and Promote are clicks. Merge reuses the gate with `merge: true` for
         // repos on FORGE_QUEUE_MERGE_REPOS and then reads the develop deploy's outcome per
@@ -638,7 +701,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         now: () => Date.now(),
         stuck: () => liveness.stuck(),
         isRegisteredRun: (key: string) => Boolean(registry.get(key)) || Boolean(lanes.get(key)),
-        relaunchAbandoned: (goal: string) => relaunchAbandonedGoal(registry, relaunchEngine, goal),
+        relaunchAbandoned: (goal: string) => relaunchAbandonedGoal(registry, relaunchEngine, goal, configDirForLaunch),
         registryRows: () => registry.all(),
         isAlive: (pid) => (deps.alive ?? processAlive)(pid),
         parkedAt: (goal) => readParkRecord(goal)?.at,
@@ -725,6 +788,20 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         liveness.evaluate();
         void wardenTick.run();
         try {
+          // A lane with no process, no queue row and nothing unpushed leaves the board on
+          // its own (Aaron, 2026-09-12: "if a lane is stuck it needs to self heal ... what
+          // would my options even be? leave it and just let it hold up the entire
+          // system?"). Retiring is reversible and deletes nothing, so this asks nobody.
+          // The warden's own rule that it never kills is untouched: this never kills.
+          const swept = server.sweepAbandonedLanes();
+          for (const row of swept.cleared) {
+            process.stdout.write(`lane ${row.id} cleared itself: ${row.why}
+`);
+          }
+        } catch {
+          // One bad pass never stops the tick, the same as every other step here.
+        }
+        try {
           const fleetState = sharedJournalCache.read(journalPath());
           for (const event of reconcileBurnOnce(fleetState, burnReported)) burnJournal.append(event);
 
@@ -767,12 +844,15 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
               mission = undefined;
             }
             const dod = mission ? extractDoD(mission) : undefined;
-            const transcriptTail = admitted?.sessionId
-              ? readTranscriptTail(
-                transcriptPathFor(fleetConfigDirChoice().dir, admitted.cwd, admitted.sessionId),
-                TRANSCRIPT_TAIL_LINES,
+            // The fleet login plus every linked account: the run's transcript lives under
+            // whichever of them it launched on, and a registry row does not say which.
+            const transcriptPath = admitted?.sessionId
+              ? findTranscriptPath(
+                [fleetConfigDirChoice().dir, ...loadAccounts().map((account) => account.configDir)],
+                admitted.cwd, admitted.sessionId,
               )
-              : '';
+              : undefined;
+            const transcriptTail = transcriptPath ? readTranscriptTail(transcriptPath, TRANSCRIPT_TAIL_LINES) : '';
             void transcriptDrift.check(run.run, mission, dod, transcriptTail, admitted?.briefPath);
           }
         } catch {
@@ -851,26 +931,74 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         : undefined;
       if (queueLock && !queueLock.ok) {
         queueLine = `queue NOT started: ${queueLock.reason}`;
+        // R-81: say so on `/state` too. A null field here reads identically to a loop
+        // that should be ticking and has stopped, so the process that is not the ticker
+        // has to name itself rather than stay quiet.
+        server.queueLoop = () => notTickingHere((Number(process.env['FORGE_QUEUE_POLL_S']) || 15) * 1000);
       }
       if (queueLock?.ok) {
         process.once('exit', () => queueLock.release());
         const queueJournal = new Journal(journalPath());
-        const queueDeps = buildQueueRuntimeDeps(chainEnv, configDirForLaunch, deps, queueStore);
+        const queueDeps = {
+          ...buildQueueRuntimeDeps(chainEnv, configDirForLaunch, deps, queueStore),
+          // What `forge clear` resets, minus the zero-turn-start count: a retry relaunching
+          // the same run key must not be refused on the first park's stored reason, but the
+          // breaker still stops a run that keeps dying on start.
+          clearRunBlock: (runKey: string) => {
+            new Lanes(lanesDir()).put(runKey, { needs_aaron: null });
+            clearParkRecord(runKey);
+          },
+        };
         const pollSeconds = Number(process.env['FORGE_QUEUE_POLL_S']) || 15;
         // B.1: three identical consecutive queue.tick-error rows back this off to a
         // 10 minute drip rather than retrying every pollSeconds all night on the same
         // dead Jira token; any change in the error resumes it at once.
         const queueBackoff = new QueueTickBackoff(queueJournal);
-        const queueTick = setInterval(() => {
-          if (!queueBackoff.dueToRun()) return;
-          void runQueueTick(queueDeps, queueStore.all())
-            .then(() => queueBackoff.onSuccess())
-            .catch((error) => {
-              const message = error instanceof Error ? error.message : String(error);
-              queueJournal.append({ event: 'queue.tick-error', actor: 'queue', message });
-              queueBackoff.onError(message);
+        // R-76: every question out with a teammate is read back on the same cadence the
+        // queue already ticks on -- one `conversations.replies` per open pass, at most
+        // ten of those, and nothing at all when Slack is not configured. The watermark
+        // is persisted only on a clean read, so a refused call re-reads next tick rather
+        // than losing a reply.
+        const slackWatermarks = fileWatermarkStore();
+        const slackInbox = new Inbox(inboxDir());
+        // One poll at a time. Two overlapping polls read the same watermark, attach the
+        // same reply twice, and the later-finishing one can persist the older mark.
+        // Found by code review, 2026-09-11.
+        let slackPolling = false;
+        const readSlack = (): void => {
+          if (slackPolling) return;
+          slackPolling = true;
+          void readSlackReplies(slackWatermarks.get('slack'), {
+            config: slackConfigFromEnv(),
+            inbox: slackInbox,
+            append: (row) => { queueJournal.append(row as never); },
+          }).then((result) => {
+            if (result.ok) slackWatermarks.set('slack', result.watermark);
+          }).catch((error: unknown) => {
+            queueJournal.append({
+              event: 'slack.failed', actor: 'intake',
+              reason: error instanceof Error ? error.message : String(error),
             });
-        }, pollSeconds * 1000);
+          }).finally(() => { slackPolling = false; });
+        };
+
+        // R-81: the timer callback is the runner's own `tick`, not a closure beside it.
+        // It never throws, records a failure once per run of consecutive failures,
+        // remembers when a pass last finished so `/state` can say the loop is overdue,
+        // and writes one completion row a minute so a held item -- which deliberately
+        // writes no row of its own -- still proves the loop ran.
+        const queueRunner = new QueueTickRunner({
+          tick: (items) => runQueueTick(queueDeps, items).then(() => undefined),
+          items: () => queueStore.all(),
+          journal: { append: (row) => { queueJournal.append(row as never); } },
+          backoff: queueBackoff,
+          intervalMs: pollSeconds * 1000,
+          before: readSlack,
+        });
+        server.queueLoop = () => queueRunner.status();
+        // R-101: a ticket the Jira feed just queued is planned on this tick, not the next.
+        server.watcher.onTicketsAdded(() => queueRunner.tick());
+        const queueTick = setInterval(queueRunner.tick, pollSeconds * 1000);
         queueTick.unref();
         queueLine = `queue on, polling every ${pollSeconds}s`;
       }
@@ -888,34 +1016,30 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         journal: shutdownJournal,
       });
 
-      // R-11 part 2: the Jira watcher bridge -- FORGE_BACKLOG_PROJECT names the project it
-      // watches, the same variable buildBacklogJql already reads for a backlog add. Its own
-      // timer at FORGE_CHAIN_POLL_S seconds (default 30, not the chain's 300s default),
-      // since a comment or a status move on an owned ticket should reach the queue fast.
+      // R-68: the Jira watcher now runs through `server.watcher` (`sync/watcher-state.ts`'s
+      // `JiraWatcher`), which `POST /watcher/on|off` can start and stop later with no
+      // restart. Boot still starts it automatically -- from `watcher.json`'s own `on`
+      // flag once that file exists, falling back to the old `FORGE_BACKLOG_PROJECT`-is-set
+      // rule only for a machine that has never flipped the switch. `existsSync` rather
+      // than `watcherFileState.on` alone is load-bearing (/code-review medium finding):
+      // without it, an explicit `POST /watcher/off` writes `{on:false}` and the very next
+      // `forge up` silently overrides it back on whenever FORGE_BACKLOG_PROJECT is still
+      // set in the environment -- the ordinary case, since nothing unsets that env var
+      // when a person flips the switch off from the console.
       let watcherLine = '';
-      const watcherProject = process.env['FORGE_BACKLOG_PROJECT'];
-      const watcherJiraConfig = jiraConfigFromEnv();
-      if (!watcherProject) {
+      const watcherFileState = readWatcherState();
+      const watcherProject = watcherFileState.project ?? process.env['FORGE_BACKLOG_PROJECT'] ?? null;
+      const shouldStartWatcher = shouldAutoStartWatcher(
+        existsSync(watcherStatePath()), watcherFileState, process.env['FORGE_BACKLOG_PROJECT'],
+      );
+      if (!shouldStartWatcher || !watcherProject) {
         watcherLine = 'jira watcher NOT started: no FORGE_BACKLOG_PROJECT';
-      } else if (!watcherJiraConfig) {
+      } else if (!jiraConfigFromEnv()) {
         watcherLine = 'jira watcher NOT started: no Jira credentials';
       } else {
-        const watcherJournal = new Journal(journalPath());
-        const watcherPollSeconds = readWatcherPollSeconds();
-        const watermarks = fileWatermarkStore();
-        const feed = watcherFeed(watcherProject, watcherJiraConfig);
-        const watcherTickTimer = setInterval(() => {
-          void watcherTick({
-            feed, watermarks, store: queueStore, journal: watcherJournal,
-          }).catch((error: unknown) => {
-            watcherJournal.append({
-              event: 'watcher.tick-error', actor: 'watcher',
-              message: error instanceof Error ? error.message : String(error),
-            } as never);
-          });
-        }, watcherPollSeconds * 1000);
-        watcherTickTimer.unref();
-        watcherLine = `jira watcher on for ${watcherProject}, every ${watcherPollSeconds}s`;
+        void server.watcher.start(watcherProject);
+        if (!watcherFileState.on) writeWatcherState({ on: true, project: watcherProject });
+        watcherLine = `jira watcher on for ${watcherProject}, every ${server.watcher.status().pollSeconds}s`;
       }
 
       // The self loop (`self-wire.ts`): findings about the fleet become queue items on
@@ -948,10 +1072,39 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       }
       server.selfStatus = () => selfLoop.status();
 
+      // R-70: the Accounts page gets the same re-probe cadence Sessions and the Warden
+      // tick already have -- nothing else refreshes a login's reading once the Settings
+      // page is closed, so a stale row could sit for as long as the console stayed shut.
+      // Every FORGE_ACCOUNTS_PROBE_S seconds (default 600), force a fresh read of every
+      // account and journal what came back. Guarded inside scheduleAccountsProbeTick
+      // exactly like the registry and self ticks above: one bad probe never stops it.
+      const accountsProbeJournal = new Journal(journalPath());
+      const accountsProbeService = new AccountsService({
+        loadAccounts: () => loadAccounts(accountsRegistryPath()),
+        readUsage: () => readAccountUsage(),
+        recordReading: diskWriters.recordReading,
+        recordReadError: diskWriters.recordReadError,
+        liveRuns: () => liveRunsByAccount(
+          replay(journalPath()).events,
+          registry.all().filter((row) => processAlive(row.pid)).map((row) => row.goal),
+        ),
+        fleetConfigDir: fleetLoginDir(() => fleetConfigDirChoice().dir),
+        probe: realProbe(),
+      });
+      scheduleAccountsProbeTick({
+        seconds: Number(process.env['FORGE_ACCOUNTS_PROBE_S']) || 600,
+        accounts: {
+          refreshAll: () => accountsProbeService.refreshAll(),
+          list: () => accountsProbeService.list(),
+        },
+        journal: accountsProbeJournal,
+      });
+
       return {
         code: 0,
         lines: [
           `forge ${runtimeVersion()} up on http://127.0.0.1:${port}`,
+          `serving ${runtimeCheckout()}`,
           `replayed ${state.events.length} events, ${Object.keys(state.runs).length} run(s)`,
           state.torn ? `${state.torn} torn journal line(s) survived and were skipped` : '',
           ...reconcileLines,
@@ -1002,7 +1155,9 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       const verdict = checkLaunch({
         brief,
         condition: condition || 'Work the brief to completion.',
-        loginRunning: loginInFlight(),
+        // The injected process list when a specimen supplies one: the default is a real
+        // PowerShell process read, 1.2-1.4 s per run on Windows, that no test could skip.
+        loginRunning: loginInFlight(...(deps.processes ? [deps.processes()] : [])),
         killSwitch: readKillSwitch(killSwitchPath()),
       });
       if (!verdict.ok) {
@@ -1026,6 +1181,25 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         };
       }
 
+      if (breaker.blocked(slug)) {
+        // Item 6 (2026-09-11): a warden reading about a process that is now gone is
+        // history, not a reason to refuse the next launch. `clearStaleBlock` drops only
+        // those, only while no process is alive for the run, and journals what it
+        // dropped; every other block (the zero-turn-start streak above all) still stands
+        // and still needs a person.
+        const blockJournal = new Journal(journalPath());
+        try {
+          clearStaleBlock(slug, {
+            lanes, breaker, append: (row) => { blockJournal.append(row); }, clearPark: clearParkRecord,
+            runAlive: (key) => {
+              const row = new Registry(registryDir()).get(key);
+              return Boolean(row && processAlive(row.pid));
+            },
+          });
+        } finally {
+          blockJournal.close();
+        }
+      }
       if (breaker.blocked(slug)) {
         return {
           code: 1,
@@ -1184,6 +1358,28 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           registry.setSession(slug, sessionId, model);
           lanes.put(slug, { session_id: sessionId });
         },
+        // The ticket moves the moment the pull request opens. Without this the fix
+        // existed and nothing called it, so a pull request opened by a worker still left
+        // its ticket reading Backlog -- the board-lies defect, one step removed.
+        onPullRequestOpened: (cwd) => handlePullRequestOpened(cwd, {
+          readPrAt: readPrAtCheckout(execRun),
+          client: () => {
+            const config = jiraConfigFromEnv();
+            return config ? createJiraWriteClient(config) : null;
+          },
+          env: () => ({
+            wipAccountId: process.env['FORGE_JIRA_WIP_ACCOUNT'],
+            wipTransitionId: process.env['FORGE_JIRA_WIP_TRANSITION'],
+          }),
+          emit: (event) => {
+            const prJournal = new Journal(journalPath());
+            try {
+              prJournal.append({ ...event, actor: 'queue' } as never);
+            } finally {
+              prJournal.close();
+            }
+          },
+        }),
       });
       const worker = new Worker({
         run: slug,
@@ -1245,8 +1441,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       return {
         code: exitCode,
         lines: [
-          `${slug} ${result.verdict} on ${result.model}, ${result.turns} turn(s), `
-            + `${result.sessions.length} session(s), ${result.handoffs} handoff(s)`,
+          describeResult(slug, result),
           configDirLine,
         ],
       };
@@ -1267,6 +1462,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       const answerText = answer.join(' ');
       const answered = inbox.answer(key, answerText);
       if (!answered) return { code: 1, lines: [`nothing asked ${key}`] };
+      journalInterviewAnswer((row) => appendOnce(journalPath(), row), answered, undefined, 'cli');
       // A run this process itself holds the live session for (deps.engine, injected by a
       // specimen or by `forge run` calling straight through) is answered in place. Every
       // run also gets its answer queued through the inbox, which is what reaches a run
@@ -1322,6 +1518,67 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           ...stale.map((goal) => `  stale       ${goal}`),
         ],
       };
+    }
+
+    /**
+     * One pass over every outward text a work item is about to write, before any of them
+     * is attempted. Takes a JSON file of the shape `OutwardDraft` -- the commit message,
+     * the pull request title and body and the issue comment together -- and reports every
+     * refusal the write-time gates would raise, each naming its own ceiling and count.
+     * Exit 1 when any surface would be refused, so a script can stop before it writes.
+     */
+    case 'draft': {
+      const file = rest[0];
+      if (!file) return { code: 2, lines: ['forge draft needs a path to a draft JSON file'] };
+      let draft: OutwardDraft;
+      try {
+        draft = JSON.parse(readFileSync(file, 'utf8')) as OutwardDraft;
+      } catch (err) {
+        return { code: 2, lines: [`cannot read ${file}: ${err instanceof Error ? err.message : String(err)}`] };
+      }
+      if (typeof draft !== 'object' || draft === null || typeof draft.texts !== 'object' || draft.texts === null) {
+        return { code: 2, lines: [`${file} must be an object with a "texts" object`] };
+      }
+      const report = checkOutwardDraft(draft, new Date().toISOString().slice(0, 10));
+      const refused = report.findings.some((f) => f.verdict === 'DENY');
+      return { code: refused ? 1 : 0, lines: draftReportLines(report) };
+    }
+
+    /**
+     * Move the ticket a pull request names, the moment the pull request opens. The queue
+     * already does this for work it drove itself; a pull request opened by hand left the
+     * ticket reading Backlog with the work already done, which is how the board came to
+     * offer finished work. Run it right after `gh pr create`.
+     */
+    case 'pr-opened': {
+      const repoIdx = rest.indexOf('--repo');
+      const prIdx = rest.indexOf('--pr');
+      const repoArg = repoIdx >= 0 ? rest[repoIdx + 1] : undefined;
+      const prArg = prIdx >= 0 ? rest[prIdx + 1] : undefined;
+      if (!repoArg || !prArg) return { code: 2, lines: ['forge pr-opened needs --repo OWNER/NAME and --pr NUMBER'] };
+      const prNumber = Number(prArg);
+      if (!Number.isInteger(prNumber) || prNumber <= 0) return { code: 2, lines: [`--pr must be a positive number, got ${prArg}`] };
+      const jiraConfig = jiraConfigFromEnv();
+      if (!jiraConfig) return { code: 2, lines: ['no issue-tracker credentials configured; nothing to move'] };
+      const snapshot = await REAL_GH.viewPr(repoArg, prNumber);
+      const prJournal = new Journal(journalPath());
+      try {
+        const result = await runPrOpenedHandoff(
+          createJiraWriteClient(jiraConfig),
+          { prUrl: `https://github.com/${repoArg}/pull/${prNumber}`, title: snapshot.title },
+          {
+            wipAccountId: process.env['FORGE_JIRA_WIP_ACCOUNT'],
+            wipTransitionId: process.env['FORGE_JIRA_WIP_TRANSITION'],
+          },
+          (event) => prJournal.append({ ...event, actor: 'queue' }),
+        );
+        // Non-zero on any refused write. A script runs this straight after `gh pr create`
+        // and cannot see the ticket; reporting success while it still reads Backlog is
+        // the very defect this command exists to stop (review, 2026-09-12).
+        return { code: result.failed > 0 ? 1 : 0, lines: result.lines };
+      } finally {
+        prJournal.close();
+      }
     }
 
     case 'gotchas': {
@@ -1804,7 +2061,15 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       const gh = deps.councilGh ?? REAL_GH;
       const snapshot = await gh.viewPr(repo, pr);
 
-      if (snapshot.checks.conclusion !== 'success') {
+      // A repository with its Actions switched off reports an empty rollup for ever, so
+      // `pending` there is not "not yet" -- it is "never", and refusing on it meant the
+      // council never read a pull request in such a repository at all. The queue's own
+      // gate runs that repository's verify in place of the checks (`intake/noCiGate.ts`);
+      // this is the same decision on the review side, so the two agree.
+      const noChecksHere = snapshot.checks.conclusion === 'pending'
+        && gh.repoRunsChecks !== undefined
+        && !(await gh.repoRunsChecks(repo));
+      if (snapshot.checks.conclusion !== 'success' && !noChecksHere) {
         // BBZ-60/62/74/202, 2026-09-08: `pending` is "not yet", never "no" -- a queued or
         // in-progress check almost always turns green on its own. Marking it on `data`
         // lets `chainCouncil` and the queue's `advanceItem` retry instead of parking,
@@ -2315,7 +2580,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         code: 2,
         lines: [
           'forge up | status | run BRIEF | send RUN TEXT | answer KEY ANSWER | stop --all '
-            + '| gotchas | clear LANE | accounts [list|add ID DIR [N]|remove ID] | cutover [--from DIR] | intake --dry-run | reason --class CLASS '
+            + '| gotchas | draft FILE | pr-opened --repo O/N --pr N | clear LANE | accounts [list|add ID DIR [N]|remove ID] | cutover [--from DIR] | intake --dry-run | reason --class CLASS '
             + '| council --repo O/N --pr N | gate --repo O/N --pr N [--merge] [--handoff FILE] '
             + '| chain [retry PACKET [--reason "<why>"]] | [skip PACKET [--reason "<why>"]]',
           `the server listens on ${FORGE_PORT}`,

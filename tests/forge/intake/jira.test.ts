@@ -184,6 +184,13 @@ describe('createJiraWriteClient — order 19 backstop on comment()', () => {
     expect(result.body).toContain('readability refused');
   });
 
+  it('returns the created comment\'s id, so the feed can recognise its own replies', async () => {
+    const fetchFn = (async () => jsonResponse(201, { id: '10042' })) as unknown as typeof fetch;
+    const client = createJiraWriteClient({ ...CONFIG, fetchFn });
+    const result = await client.comment('BBZ-1', 'Short comment, well under the ceiling.');
+    expect(result).toEqual({ ok: true, status: 201, id: '10042' });
+  });
+
   it('a conforming comment reaches fetchFn exactly once and reports ok: true', async () => {
     let calls = 0;
     const fetchFn = (async () => { calls += 1; return jsonResponse(200, {}); }) as unknown as typeof fetch;

@@ -505,6 +505,14 @@ function foldLine(state: FleetState, line: string): void {
       }
     }
   }
+  // A retry is a person asking for the run again, so it gets a fresh wall clock: the next
+  // `run.started` for that key measures from itself. Without this the warden parked every
+  // retried relaunch on its first tool call (2026-09-15, "Running 20.8 h, expected 3.0 h").
+  // An automatic relaunch writes no such row and still measures from the first start.
+  if (row.event === 'queue.relaunch-on-retry' && typeof row['previousRunKey'] === 'string') {
+    const retried = state.runs[row['previousRunKey']];
+    if (retried) delete retried.startedAt;
+  }
   if (!row.run) return;
   const run = runOf(state, row.run);
   run.lastEventAt = row.at;

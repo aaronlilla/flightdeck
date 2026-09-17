@@ -1,4 +1,12 @@
 /**
+ * How long a confirm token stays good. Lives here rather than beside the write path
+ * because both sides need it: `command.ts` refuses a token past it, and the thread
+ * builder uses it to decide that a replayed confirm card can no longer be answered by
+ * anyone. `thread.ts` importing `command.ts` would close an import cycle.
+ */
+export const CONFIRM_TTL_MS = 2 * 60 * 60_000;
+
+/**
  * The console model: the shapes the Flightdeck board renders and the routes that
  * carry them. Shared by the server (`src/forge/console/**`, which computes them from
  * the journal, the registry and the policy) and the browser console (`src/console/**`,
@@ -150,6 +158,62 @@ export interface ReauditResponse {
   reason?: string;
 }
 
+/**
+ * `POST /run/:id/open-pr`'s own response. `number` and `url` are set on success, and also
+ * on the 409 -- the request that already exists is the useful thing to hand back, not an
+ * error. `advice` carries the readability rule's note when it advised rather than denied,
+ * which is the difference between a body that ships and one worth trimming first.
+ */
+export interface OpenPrResponse {
+  ok: boolean;
+  number: number | null;
+  url: string | null;
+  refused: string;
+  advice: string;
+}
+
+/**
+ * `POST /ticket/:key/handoff`'s own response: the comment, the assignment and the
+ * transition, each reported on its own.
+ *
+ * One verdict for three writes is the thing this shape exists to prevent. Two of three
+ * landing is a different situation from none and from all, and a caller that cannot tell
+ * them apart will say the ticket was handed on either way -- the board lying in the one
+ * place somebody is relying on it.
+ *
+ * `refused` is set only when nothing was attempted, and is empty whenever the writes ran.
+ */
+/**
+ * Who a ticket can be handed to, and the label a screen shows for each.
+ *
+ * One list, read by the control, the route's own people map and the stub alike. Three
+ * hardcoded copies drifted apart silently before this: adding a destination left the
+ * screen offering the old three, and renaming an id made the screen send a value the
+ * route refused. The names are roles, not people -- who `qa` actually is comes from the
+ * environment, so swapping the person is a setting, not a change here.
+ */
+export const HANDOFF_DESTINATIONS = [
+  { id: 'qa', name: 'QA' },
+  { id: 'backend', name: 'the backend lead' },
+  { id: 'me', name: 'me' },
+] as const;
+
+export type HandoffDestinationId = typeof HANDOFF_DESTINATIONS[number]['id'];
+
+export interface TicketHandoffStep {
+  name: 'comment' | 'assign' | 'transition';
+  ok: boolean;
+  /** What happened, in a sentence a person can act on: what landed, or why it did not,
+   *  or which setting is missing for a step that could not be attempted at all. */
+  detail: string;
+}
+
+export interface TicketHandoffResponse {
+  ok: boolean;
+  steps: TicketHandoffStep[];
+  refused: string;
+}
+
 export interface LaneQuestion {
   /** The inbox key `POST /answer` takes. */
   key: string;
@@ -162,6 +226,13 @@ export interface LaneQuestion {
   /** Whether `opts` came from the worker's `forge_ask` call as-is, or got padded out
    *  by the reasoner (`completeAskOptions`, W1). */
   optionSource?: 'worker' | 'drafted';
+  /** Pass to… (spec `doctrine/design/operator-experience.md` §3, R-75 renders, R-76
+   *  writes): the teammate the question was handed to, when, the Slack thread `ts` that
+   *  carries it, and who answered. Absent or null means not passed. */
+  passedTo?: string | null;
+  passedAt?: number | null;
+  passedThread?: string | null;
+  answeredBy?: string | null;
 }
 
 /**
@@ -377,7 +448,9 @@ export interface Message {
   /** One line of blast radius on a confirm card. */
   blast?: string;
   pr?: LanePr;
-  resolved?: 'confirmed' | 'declined' | 'ran' | 'answered';
+  /** `expired` (2026-09-12): the confirm's token is gone, so the card can no longer be
+   *  answered by anyone. It stays in the history and stops being an ask. */
+  resolved?: 'confirmed' | 'declined' | 'ran' | 'answered' | 'expired';
   undoable?: boolean;
   undone?: boolean;
   /** Freshness of the fact behind an event chip. */
@@ -553,8 +626,13 @@ export interface AccountItem {
   /** Whether this account is the one the next session of its provider launches under. */
   selected?: boolean;
   /** The machine's default Claude login, which every run used before accounts existed.
-   *  Shown so its limits are visible; it cannot be unlinked from the console. */
+   *  Shown so its limits are visible. It has no registry row, so it cannot be unlinked;
+   *  what it can be is switched out of the rotation -- see `off`. */
   fleet?: boolean;
+  /** Set on the `fleet` row when the operator has taken that login out of the rotation.
+   *  It stays logged in and is still read for settings and credentials; what stops is
+   *  spending its quota. */
+  off?: boolean;
 }
 
 export interface AccountsResponse {
@@ -741,6 +819,14 @@ export interface QueueItem {
   /** A.3: when the Jira write-back at review ran for this item -- absent means it
    *  hasn't fired yet. Set once, alongside the transition into `review`. */
   handoffAt?: number;
+  /** R-101: the ticket carried a hold label, so the item stops at its pull request: no
+   *  merge and no QA handoff, whatever the merge allow-list says. */
+  noMerge?: boolean;
+  /** Item 16, 2026-09-12: when the ship prediction was posted, so a second pass over
+   *  the same item does not post a second one. A FIX FIRST round leaves the item
+   *  `running` and the next tick re-enters the review hop; marking the pull request
+   *  ready again is harmless, commenting again is not (code review, 2026-09-12). */
+  predictionAt?: number;
   /** A.8/A.9: the PR's own changed-file paths, fetched once the item has a PR and
    *  before the council reads it -- shared by A.8's real figures at `review` and A.9's
    *  overlap check against every other item running or in review on the same repo. */
@@ -797,6 +883,26 @@ export interface QueueItem {
    *  Once it reaches `PENDING_CHECKS_POLL_CAP` (`intake/queue.ts`), the item parks instead
    *  of retrying again, so a check that never finishes cannot hold an item forever. */
   pendingGatePolls?: number;
+  /** Item 1 (2026-09-11): how many times the tick has handed this item back to the
+   *  worker, capped at `PARK_RECOVERY_CAP`. Successful recoveries only -- a "not yet"
+   *  reading costs nothing, because the tick runs every 15 seconds and a budget spent on
+   *  those would abandon the item inside a minute. Absent means never recovered. */
+  recoveryAttempts?: number;
+  /** Item 1: the last reading a recovery held on, so the same answer every 15 seconds
+   *  writes one journal row rather than one per tick. Cleared on a recovery. */
+  recoveryHeldOn?: string | null;
+  /** Item 1: the park reason that was last judged a person's call, so the decline is
+   *  journalled once per reason rather than every tick -- and a second, different
+   *  unrecoverable reason still gets its own row. */
+  recoveryDeclinedFor?: string | null;
+  /** Item 1: when the recovery pass last asked GitHub about this item's checks, and how
+   *  many times it has asked in total. Re-reading checks is a network call against a
+   *  shared rate limit, so it is windowed and capped; reading a local pid is neither. */
+  checksReadAt?: number;
+  checksReads?: number;
+  /** Item 1: set once while the width is what is holding a recovery back, so that
+   *  hold is journalled once rather than on every flip of a queue sitting at its cap. */
+  recoveryWidthHeld?: boolean;
   /** The Queue view's two columns (2026-09-09, `Flightdeck Console.dc.html` 1c), filled by
    *  `GET /queue` at read time like `title`: why this item sits where it does in the
    *  order, and when it starts, in words. Absent on a response older than this field. */
@@ -909,6 +1015,11 @@ export interface RunJournalResponse {
  */
 export interface ConsoleStateSummary {
   queue_on: boolean;
+  /** Queue-paused visibility fix: `readQueuePaused()`, read fresh off the flag file on
+   *  every `/state` call. Independent of `queue_on` -- a queue that is off can still
+   *  carry a stale pause flag on disk, and both are shown. Optional because the stub
+   *  server (`stub-server.ts`) does not yet serve it; absent reads as not-paused. */
+  queue_paused?: boolean;
   /** The Conductor agent behind the rail (2026-09-08): whether the rail routes to it
    *  and the class timeout after which the client says it did not answer. */
   conductor?: { enabled: boolean; timeoutMs: number; open?: boolean };
@@ -956,6 +1067,14 @@ export interface ConsoleStateSummary {
  *   POST /run/:id/recheck   {}           LaneSummary    fresh PR/audit/drift facts, cache bypassed
  *   POST /run/:id/reaudit   {}           ReauditResponse   runs the council again on the current head
  *   POST /run/:id/cap       {tokenCap}   ActionResult   undoable
+ *   POST /run/:id/open-pr   {title, body, draft?}  OpenPrResponse
+ *                                            200 opened; 400 the request was wrong;
+ *                                            409 one is already open, and is linked;
+ *                                            501 this console has no GitHub wiring
+ *   POST /ticket/:key/handoff  {to, comment}  TicketHandoffResponse
+ *                                            200 wrote some or all of it, per step;
+ *                                            400 the request was wrong, wrote nothing;
+ *                                            503 no Jira credentials, wrote nothing
  *   POST /caps              {dailyTokens?, runTokens?}  Caps | 422 {error, hardTokens}   undoable
  *   POST /command           {text}       CommandResponse
  *   POST /integrations/:id/check         IntegrationsResponse

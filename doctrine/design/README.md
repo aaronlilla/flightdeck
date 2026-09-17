@@ -6,6 +6,7 @@ This folder is the console spec. It is the Claude Design project I edited on 202
 - `FD Chrome.dc.html` is the window strip and the tab bar (Blockers, Board, Queue, Review, Settings).
 - `FD Board.dc.html` is the two-column running grid, then Needs you, Waiting for merge, Blocked or parked, and Finished today.
 - `FD Rail.dc.html` is the Conductor rail: status lines, receipts, question cards with options, and the send box.
+- `operator-experience.md` is the operator spec decided 2026-09-11: Flow rows per ticket, the Needs-you strip, the conversation-only rail, the interview and the Slack pass. R-74 to R-78 build to it.
 - `_ds/industry/` is the Industry design system the screens use: Barlow and Barlow Condensed, a light ground, one steel accent, square corners, registration marks. `styles.css` is the token sheet.
 - `support.js` is the runtime the `.dc.html` files load. `github.md` is the project's sync record.
 

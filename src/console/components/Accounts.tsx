@@ -8,7 +8,7 @@ import type {
 } from '../../shared/console-model.js';
 import {
   connectAccount, deleteLeftover, disconnectAccount, getConnectAttempt, getLeftovers, isConfirmPending,
-  updateAccount,
+  setDefaultLoginOff, updateAccount,
 } from '../api.js';
 import { Marks } from './QuestionCard.js';
 
@@ -233,6 +233,23 @@ export function Accounts({ accounts, now, onChanged, pollMs = DEFAULT_POLL_MS }:
     onChanged?.();
   }
 
+  /** The machine's own login has no registry row to patch, so its one control writes
+   *  through here instead. Same shape as `patch`: write, refetch, show the refusal on the
+   *  row rather than guessing the new state locally. */
+  async function setOff(off: boolean): Promise<void> {
+    setPatchErrors((prev) => {
+      const next = { ...prev };
+      delete next['fleet'];
+      return next;
+    });
+    const result = await setDefaultLoginOff(off);
+    if (!result.ok) {
+      setPatchErrors((prev) => ({ ...prev, fleet: result.error ?? 'that change was refused' }));
+      return;
+    }
+    onChanged?.();
+  }
+
   /** Two passes, the same gate every other destructive control here uses. The first
    *  call deletes nothing and comes back with a server-issued token; only a second call
    *  carrying that token removes anything, so a stray click cannot. */
@@ -302,10 +319,13 @@ export function Accounts({ accounts, now, onChanged, pollMs = DEFAULT_POLL_MS }:
 
       {accounts.map((account) => {
         const limited = account.limitedUntil !== undefined && account.limitedUntil > now;
+        // Whether there is a Claude login besides this machine's own. Without one, the
+        // machine has nothing else to run on and the switch is not offered.
+        const otherClaudeLinked = accounts.some((row) => row.provider === 'claude' && !row.fleet);
         const meta = [
           account.plan ? `${account.plan} plan` : null,
           account.selected ? 'in use' : null,
-          account.fleet ? 'default login' : null,
+          account.fleet ? (account.off ? 'this machine’s login · switched off' : 'this machine’s login') : null,
         ].filter(Boolean).join(' · ');
         return (
           <div
@@ -334,7 +354,31 @@ export function Accounts({ accounts, now, onChanged, pollMs = DEFAULT_POLL_MS }:
               ) : null}
             </div>
             <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>{`${account.liveRuns} live run${account.liveRuns === 1 ? '' : 's'}`}</span>
-            {account.fleet ? null : (
+            {account.fleet ? (
+              /* No registry row, so nothing to unlink -- what this login can be is taken
+                 out of the rotation, which is what Aaron was reaching for when he said he
+                 had no way to stop the spent one being used. Only offered while another
+                 Claude account is linked, because this is the only login a machine with
+                 none has, and the server refuses that case too. */
+              otherClaudeLinked ? (
+                <div className="seg" role="group" aria-label="Whether this machine's own login may be used">
+                  <button
+                    type="button" aria-pressed={account.off !== true}
+                    data-testid="default-login-on"
+                    onClick={() => { void setOff(false); }}
+                  >
+                    Use
+                  </button>
+                  <button
+                    type="button" aria-pressed={account.off === true}
+                    data-testid="default-login-off"
+                    onClick={() => { void setOff(true); }}
+                  >
+                    Off
+                  </button>
+                </div>
+              ) : null
+            ) : (
               <button type="button" className="btn" style={{ padding: '6px 14px' }} onClick={() => { void handleDisconnect(account.id); }}>
                 Unlink
               </button>

@@ -62,13 +62,21 @@ export function accountsRegistryPath(): string {
 
 interface StoredFile {
   accounts: AccountRecord[];
+  /** The operator has taken the machine's own login out of the rotation. It stays logged
+   *  in and is still read for credentials and settings; what stops is spending its
+   *  quota. Absent on every file written before the switch existed, and absent means on,
+   *  so nothing changes for a machine that never touched it. */
+  defaultLoginOff?: boolean;
 }
 
 function readStored(path: string): StoredFile {
   if (!existsSync(path)) return { accounts: [] };
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<StoredFile>;
-    return { accounts: Array.isArray(parsed.accounts) ? parsed.accounts : [] };
+    return {
+      accounts: Array.isArray(parsed.accounts) ? parsed.accounts : [],
+      ...(parsed.defaultLoginOff === true ? { defaultLoginOff: true } : {}),
+    };
   } catch {
     // A torn write (a crash mid-save) reads as empty rather than throwing -- the same
     // tolerance every other small JSON store in this codebase gives a half-written file.
@@ -223,6 +231,41 @@ export function removeAccount(id: string, path: string = accountsRegistryPath())
 }
 
 /**
+ * Whether the machine's own login may still be spent.
+ *
+ * Aaron, 2026-09-12: "i have no way to unlink the other account, which i should be able
+ * to." The login he meant was the machine's own, which has no registry row to remove --
+ * so the control is a switch rather than a delete, and turning it off leaves it logged in
+ * and still readable for settings and credentials.
+ */
+export function defaultLoginOff(path: string = accountsRegistryPath()): boolean {
+  return readStored(path).defaultLoginOff === true;
+}
+
+/**
+ * Turns the machine's own login off or back on.
+ *
+ * Refuses to turn it off while no Claude account is registered, because the machine would
+ * then have nothing at all to run on -- the same line `launchAccountDecision` already
+ * holds, where an empty registry always falls through to this login. Whether the
+ * registered accounts happen to be spent right now is deliberately not part of the test:
+ * that is a state which changes every few hours, and a switch that flips itself back on
+ * is not a switch.
+ */
+export function setDefaultLoginOff(
+  off: boolean, path: string = accountsRegistryPath(),
+): { ok: true } | { ok: false; reason: string } {
+  const stored = readStored(path);
+  if (off && !stored.accounts.some((account) => (account.provider ?? 'claude') === 'claude')) {
+    return { ok: false, reason: 'link a Claude account first; this is the only login the machine has' };
+  }
+  if (off) stored.defaultLoginOff = true;
+  else delete stored.defaultLoginOff;
+  writeStored(path, stored);
+  return { ok: true };
+}
+
+/**
  * How many currently-live runs are attributed to each account, re-derived from the
  * journal's own `run.started` rows and the caller's own list of goals still live right
  * now (a registry read with a liveness check, the same shape `Registry.all()` plus
@@ -340,6 +383,36 @@ export function configDirForSession(
   const picked = pickAccount(accounts, usage, live, now, provider, model);
   if (picked) return { configDir: picked.configDir, accountId: picked.id };
   return { configDir: provider === 'claude' ? fleetConfigDir(existsConfigDir) : null, accountId: null };
+}
+
+/**
+ * The config dir a path that SPENDS quota should pin, or null when there is nothing left
+ * to spend.
+ *
+ * The difference from `workerConfigDir` below is the machine's own login. That login is
+ * still read for settings and credentials whatever the operator chose, so the probes and
+ * the gated launcher keep using `workerConfigDir` and keep getting a directory back.
+ * What the switch stops is spending its quota, so the two paths that spend without
+ * passing `launchAccountDecision` -- the rail and the reasoner -- ask here instead, and
+ * refuse out loud rather than quietly billing a login the operator turned off.
+ *
+ * Null is only ever returned with the switch off, and the switch cannot be turned off
+ * while no Claude account is registered, so null always means "accounts exist and every
+ * one of them is spent" -- the same sentence `launchAccountDecision` refuses with.
+ */
+export function spendConfigDir(
+  model?: string,
+  existsConfigDir?: (path: string) => boolean,
+  now: number = Date.now(),
+  registryPath: string = accountsRegistryPath(),
+  usagePath?: string,
+): string | null {
+  const picked = pickAccount(
+    loadAccounts(registryPath), readAccountUsage(usagePath), {}, now, 'claude', model,
+  );
+  if (picked) return picked.configDir;
+  if (defaultLoginOff(registryPath)) return null;
+  return fleetConfigDir(existsConfigDir);
 }
 
 /**

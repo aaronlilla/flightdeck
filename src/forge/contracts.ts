@@ -181,6 +181,13 @@ export const FORGE_EVENT_NAMES = [
   // journaled, telling a connected board that one lane's own process just flipped
   // alive or dead between polls.
   'lane.live',
+  // R-76, the interview and Pass to… (`intake/interview.ts`, `intake/slack.ts`,
+  // `intake/slackReturn.ts`, `console/command.ts`): a fifth question dropped, a question
+  // handed to a teammate, a teammate's reply coming back, a Slack call that refused, and
+  // the accept-first trio a console click writes (accepted at once, then done or failed
+  // once the post has actually landed).
+  'interview.capped', 'ask.passed', 'ask.returned', 'slack.failed',
+  'action.accepted', 'action.done', 'action.failed',
   // The Governor stream's own (roadmap P4.2, `src/forge/governor.ts`): `result.usage`
   // carries the SDK result message's own `modelUsage` map, journaled by the engine on a
   // segment's end row; `burn.mismatch` is the reconciliation between that sum and B.3.6's
@@ -262,11 +269,43 @@ export const FORGE_EVENT_NAMES = [
   // for a hop that threw outright, `queue.review` once a draft PR exists, and
   // `queue.tick-error` for a worker tick that threw before any item advanced.
   'queue.planning', 'queue.planned', 'queue.launched', 'queue.parked', 'queue.failed',
+  // Phase A of the pipeline-hardening brief (2026-09-11): every decision the recovery
+  // pass and the relaunch guard make is journalled, so each one is a literal here.
+  'queue.recovered', 'queue.recovery-held', 'queue.recovery-declined', 'queue.relaunch-refused',
+  'lane.block-cleared',
   'queue.review', 'queue.tick-error',
+  // Item 16, 2026-09-12: the pull request could not be marked ready at review, so
+  // it stays a draft and nobody can merge it. Journalled rather than swallowed --
+  // a draft nobody can merge is the stall that item exists to remove.
+  'queue.pr-ready-failed',
+  // The pull request was readied but the prediction could not be written into its
+  // body. Kept apart from the row above so neither claims the other's failure.
+  'queue.pr-prediction-failed',
+  // The squash landed on the base but the pull request could not be closed behind it.
+  // Journalled rather than swallowed: an open draft on a done ticket is counted by every
+  // check that reads open pull requests.
+  'queue.pr-close-failed',
+  // The repo builds no mobile app, so there is no ship path to predict and the
+  // pull request is left alone. Journaled because a silent skip is how a feature
+  // that never runs looks exactly like one that does.
+  'queue.pr-ready-skipped',
+  // R-81: `queue.tick-complete` is the row a pass writes about itself, at most once a
+  // minute, carrying how many items it considered. It exists because a held item
+  // deliberately writes no row of its own, so without this the journal cannot tell a
+  // quiet loop from a dead one. Missing from this union it would be quarantined by
+  // `replayEvents` and counted as a torn tail whenever it was the last line.
+  'queue.tick-complete',
+  // `narration.capped` (`console/narrate-store.ts`) predates R-81 and was missing here
+  // for the same reason: the detector below only read `src/forge/*.ts` and never
+  // descended into `console/`, `intake/` or `council/`. It walks the tree now.
+  'narration.capped',
   // R-11 part 2: the Jira watcher bridge's own tick row (`intake/watcherWire.ts`) --
   // `watcher.poll` once per poll that added, sent, or closed at least one item, and
   // `watcher.tick-error` for a tick that threw before any of those.
   'watcher.poll', 'watcher.tick-error',
+  // R-101: the Jira feed (`intake/jiraFeed.ts`, `sync/feed-wire.ts`).
+  'feed.replied', 'feed.deferred', 'feed.sent', 'feed.ignored', 'feed.failed', 'feed.left',
+  'feed.answer-posted', 'feed.answer-failed', 'feed.started', 'feed.tick-error',
   // 2026-09-08: the pre-gate rebase commits whatever a worker left uncommitted in its
   // worktree before replaying onto the base, rather than parking on "You have unstaged
   // changes" for a person to clean up by hand -- one row per item this happened to,
@@ -295,6 +334,10 @@ export const FORGE_EVENT_NAMES = [
   // Retire/Unretire click or the bulk `POST /retire-finished` -- never written by any
   // worker or automation.
   'lane.retired',
+  /** A lane that left the board on its own: no process, no queue row, nothing unpushed.
+   *  Distinct from `lane.retired`, which is a person archiving a finished lane, so the
+   *  board can always tell the two apart and the row carries why it went. */
+  'lane.abandoned',
   // The Conductor agent (2026-09-08): one usage row per model turn on the rail, and one
   // live-feed frame per tool receipt so the console refetches the thread mid-turn.
   'conductor.usage', 'conductor.receipt',
@@ -333,6 +376,28 @@ export const FORGE_EVENT_NAMES = [
   // `readabilityVerdict` before it ever reached the write client; `readability.unconfigured`
   // once per console start when no contract dir is present.
   'readability.refused', 'readability.unconfigured',
+  // The interview's own asks and answers (`intake/interviewPlanner.ts`, `server.ts`'s
+  // `/answer` route): a `queue.waiting` row says an item is held, but not what was asked
+  // or when an answer landed. `interview.asked` is written once per ask actually raised
+  // to the inbox (never for a repo question the scout answered outright); `interview.answered`
+  // is written when `/answer` closes an ask whose run names an item (`item:<id>`), never
+  // for an ordinary worker ask.
+  'interview.asked', 'interview.answered',
+  // A pull request opened by hand naming a ticket key: the ticket is assigned,
+  // transitioned and linked (`intake/prOpened.ts`), so the board stops offering work that
+  // already exists. `pr-opened.no-key` records a pull request that named none, and
+  // `pr-opened.failed` a write the issue tracker refused.
+  'pr-opened.assigned', 'pr-opened.transitioned', 'pr-opened.failed', 'pr-opened.no-key',
+  // Fired instead of a move when the automatic path did nothing and the reason is not
+  // the ticket's: no pull request readable at the checkout, no tracker credentials, or
+  // the handoff itself throwing. A ticket that did not move always says why.
+  'pr-opened.skipped',
+  // 2026-09-14: a worker's own background task, and the runner waiting it out instead of
+  // nudging (`worker.ts`, `sdkengine.ts`). `task.backgrounded` is the engine's own row for
+  // a tool call it sent to the background; `run.waiting` marks the runner giving up its
+  // nudge budget to wait for that task's completion notification instead; `task.settled`
+  // is the wait ending, with or without a woken turn.
+  'task.backgrounded', 'run.waiting', 'task.settled',
 ] as const;
 
 export type ForgeEventName = (typeof FORGE_EVENT_NAMES)[number];
@@ -909,7 +974,9 @@ export interface Reasoner {
    * it, a reasoner spend had no way to be attributed to the run or PR that caused it.
    */
   call(
-    input: { className: string; prompt: string; replyShape?: 'object' | 'array'; run?: string },
+    /** `'text'` (R-101): the reply IS the answer -- a brief, a document -- returned as the
+     *  model wrote it, with no JSON wrapper asked for or required. */
+    input: { className: string; prompt: string; replyShape?: 'object' | 'array' | 'text'; run?: string },
   ): Promise<{ text: string }>;
 }
 

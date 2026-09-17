@@ -41,6 +41,25 @@ for (const name of Object.keys(process.env)) {
 }
 
 /**
+ * Stripping `FORGE_HOME` leaves `forgeHome()` on its default, which is the operator's
+ * own `~/.forge` -- the live console's queue, journal and rail thread. On 2026-09-12 a
+ * new specimen that built a `ConductorAgent` without setting `FORGE_HOME` itself wrote
+ * eight scripted replies ("first", "second") straight into the running console's rail,
+ * where the operator read them beside real answers.
+ *
+ * So the strip above is followed by a home of our own: an empty directory per test file,
+ * removed when the file ends. A specimen that wants its own still sets `FORGE_HOME`, as
+ * every existing one already does; what changes is that forgetting to now writes into a
+ * temp directory instead of into the machine the suite is running on.
+ */
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+
+const suiteHome = mkdtempSync(join(tmpdir(), 'forge-suite-home-'));
+process.env['FORGE_HOME'] = suiteHome;
+process.on('exit', () => { try { rmSync(suiteHome, { recursive: true, force: true }); } catch { /* a temp dir left behind is not worth failing a run over */ } });
+
+/**
  * The readability contract (order 19) is machine data, never repo data (R-59,
  * 2026-09-10) -- a real contract names real repos and real PR prose, which this repo's
  * `check:agnostic` forbids. Every test file gets the neutral in-repo specimen set by

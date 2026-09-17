@@ -47,6 +47,41 @@ function tiles(metrics: ReviewMetrics, tokensToday: number | undefined, dailyTok
   ];
 }
 
+/**
+ * The proposals that were put aside.
+ *
+ * Dismissing one hid it for good: the screen showed only the top open proposal, and the
+ * route that brings a dismissed one back had no control anywhere. "Not now" therefore
+ * meant "never", which is not what it says.
+ */
+function PutAside({ rules }: { rules: ReadonlyArray<{ id: string; title: string; summary: string; status: string }> }): JSX.Element | null {
+  const dismissed = rules.filter((rule) => rule.status === 'dismissed');
+  if (dismissed.length === 0) return null;
+  return (
+    <details data-testid="proposals-put-aside">
+      <summary className="kick" style={{ cursor: 'pointer', color: 'var(--ink3)' }}>{`Put aside (${dismissed.length})`}</summary>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingTop: 10 }}>
+        {dismissed.map((rule) => <PutAsideRow key={rule.id} rule={rule} />)}
+      </div>
+    </details>
+  );
+}
+
+function PutAsideRow({ rule }: { rule: { id: string; title: string; summary: string } }): JSX.Element {
+  const restore = useAction(ACTIONS.restoreProposal, rule.id);
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 16, alignItems: 'center' }}>
+      <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink2)' }}>{rule.title}</span>
+      <button
+        type="button" className="btn" data-testid={`proposal-restore-${rule.id}`}
+        aria-busy={restore.pending} onClick={() => void restore.run(rule.id)}
+      >
+        Bring it back
+      </button>
+    </div>
+  );
+}
+
 export function FlightReview({ proposals, now, tokensToday, dailyTokens, verbose }: FlightReviewProps): JSX.Element {
   const top = proposals?.rules.find((rule) => rule.status === 'open') ?? null;
   const apply = useAction(ACTIONS.applyProposal, top?.id);
@@ -80,6 +115,7 @@ export function FlightReview({ proposals, now, tokensToday, dailyTokens, verbose
           </div>
         </div>
       ) : null}
+      <PutAside rules={proposals?.rules ?? []} />
     </main>
   );
 }

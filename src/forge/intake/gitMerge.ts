@@ -52,8 +52,30 @@ export async function gitSquashMergeToBase(input: GitSquashMergeInput, runGit: G
   const fetch = await git(['fetch', 'origin', base, branch]);
   if (!fetch.ok) return { ok: false, reason: `could not fetch origin/${base} and origin/${branch}` };
 
-  const checkout = await git(['checkout', '-B', base, `origin/${base}`]);
-  if (!checkout.ok) return { ok: false, reason: `could not check out origin/${base}` };
+  // Detached, never `checkout -B <base>`. Claiming the branch by name fails outright when
+  // another worktree of the same repository already holds it -- "fatal: 'main' is already
+  // used by worktree at ..." -- which is the normal shape here: the checkout this merges
+  // in is usually a worktree, and the repository's own main checkout holds the base.
+  // Measured 2026-09-12: a ticket driven in through the console reached review and every
+  // Merge refused with "could not check out origin/main".
+  //
+  // Nothing below needs the branch name locally: the squash, the commit and the push all
+  // work off HEAD, and the push already names `HEAD:<base>`.
+  //
+  // `--force`, because the checkout is a staging area and never somebody's work: whatever
+  // a previous install or half-finished merge left modified in it is thrown away rather
+  // than allowed to refuse the merge. Aaron, 2026-09-13: clicked Merge on a ticket the
+  // board called ready and got "could not check out origin/develop" -- one uncommitted
+  // `package-lock.json` in the merge checkout, and every merge of that repository refused
+  // the same way. Untracked files are left alone: `--force` does not remove them, and a
+  // `clean` here would delete an installed `node_modules` on every single merge.
+  const checkout = await git(['checkout', '--force', '--detach', `origin/${base}`]);
+  if (!checkout.ok) {
+    // Git's own sentence, not a paraphrase of it: the paraphrase named the symptom and
+    // sent a reader looking at the branch when the cause was a file in the checkout.
+    const said = checkout.stdout.trim().split(String.fromCharCode(10)).filter(Boolean).slice(-2).join(' ');
+    return { ok: false, reason: `could not check out origin/${base}${said ? `: ${said}` : ''}` };
+  }
 
   const merge = await git(['merge', '--squash', `origin/${branch}`]);
   if (!merge.ok) {

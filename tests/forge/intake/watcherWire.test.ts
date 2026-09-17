@@ -46,34 +46,76 @@ function feedOf(items: RawPollItem[]): FakePollFeed {
 
 describe('readWatcherPollSeconds', () => {
   it('defaults to 30s -- the chain shares the env var name but not the default', () => {
-    expect(readWatcherPollSeconds({})).toBe(30);
+    expect(readWatcherPollSeconds({})).toBe(5);
   });
 
-  it('reads FORGE_CHAIN_POLL_S when set', () => {
-    expect(readWatcherPollSeconds({ FORGE_CHAIN_POLL_S: '90' })).toBe(90);
+  it('reads FORGE_JIRA_FEED_POLL_S when set', () => {
+    expect(readWatcherPollSeconds({ FORGE_JIRA_FEED_POLL_S: '90' })).toBe(90);
   });
 
   it('falls back to 30s on a non-positive or unparsable value', () => {
-    expect(readWatcherPollSeconds({ FORGE_CHAIN_POLL_S: '0' })).toBe(30);
-    expect(readWatcherPollSeconds({ FORGE_CHAIN_POLL_S: 'nope' })).toBe(30);
+    expect(readWatcherPollSeconds({ FORGE_JIRA_FEED_POLL_S: '0' })).toBe(5);
+    expect(readWatcherPollSeconds({ FORGE_JIRA_FEED_POLL_S: 'nope' })).toBe(5);
   });
 });
 
 describe('watcherJql', () => {
-  it('does not exclude Done -- a Done move is exactly what closes an owned lane', () => {
-    expect(watcherJql('BBZ')).toBe('project = BBZ ORDER BY updated ASC');
-    expect(watcherJql('BBZ')).not.toMatch(/Done/);
+  const MINE = 'project = BBZ AND assignee = currentUser() AND statusCategory != Done AND status != "In Review/QA"';
+
+  it('clause 1 excludes Done and In Review/QA -- new work only (Aaron, 2026-09-11: never queue a shipped or in-review ticket)', () => {
+    expect(watcherJql('BBZ')).toBe(`${MINE} ORDER BY updated ASC`);
+    expect(watcherJql('BBZ', [])).toBe(`${MINE} ORDER BY updated ASC`);
+  });
+
+  it('with two owned keys, clause 2 keeps owned tickets visible whatever their status, so a Done move still closes the lane', () => {
+    expect(watcherJql('BBZ', ['BBZ-1', 'BBZ-2'])).toBe(
+      `((${MINE}) OR key in (BBZ-1, BBZ-2)) ORDER BY updated ASC`,
+    );
+  });
+
+  it('never equals the bare whole-board query the R-68 fix replaces', () => {
+    expect(watcherJql('BBZ')).not.toBe('project = BBZ ORDER BY updated ASC');
+    expect(watcherJql('BBZ', ['BBZ-1'])).not.toBe('project = BBZ ORDER BY updated ASC');
   });
 });
 
 describe('watcherTick', () => {
+  it('builds its feed from that tick\'s own owned keys', async () => {
+    const store = tempStore();
+    addTicketItem(store, 'BBZ-9', 1000);
+    const watermarks = memoryWatermarks();
+    const { journal } = tempJournal();
+    let seen: string[] | undefined;
+
+    await watcherTick({
+      feedFor: (ownedKeys) => { seen = ownedKeys; return feedOf([]); },
+      watermarks, store, journal,
+    });
+
+    expect(seen).toEqual(['BBZ-9']);
+  });
+
+  it('a done item is never re-added: ownedItem covers done items too', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'BBZ-1', 1000);
+    store.append({ id: item.id, at: 1000, state: 'done', updatedAt: 1000 });
+    const watermarks = memoryWatermarks();
+    const feed = feedOf([{ id: 'BBZ-1', updated: 2000 }]);
+    const { journal } = tempJournal();
+
+    const result = await watcherTick({ feedFor: () => feed, watermarks, store, journal });
+
+    expect(result.addedTickets).toEqual([]);
+    expect(store.all().filter((i) => i.ticket === 'BBZ-1')).toHaveLength(1);
+  });
+
   it('under a fake feed, the first poll adds a queue item for a new ticket', async () => {
     const store = tempStore();
     const watermarks = memoryWatermarks();
     const feed = feedOf([{ id: 'BBZ-1', updated: 100 }]);
     const { journal } = tempJournal();
 
-    const result = await watcherTick({ feed, watermarks, store, journal });
+    const result = await watcherTick({ feedFor: () => feed, watermarks, store, journal });
 
     expect(result.addedTickets).toEqual(['BBZ-1']);
     expect(store.all().map((i) => i.ticket)).toEqual(['BBZ-1']);
@@ -95,7 +137,7 @@ describe('watcherTick', () => {
     const sent: Array<{ run: string; text: string }> = [];
 
     const result = await watcherTick({
-      feed, watermarks, store, journal, sendTo: (run, text) => { sent.push({ run, text }); },
+      feedFor: () => feed, watermarks, store, journal, sendTo: (run, text) => { sent.push({ run, text }); },
     });
 
     expect(result.sends).toEqual([{ itemId: item.id, ticket: 'BBZ-1', text: 'Jason: try again' }]);
@@ -116,7 +158,7 @@ describe('watcherTick', () => {
     }]);
     const { journal } = tempJournal();
 
-    const result = await watcherTick({ feed, watermarks, store, journal, now: () => 5000 });
+    const result = await watcherTick({ feedFor: () => feed, watermarks, store, journal, now: () => 5000 });
 
     expect(result.closed).toEqual([{ itemId: item.id, ticket: 'BBZ-1', reason: 'closed in Jira' }]);
     expect(store.get(item.id)?.state).toBe('done');
@@ -128,7 +170,7 @@ describe('watcherTick', () => {
     const feed = feedOf([{ id: 'BBZ-1', updated: 100 }]);
     const { journal, path } = tempJournal();
 
-    await watcherTick({ feed, watermarks, store, journal });
+    await watcherTick({ feedFor: () => feed, watermarks, store, journal });
     journal.close?.();
 
     const lines = readFileSync(path, 'utf8').trim().split('\n').filter(Boolean);
@@ -143,11 +185,30 @@ describe('watcherTick', () => {
     const feed = feedOf([]);
     const { journal, path } = tempJournal();
 
-    await watcherTick({ feed, watermarks, store, journal });
+    await watcherTick({ feedFor: () => feed, watermarks, store, journal });
     journal.close?.();
 
     // Nothing was ever appended, so the file itself is never created -- that absence
     // is the proof of no journal growth, not an empty file.
     expect(() => readFileSync(path, 'utf8')).toThrow(/ENOENT/);
+  });
+});
+
+describe('R-101: hold labels', () => {
+  const detail = (labels: string[]) => ({ summary: 's', description: '', status: 'Backlog', issuetype: 'Task', priority: 'Low', labels, components: [] });
+
+  it('queues a ticket carrying a hold label with noMerge, and leaves others mergeable', async () => {
+    const store = tempStore();
+    const { journal } = tempJournal();
+    await watcherTick({
+      feedFor: () => feedOf([
+        { id: 'ABC-1', updated: 10, detail: detail(['Flight-Test']) },
+        { id: 'ABC-2', updated: 11, detail: detail(['frontend']) },
+      ]),
+      watermarks: memoryWatermarks(), store, journal, holdLabels: ['flight-test'],
+    });
+    const byTicket = new Map(store.all().map((item) => [item.ticket, item]));
+    expect(byTicket.get('ABC-1')?.noMerge).toBe(true);
+    expect(byTicket.get('ABC-2')?.noMerge).toBeUndefined();
   });
 });

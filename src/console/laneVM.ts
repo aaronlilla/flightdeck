@@ -5,6 +5,7 @@
  * state" without rendering anything.
  */
 import type { Blocker, Lane, LaneKind, QueueItem } from '../shared/console-model.js';
+import { runName } from '../shared/runName.js';
 
 export interface BoardStateWord {
   word: 'Working' | 'Needs you' | 'Ready to merge' | 'Blocked' | 'Idle';
@@ -74,7 +75,14 @@ export function timeInStateText(lane: Lane, now: number, word: BoardStateWord['w
  *  `open-pr` and `open-url` open a link; `nudge` asks the Conductor to nudge the owner. */
 export type BoardCommand =
   | 'watch' | 'answer' | 'merge' | 'resume' | 'compact' | 'verify' | 'reopen' | 'unretire' | 'kill' | 'recheck'
-  | 'settings' | 'queue' | 'blockers' | 'open-pr' | 'nudge' | `open-url:${string}`;
+  // Reachable only from the lane sheet's own action bar: a tile shows one button, chosen
+  // by state, so anything the state does not call for had no way to be clicked at all.
+  | 'pause' | 'retire' | 'reaudit'
+  | 'settings' | 'queue' | 'blockers' | 'open-pr' | 'nudge' | `open-url:${string}`
+  // The second press of an irreversible action, carrying the token the first press was
+  // answered with. Shaped like `open-url:` above so the board's dispatcher handles it the
+  // same way, with no new prop threaded through three components.
+  | `confirm:${string}`;
 
 export interface BoardCta {
   label: string;
@@ -137,13 +145,32 @@ export function blockerFor(lane: Lane, blockers: Blocker[]): Blocker | null {
   return blockers.find((b) => b.state !== 'resolved' && b.blocks.some((x) => x.laneId === lane.id)) ?? null;
 }
 
+/** The states that take a row out of the queue as a person reads it. Everything else --
+ *  planning, parked, failed, running, review, blocked, and any state added later -- is
+ *  still in the queue and must never be counted as an empty one. */
+const FINISHED_STATES = new Set(['done', 'merged', 'removed', 'cancelled']);
+
 /** Why an idle slot is idle, from the queue's own state: the sentence under the dashed
  *  card's "Waiting for a Ready ticket". */
 export function idleReason(queue: { items: QueueItem[]; paused: boolean; pauseReason: string | null; on: boolean }): string {
   if (!queue.on) return 'Waiting for a Ready ticket; the queue is off, so nothing starts.';
   if (queue.paused) return `Waiting for a Ready ticket; the queue is paused${queue.pauseReason ? ` (${queue.pauseReason})` : ''}.`;
   const queued = queue.items.filter((item) => item.state === 'queued');
-  if (queued.length === 0) return 'Waiting for a Ready ticket; nothing is in the queue.';
+  // "Nothing is in the queue" is about the whole queue, not about one state of it. It
+  // used to count `queued` rows alone, so a board carrying nineteen tickets in planning,
+  // parked and failed announced an empty queue beside twenty-two visible rows (Aaron,
+  // 2026-09-13, minutes after ingesting his own board). Anything not finished or removed
+  // is still in the queue as a person reads the screen.
+  const waiting = queue.items.filter((item) => !FINISHED_STATES.has(item.state));
+  if (waiting.length === 0) return 'Waiting for a Ready ticket; nothing is in the queue.';
+  if (queued.length === 0) {
+    // Something is there and none of it can start. Say how much and why, rather than
+    // either denying it exists or leaving the slot unexplained.
+    const counts = new Map<string, number>();
+    for (const item of waiting) counts.set(item.state, (counts.get(item.state) ?? 0) + 1);
+    const parts = [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([state, n]) => `${n} ${state}`);
+    return `Waiting for a Ready ticket; ${waiting.length} in the queue, none ready to start (${parts.join(', ')}).`;
+  }
   const done = queue.items.filter((item) => item.state === 'done');
   const satisfied = (slug: string): boolean => done.some((row) => [row.input, row.ticket, row.branch, row.branch?.replace(/^(feature|hotfix)\//, '')].some((name) => name?.toLowerCase() === slug.toLowerCase()));
   const holding = (item: QueueItem): string[] => (item.after ?? []).filter((slug) => !satisfied(slug));
@@ -164,12 +191,19 @@ export interface LaneHeadline {
 }
 
 /** What a lane's headline says, shared by the tile, the ticket sheet band, and
- *  the needs-you plates: a ticket outranks a title, which outranks the fallback
- *  "Untitled run" -- the run id never appears as visible text, only in `runId`,
- *  for a `title` attribute (2026-09-08: the id was still the fallback here, the
- *  one machine string the rest of the board was built to hide). */
+ *  the needs-you plates: a ticket outranks a title, which outranks the words in the
+ *  run's own id, which outranks the fallback "Untitled run". The run id itself never
+ *  appears as visible text, only in `runId`, for a `title` attribute (2026-09-08: the
+ *  id was still the fallback here, the one machine string the rest of the board was
+ *  built to hide).
+ *
+ *  The id's WORDS are not the id (2026-09-12). Two tiles both read "Untitled run" on
+ *  the live board, so there was no telling which `Resume` belonged to which; the words
+ *  somebody wrote when they named the work were sitting in the id the whole time, with
+ *  only the date stamp and the product's own name around them. `runName` answers null
+ *  when an id is a key rather than a name, and the fallback still covers that. */
 export function laneHeadline(lane: Lane): LaneHeadline {
-  return { main: lane.ticket ?? lane.title ?? 'Untitled run', runId: lane.id };
+  return { main: lane.ticket ?? lane.title ?? runName(lane.id) ?? 'Untitled run', runId: lane.id };
 }
 
 /** H2.1: the tile's headline in three parts -- a bold `key` (the ticket), a plain
@@ -183,7 +217,16 @@ export interface TileHeadline {
 }
 
 export function tileHeadlineParts(lane: Lane): TileHeadline {
-  return { key: lane.ticket, title: lane.title, runId: lane.id };
+  // `title` falls through to the words in the run's own id, for the same reason
+  // `laneHeadline` does: two tiles both reading "Untitled run" tell a person nothing
+  // about which is which (Aaron, 2026-09-12). The id itself still never renders.
+  //
+  // A title that only repeats the ticket key is dropped rather than printed twice. The
+  // server sets it that way for a ticket it has not read a summary for yet, and the tile
+  // came out reading "BBZ-123" over "BBZ-123", which says half as much as it looks like.
+  const given = lane.title?.trim();
+  const title = given && given !== lane.ticket ? given : runName(lane.id);
+  return { key: lane.ticket, title, runId: lane.id };
 }
 
 const KIND_LABEL: Record<LaneKind, string> = {

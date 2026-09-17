@@ -157,9 +157,15 @@ export class RoundsRoutes {
         findings: result.sheet.findings.length, applied: result.receipts.filter((r) => r.applied).length,
         waiting: result.sheet.waiting.length, healthy: result.sheet.healthy.length, kinds: countKinds(result.sheet.findings),
       });
-      const toJudge = result.sheet.findings.filter((f) => f.action === 'judge' && !(f.ask?.key && this.judgedAskKeys.has(f.ask.key)));
+      // Deduped per finding, keyed or not. Until 2026-09-14 only ask KEYS were
+      // remembered, so a persons-call park (no key) was handed to the Conductor again
+      // on every tick -- "this is the same set I just handled last round", ten minutes
+      // apart, for hours. The signature is the finding's identity, not its prose:
+      // `why` carries ages ("parked 9 min ago") that move every tick.
+      const signatureOf = (f: RoundsFinding): string => f.ask?.key ?? `${f.kind}:${f.itemId ?? f.laneId}`;
+      const toJudge = result.sheet.findings.filter((f) => f.action === 'judge' && !this.judgedAskKeys.has(signatureOf(f)));
       if (toJudge.length && this.opts.askConductor) {
-        for (const f of toJudge) if (f.ask?.key) this.judgedAskKeys.add(f.ask.key);
+        for (const f of toJudge) this.judgedAskKeys.add(signatureOf(f));
         await this.opts.askConductor(judgeMessage(toJudge));
       }
     } finally {

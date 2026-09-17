@@ -245,6 +245,14 @@ describe('forge status', () => {
     const staleAt = new Date(Date.now() - 6 * 60_000);
     utimesSync(sessionFile, staleAt, staleAt);
 
+    // A REAL worker is one this fleet launched: it has a registry row carrying its pid.
+    // Without one, a worker-shaped pid is another session's subagent and is deliberately
+    // not watched (live escape 2026-09-14) -- the sibling test below pins that side.
+    const admitted = new Registry(join(process.env['FORGE_HOME']!, 'registry')).admit({
+      goal: 'stuck-goal', cwd: 'C:/tmp/stuck-goal', briefPath: 'C:/tmp/stuck-goal/brief.md', pid: 40200,
+    });
+    expect(admitted.ok).toBe(true);
+
     const result = await forge(['status'], {
       processes: () => [
         '40200 "C:\\Users\\<user>\\.local\\bin\\claude.exe" --output-format stream-json '
@@ -257,6 +265,26 @@ describe('forge status', () => {
     expect(text).toContain('stale-session');
     expect(text).not.toContain('interactive claude session');
     expect(text).toContain('1 native host, not fleet, not watched');
+  });
+
+  it('a worker-shaped pid with no registry row is another session\'s, listed quietly and never STUCK', async () => {
+    const account = process.env['FORGE_CONFIG_DIR']!;
+    const sessionsDir = join(account, 'projects');
+    mkdirSync(sessionsDir, { recursive: true });
+    const sessionFile = join(sessionsDir, 'session.json');
+    writeFileSync(sessionFile, '{}', 'utf8');
+    const staleAt = new Date(Date.now() - 6 * 60_000);
+    utimesSync(sessionFile, staleAt, staleAt);
+
+    const result = await forge(['status'], {
+      processes: () => [
+        '40200 "C:\\Users\\<user>\\.local\\bin\\claude.exe" --output-format stream-json '
+          + '--verbose --input-format stream-json',
+      ],
+    });
+    const text = result.lines.join('\n');
+    expect(text).not.toContain('STUCK');
+    expect(text).toContain("1 other session's worker, not fleet, not watched");
   });
 });
 
@@ -440,16 +468,37 @@ describe('forge run', () => {
     };
 
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      const result = await forge(['run', brief], { engine: zeroTurnEngine });
+      const result = await forge(['run', brief], { engine: zeroTurnEngine, processes: () => [] });
       // A zero-turn start never ran forge_done, so it parks: exit 2, per B.3.4.
       expect(result.code).toBe(2);
     }
-    const fourth = await forge(['run', brief], { engine: zeroTurnEngine });
+    const fourth = await forge(['run', brief], { engine: zeroTurnEngine, processes: () => [] });
 
     expect(fourth.code).toBe(1);
     expect(fourth.lines.join(' ')).toMatch(/refusing to start/);
     expect(zeroTurnEngine.started).toHaveLength(3);
   }, 20_000); // four in-process runs; over 5 s under full-suite load, 1.5 s alone
+
+  it('reads the login-in-flight check through the injected process list', async () => {
+    // 2026-09-15: `forge run` called `loginInFlight()` with no argument, so every in-process
+    // run shelled out to a real PowerShell process read (1.2-1.4 s each on Windows) that no
+    // specimen could skip, and the breaker specs above timed out under full-suite load.
+    const brief = join(home, 'ok.md');
+    writeFileSync(brief, '# Goal\n\nDo the thing.\n', 'utf8');
+    const engine = {
+      started: [] as SessionRequest[],
+      async run(config: SessionRequest) {
+        this.started.push(config);
+        return { sessionId: 's-1', turns: [] };
+      },
+    };
+
+    const result = await forge(['run', brief], { engine, processes: () => ['4242 claude.exe login'] });
+
+    expect(result.code).toBe(1);
+    expect(result.lines.join(' ')).toMatch(/a claude login is in flight/);
+    expect(engine.started).toHaveLength(0);
+  });
 
   it('clears the breaker once forge clear runs', async () => {
     const brief = join(home, 'ok.md');
@@ -462,10 +511,10 @@ describe('forge run', () => {
       },
     };
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      await forge(['run', brief], { engine: zeroTurnEngine });
+      await forge(['run', brief], { engine: zeroTurnEngine, processes: () => [] });
     }
     await forge(['clear', 'ok']);
-    const result = await forge(['run', brief], { engine: zeroTurnEngine });
+    const result = await forge(['run', brief], { engine: zeroTurnEngine, processes: () => [] });
     // The clear let it launch again; it still parks with no turns, so exit 2, not a
     // refusal (1) and not done (0).
     expect(result.code).toBe(2);

@@ -168,6 +168,33 @@ describe('ClaudeReasoner', () => {
     expect(row?.['run']).toBeUndefined();
   });
 
+  // R-101 escape, 2026-09-14: 57 of 83 `plan-ticket` calls on the live journal failed
+  // with "the reply was not the required JSON object" -- every one a correct markdown
+  // brief, because the brief prompt asks for a brief and this class demanded JSON.
+  it('returns a plain-text reply as-is when the caller asked for text, and journals it parsed', async () => {
+    const brief = '# Goal: Add a doc file\n\n## What to fix\n\nCreate docs/x.md.';
+    const { fn, calls } = fakeQuery(brief);
+    const journal = new Journal(journalPath);
+    const reasoner = new ClaudeReasoner({ journal, queryFn: fn, existsConfigDir: () => false });
+
+    const result = await reasoner.call({ className: 'evaluate', prompt: 'write the brief', replyShape: 'text' });
+    journal.close();
+
+    expect(result).toEqual({ text: brief });
+    expect(String(calls[0]?.options.systemPrompt ?? '')).not.toContain('JSON');
+    const row = replay(journalPath).events.find((event) => event.event === 'reasoner.call');
+    expect(row?.['parsed']).toBe(true);
+  });
+
+  it('unwraps a text reply the model still wrapped as {"text": ...}', async () => {
+    const { fn } = fakeQuery('{"text": "# Goal: Add a doc file"}');
+    const journal = new Journal(journalPath);
+    const reasoner = new ClaudeReasoner({ journal, queryFn: fn, existsConfigDir: () => false });
+    const result = await reasoner.call({ className: 'evaluate', prompt: 'write the brief', replyShape: 'text' });
+    journal.close();
+    expect(result).toEqual({ text: '# Goal: Add a doc file' });
+  });
+
   it('rejects with a typed parse error and journals parsed: false, on an invalid JSON reply', async () => {
     const { fn } = fakeQuery('not json at all');
     const journal = new Journal(journalPath);

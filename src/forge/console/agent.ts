@@ -22,6 +22,7 @@
  * operator sends is ever silent.
  */
 import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
 
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
@@ -30,9 +31,10 @@ import { Engine, type QueryFn } from '../../adapter/engine.js';
 import type { Inbox } from '../inbox.js';
 import { appendOnce, Journal } from '../journal.js';
 import { CodexAdvisor, realCodexAdvisorRunner } from '../council/codexAdvisor.js';
-import { loadAccounts, configDirForSession } from '../accounts.js';
+import { loadAccounts, configDirForSession, defaultLoginOff } from '../accounts.js';
 import { readAccountUsage } from '../accounts-usage.js';
-import { fleetConfigDir, forgeHome } from '../paths.js';
+import { consoleDir, fleetConfigDir, forgeHome } from '../paths.js';
+import { readThread } from './thread.js';
 import {
   contextFor, effortFor, modelFor, modelIdFor, reasonerTimeoutMsFor,
 } from '../policy.js';
@@ -83,6 +85,8 @@ const DEFAULT_IDLE_MS = 5 * 60_000;
 const REASON_LIMIT = 140;
 const HANDOFF_EXCHANGES = 5;
 const HANDOFF_CHARS = 240;
+/** How many rail rows a fresh session is handed when it has no session to resume. */
+const CARRY_ROWS = 12;
 const ARCHIVED_LIMIT = 20;
 
 export type ReplyPath = 'agent' | 'grammar';
@@ -114,6 +118,11 @@ export interface ConductorAgentDeps {
   queryFn?: QueryFn;
   env?: NodeJS.ProcessEnv;
   existsConfigDir?: (path: string) => boolean;
+  /** Where the connected logins and their readings are stored. Production leaves both
+   *  unset, which reads the real files; a test points them at its own copies so which
+   *  login a turn should run on can be changed between turns. */
+  accountsPath?: string;
+  accountUsagePath?: string;
   policyPath?: string;
   cwd?: string;
   now?: () => number;
@@ -122,6 +131,8 @@ export interface ConductorAgentDeps {
   idleMs?: number;
   /** Where reply and receipt rows land. Defaults to the rail's own `thread.jsonl`. */
   appendThread?: (message: Message) => void;
+  /** The rail so far, read when a fresh session opens. Defaults to `thread.jsonl`. */
+  readThread?: () => Message[];
 }
 
 interface Usage { input: number; cacheRead: number; cacheCreation: number; output: number }
@@ -198,6 +209,16 @@ function refusalRow(text: string): Message {
 
 export class ConductorAgent {
   private engine: Engine | null = null;
+
+  /** The account directory the open engine was started with.
+   *
+   *  The engine is opened once and reused for every later turn, so whatever account it
+   *  picked at open is the account it keeps using. Linking a fresh one in Settings
+   *  therefore had no effect, and an account that ran out mid-session kept being asked:
+   *  measured 2026-09-12, a second Claude account was linked at 19:32:05 and the rail
+   *  went on answering "You've hit your weekly limit" at 19:32:31 and 19:32:37. Held so
+   *  a turn can notice the pick has moved and start a session on the new one. */
+  private engineConfigDir: string | null = null;
 
   private sessionId: string | null = null;
 
@@ -537,9 +558,20 @@ export class ConductorAgent {
    *  before accounts existed. Read per session rather than cached, so connecting an
    *  account in Settings takes effect on the Conductor's next turn. */
   private sessionConfigDir(): string {
-    return configDirForSession(
-      loadAccounts(), readAccountUsage(), {}, this.now(), this.deps.existsConfigDir,
-    ).configDir ?? fleetConfigDir(this.deps.existsConfigDir);
+    const picked = configDirForSession(
+      loadAccounts(this.deps.accountsPath), readAccountUsage(this.deps.accountUsagePath),
+      {}, this.now(), this.deps.existsConfigDir,
+    );
+    if (picked.accountId !== null && picked.configDir !== null) return picked.configDir;
+    // No account was picked, so what is left is the machine's own login. The operator can
+    // switch that out of the rotation in Settings, and when they have, a turn refuses
+    // here: the throw lands in `handleSerial`'s catch, the grammar answers, and the reply
+    // row names this reason. Quietly spending the login they turned off is the one
+    // outcome the switch exists to prevent.
+    if (defaultLoginOff(this.deps.accountsPath)) {
+      throw new Error('every linked account is spent, and this machine\'s own login is switched off in Settings');
+    }
+    return fleetConfigDir(this.deps.existsConfigDir);
   }
 
   private env(): NodeJS.ProcessEnv {
@@ -597,6 +629,7 @@ export class ConductorAgent {
     this.clearIdle();
     const engine = this.engine;
     this.engine = null;
+    this.engineConfigDir = null;
     if (!keep) this.sessionId = null;
     if (engine) void engine.stop().catch(() => undefined);
   }
@@ -626,6 +659,32 @@ export class ConductorAgent {
     const recent = this.exchanges.slice(-HANDOFF_EXCHANGES);
     return ['The previous session reached its context ceiling. What the operator and the Conductor were doing, newest last:',
       ...recent.map((row) => `operator: ${row.operator.slice(0, HANDOFF_CHARS)} / conductor: ${row.reply.slice(0, HANDOFF_CHARS)}`),
+    ].join('\n');
+  }
+
+  /** What a session with nothing to resume is told about the rail so far. The thread
+   *  file outlives the console process and every account switch, so it is the one record
+   *  a restart cannot wipe; `exchanges` lives in memory and is gone after one. Grammar
+   *  replies are included, because "try again" usually points at one. Null when the rail
+   *  is empty or unreadable: a missing handoff must never stop a turn. */
+  private carryOverParagraph(current: string): string | null {
+    let rows: Message[];
+    try {
+      rows = (this.deps.readThread ?? (() => readThread(join(consoleDir(), 'thread.jsonl'))))();
+    } catch {
+      return null;
+    }
+    const said = rows.filter((row) => row.type === 'operator'
+      || ((row.type === 'reply' || row.type === 'refusal') && row.source === 'conductor'));
+    const last = said.at(-1);
+    if (last && last.type === 'operator' && last.text === current) said.pop();
+    const recent = said.slice(-CARRY_ROWS);
+    if (recent.length === 0) return null;
+    return ['This is a fresh session: the console restarted or the account changed, so the earlier session is gone. The rail so far, newest last:',
+      ...recent.map((row) => {
+        const who = row.type === 'operator' ? 'operator' : row.path === 'grammar' ? 'grammar' : 'conductor';
+        return `${who}: ${String(row.text).slice(0, HANDOFF_CHARS)}`;
+      }),
     ].join('\n');
   }
 
@@ -694,11 +753,25 @@ export class ConductorAgent {
     const startedAt = this.now();
     let resumed = false;
     try {
+      // Which account this turn should run on, asked every turn rather than only when a
+      // session is opened. A session already running on a different account -- one that
+      // has since run out, or one that was the only choice before a fresh account was
+      // linked -- is closed so the next one starts where the work can actually happen.
+      const wanted = this.sessionConfigDir();
+      if (this.engine && this.engineConfigDir !== null && this.engineConfigDir !== wanted) {
+        // The id is dropped, not kept: a transcript lives under the account directory it
+        // was written in, so resuming it on the new account finds nothing. The fresh
+        // session gets the recent rail as a handoff instead (Aaron, 2026-09-14: linked a
+        // fresh account and the Conductor "had no recollection of what was going on").
+        this.closeSession(false);
+      }
       let engine = this.engine;
       if (!engine) {
+        if (this.sessionId === null && this.handoff === null) this.handoff = this.carryOverParagraph(text);
         engine = this.openEngine(this.sessionId);
         resumed = this.sessionId !== null;
         this.engine = engine;
+        this.engineConfigDir = wanted;
       }
       const message = this.composeMessage(text, context);
       let attemptTimer: ReturnType<typeof setTimeout> | undefined;
@@ -721,7 +794,7 @@ export class ConductorAgent {
         event: 'conductor.usage', actor: 'conductor',
         model: result.model || modelIdFor(modelFor(CONDUCTOR_CLASS, this.deps.policyPath), this.deps.policyPath),
         class: CONDUCTOR_CLASS, usage: result.usage, context: result.context, durationMs: this.now() - startedAt,
-        account: this.sessionConfigDir(), sessionId: this.sessionId,
+        account: wanted, sessionId: this.sessionId,
         ...(context.run ? { run: context.run } : {}),
       });
       const replyText = result.text || 'Done. Nothing else is waiting on you.';

@@ -197,3 +197,25 @@ describe('judgeMessage', () => {
     expect(text).toContain('Never kill or remove anything from here.');
   });
 });
+
+/**
+ * 2026-09-14: judge findings with no ask key -- a persons-call park like "backend: ..."
+ * -- were sent to the Conductor again on every tick, because the dedupe set only ever
+ * held ask keys. "This is the same set I just handled last round", ten minutes apart,
+ * for hours. A judge batch is deduped per finding, keyed or not.
+ */
+describe('RoundsRoutes: keyless judge findings reach the Conductor once, not every tick', () => {
+  it('asks once for a persons-call park and stays quiet on the identical next tick', async () => {
+    policy({ apply: true });
+    store.append({
+      id: 'q9', at: 1, source: 'ticket', input: 'ACME-9', ticket: 'ACME-9', state: 'parked',
+      reason: 'backend: finish wiring the Sentry SDK', createdAt: 1, updatedAt: 1,
+    } as never);
+    const r = routes([]);
+    await r.tick();
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toContain('ACME-9');
+    await r.tick();
+    expect(asked).toHaveLength(1);
+  });
+});

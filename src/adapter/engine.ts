@@ -47,6 +47,25 @@ export const FORGE_ASK_SHAPE = {
   kind: z.enum(['question', 'blocker']).optional(),
 };
 
+/**
+ * Live escape 2026-09-14: three ticket workers each opened with two or three
+ * `forge_ask` calls before writing any code -- whether a 429 is matched on its message
+ * string or a distinct error code, whether the copy shows as a toast or a modal, whether
+ * a sibling flow needs its own wording. None of those is a business decision; every one
+ * is a call a competent engineer makes and writes down. The tool's only instruction to a
+ * worker used to be the one line below with nothing telling it when NOT to call this, so
+ * every implementation detail became a park-answer-restart cycle costing minutes each.
+ * Exported so a test can pin the guidance staying in place rather than eroding back to
+ * the old one-liner.
+ */
+export const FORGE_ASK_DESCRIPTION = 'Ask a question that parks this run for a person to answer. '
+  + 'Reserve this for a real business, product, compliance, or money-safety call that cannot be '
+  + 'inferred from the ticket or the code -- something wrong to guess at. For anything else '
+  + '(a UI treatment, copy wording, which of two working approaches to take, matching a string '
+  + 'versus a field, any other implementation detail), make the best-effort engineering '
+  + 'decision yourself, note the assumption in your work or the PR body, and keep going. '
+  + 'Do not ask about something you can look up in the codebase.';
+
 export interface EngineConfig {
   cwd: string;
   /** Model to open the session on. */
@@ -155,6 +174,14 @@ export interface PreToolVerdict {
   updatedInput?: Record<string, unknown>;
   /** Text delivered to the model alongside this tool call, regardless of the decision. */
   additionalContext?: string;
+  /**
+   * Ends the session's turn along with this verdict. A refusal leaves it unset: the SDK
+   * hands the reason back to the model as the tool result and the turn carries on, so the
+   * model can do something else. Until 2026-09-15 every deny ended the turn (`continue:
+   * false`), and a worker whose Monitor call was refused finished `stopped` 168 ms later
+   * without ever seeing why (BBZ-303). Set only for a stop the caller answers itself.
+   */
+  endTurn?: boolean;
 }
 
 /** The SDK's own session-starting function, matched so a specimen can inject a fake. */
@@ -217,7 +244,7 @@ export function buildOptions(
               if (verdict.updatedInput) specific['updatedInput'] = verdict.updatedInput;
               if (verdict.additionalContext) specific['additionalContext'] = verdict.additionalContext;
               return {
-                continue: verdict.decision !== 'deny',
+                continue: verdict.endTurn !== true,
                 hookSpecificOutput: specific,
               } as never;
             },
@@ -552,7 +579,7 @@ export function buildForgeMcpServer(handlers: ForgeToolHandlers): McpSdkServerCo
       tool('forge_handoff', 'Write the handoff packet for the successor session.',
         { packet: z.string() },
         async (args) => { await handlers.onHandoff(args); return ACK; }),
-      tool('forge_ask', 'Ask a question that parks this run for a person to answer.',
+      tool('forge_ask', FORGE_ASK_DESCRIPTION,
         FORGE_ASK_SHAPE,
         async (args) => { await handlers.onAsk(args); return ACK; }),
       tool('forge_gotcha', 'File a trap the moment it is hit, and keep working.',

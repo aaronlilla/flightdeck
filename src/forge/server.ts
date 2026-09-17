@@ -35,6 +35,9 @@ import { reasonerFor } from './reasoner-claude.js';
 /** How often the fleet journal's size is compared against the last look. */
 const JOURNAL_WATCH_MS = 1000;
 import { appendThread, ConsoleWrites, plainReceiptCard } from './console/command.js';
+import type { TicketHandoffDeps } from './console/ticket-handoff.js';
+import type { OpenPrDeps } from './console/open-pr.js';
+import { TicketTitles } from './console/ticket-titles.js';
 import { QueueRoutes } from './console/queue-route.js';
 import { BlockersRoutes, type Confirmer, type Restarter } from './console/blockers-route.js';
 import { IntegrationsConnectRoutes } from './console/integrations-route.js';
@@ -48,10 +51,12 @@ import { readQueuePaused, writeQueuePaused } from './console/queue-pause.js';
 import { writeQueueWidth } from './console/queue-width.js';
 import type { Actuator, Reasoner } from './contracts.js';
 import { isAskStale, projectStaleness, type Inbox } from './inbox.js';
+import { journalInterviewAnswer } from './intake/interviewPlanner.js';
 import { appendOnce, Journal, JournalCache, type RangeReader } from './journal.js';
 import type { StuckSignal } from './liveness.js';
 import { WardenActuator } from './warden.js';
 import { QueueStore } from './intake/queueStore.js';
+import type { QueueLoopStatus } from './intake/queueTickRunner.js';
 import { mergeItem, type QueueMergeDeps, type QueuePromoteDeps, type QueueTicketSearch } from './intake/queue.js';
 import {
   forgeHome, killSwitchPath as defaultKillSwitchPath, packetsDir as defaultPacketsDir, queuePath as defaultQueuePath,
@@ -68,6 +73,7 @@ import { processAlive, Registry } from './registry.js';
 import { route as routeMessage } from './router.js';
 import { RunInbox, deliverAnswer } from './runinbox.js';
 import { assertRunListening } from './console/listening.js';
+import { readWorktreeState } from './console/worktree-state.js';
 import { amendRunBrief, type AmendDeps } from './console/amend.js';
 import { ConductorAgent } from './console/agent.js';
 import { RoundsRoutes } from './console/rounds-route.js';
@@ -81,6 +87,17 @@ import {
 } from './machine/snapshot.js';
 import { realProcessTable } from './service/process-table.js';
 import type { ProcessRow } from './sweep.js';
+import { jiraConfigFromEnv } from './queue-wire.js';
+import { fileWatermarkStore } from './intake/watermarkStore.js';
+import { createSyncRunner, type RunSyncDeps, type SyncRunner } from './sync/run.js';
+import { SyncStore } from './sync/store.js';
+import { SyncRoutes } from './sync/routes.js';
+import { buildProductionSyncStages } from './sync/index.js';
+import { JiraWatcher, writeWatcherState } from './sync/watcher-state.js';
+import { buildJiraFeedActivity } from './sync/feed-wire.js';
+import { readSelfTestUntil, writeSelfTest } from './sync/feed-self-test.js';
+import type { TicketPoller } from './sync/watcher-thread-host.js';
+import { readHoldLabels } from './intake/watcherWire.js';
 
 /** Reads the server's own bearer token, minting one on first use. */
 export function ensureServerToken(path: string = serverTokenPath()): string {
@@ -191,6 +208,13 @@ export interface ForgeServerOptions {
    *  `/proposals`, `/run/:id/{thread,pr,sandbox}`). A specimen only: production always
    *  gets the default, which reads the real `~/.forge` tree. */
   consoleReads?: ConsoleReads;
+  /** Reads one Jira issue, for `GET /whatis`. Wired by `cli.ts` when Jira credentials
+   *  are configured; absent otherwise. */
+  jiraRead?: (key: string) => Promise<import('./intake/jira.js').JiraIssueRead | null>;
+  /** What names a queued ticket before a brief is written for it. Built from `jiraRead`
+   *  when one is wired, so a board ingested into the queue reads as ticket summaries
+   *  rather than nineteen rows of `Title not read yet`. */
+  ticketTitles?: import('./console/queue-route.js').TicketTitlesLike;
   /** R-55: `POST /codex/ask` and `GET /codex/:id`, behind the same token as every other
    *  route. Undefined (no default wired -- the advisor spends Codex quota, and this
    *  goal's guardrail is "nothing else live") answers 501, the same pattern `/router`
@@ -217,6 +241,14 @@ export interface ForgeServerOptions {
   /** How many queue items `GET /queue` reports as the worker's own concurrency ceiling.
    *  Purely informational here -- the worker enforces it, this class only echoes it. */
   queueMaxInFlight?: number;
+  /** `POST /ticket/:key/handoff`: the Jira write client and the destinations it knows.
+   *  Unset in production, where the route builds both from the environment on every
+   *  press so credentials exported after startup still work. A specimen passes a fake
+   *  so no test reaches Jira. */
+  handoffDeps?: () => TicketHandoffDeps;
+  /** `POST /run/:id/open-pr`: the lane read, the `gh` calls and the readability rule.
+   *  Unset means the route answers 501 rather than pretending. */
+  openPrDeps?: () => OpenPrDeps;
   /** A.7: the Merge click's dependencies (`queue-wire.ts#queueMergeDeps`). Absent means
    *  `POST /queue/:id/merge` answers 501 with that reason, which is what a console with
    *  no chain environment should say. */
@@ -255,6 +287,22 @@ export interface ForgeServerOptions {
    *  `MACHINE_READ_INTERVAL_MS` (10 s, measured 2026-09-10 -- see
    *  `src/forge/machine/snapshot.ts`). A specimen sets this low with fake timers. */
   machineTickMs?: number;
+  /** R-68: the Jira watcher engine `POST /watcher/on|off` and `GET /state.watcher` both
+   *  read. Defaults to a real `JiraWatcher` wired against this server's own queue store
+   *  and journal, reading Jira credentials fresh from the environment on every poll. A
+   *  specimen overrides this with its own fake feed. */
+  watcher?: JiraWatcher;
+  /** R-101: where the default watcher's ticket poll runs. `forge up` passes a
+   *  `ThreadTicketPoller`; absent (every test) polls on the server's own thread. */
+  watcherPoller?: TicketPoller;
+  /** R-68: the last run per scope (`GET /sync`, `POST /sync/:scope`). Defaults to a real
+   *  `SyncStore` over `syncStatePath()`, which follows `FORGE_HOME`. A specimen only. */
+  syncStore?: SyncStore;
+  /** R-68/R-73: the stage functions `POST /sync/:scope` actually runs. Defaults to the
+   *  production wiring in `sync/index.ts`, which binds every stage to real stream B
+   *  (code-sync) and stream C (page-sync) functions -- no stage ships skipped. A
+   *  specimen injects fakes instead, which also skips building the real wiring below. */
+  syncDeps?: RunSyncDeps;
 }
 
 export class ForgeServer {
@@ -292,6 +340,14 @@ export class ForgeServer {
   private readonly narrator: Narrator;
 
   private readonly consoleReads: ConsoleReads;
+
+  /** One pass of the abandoned-lane sweep, for the `forge up` tick to call. A lane with
+   *  no process, no queue row and nothing unpushed leaves the board on its own; every
+   *  lane that stays is reported with what kept it. Retiring is reversible and deletes
+   *  nothing, so nothing here needs a person's confirm. */
+  sweepAbandonedLanes(): ReturnType<ConsoleWrites['sweepAbandonedLanes']> {
+    return this.consoleWrites.sweepAbandonedLanes();
+  }
 
   private readonly wanted: number;
 
@@ -368,6 +424,23 @@ export class ForgeServer {
   /** Set by `forge up` once the self loop exists; read fresh on every `/state`. */
   selfStatus: (() => unknown) | undefined;
 
+  /** R-81: set by `forge up` once the queue subsystem is known; read fresh on every
+   *  `/state`. A process that holds the queue lock serves its runner's status; one that
+   *  does not serves `ticking: false` and says so. Left unset only when `FORGE_QUEUE` is
+   *  off, which is the one case `/state` answers with null. */
+  queueLoop: (() => QueueLoopStatus) | undefined;
+
+  /** R-68: the Jira watcher engine. Public so `cli.ts`'s boot can start it without this
+   *  class needing to know about `FORGE_BACKLOG_PROJECT` or `watcher.json` itself --
+   *  that decision belongs to whoever is bringing the process up, not to the server. */
+  readonly watcher: JiraWatcher;
+
+  private readonly syncStore: SyncStore;
+
+  private readonly syncRunner: SyncRunner;
+
+  private readonly syncRoutes: SyncRoutes;
+
   constructor(options: ForgeServerOptions) {
     this.lanes = options.lanes;
     this.inbox = options.inbox;
@@ -409,10 +482,32 @@ export class ForgeServer {
     this.consoleReads = options.consoleReads
       ?? new ConsoleReads({
         narrator: this.narrator,
+        // Read lazily: `consoleWrites` owns the pending map and is built a few lines
+        // below this one. Without it, `GET /thread` cannot tell a confirm a person can
+        // still answer from one whose token went with a restart days ago.
+        confirmPending: (token: string) => this.consoleWrites.hasPending(token),
+        // `GET /whatis` reads one issue so a hover can show what a ticket key means.
+        // Without credentials there is no reader, and a ticket resolves from the board
+        // alone -- an answer, just a smaller one.
+        ...(options.jiraRead ? { jiraRead: options.jiraRead } : {}),
         ...(options.modelPolicyPath ? { modelPolicyPath: options.modelPolicyPath } : {}),
       });
     this.queueStoreForMerge = options.queueStore ?? new QueueStore(defaultQueuePath());
     this.consoleWrites = new ConsoleWrites({
+      // Item 4, round 2: the same merge the Queue view's own route runs, so a click
+      // minted before a restart is rebuilt rather than answered `nothing pending`.
+      queueMerge: async (itemId: string) => {
+        const row = this.queueStoreForMerge.get(itemId);
+        if (!row) return { status: 404, body: { ok: false, error: `no queue item ${itemId}` } };
+        if (!this.queueMergeDepsOpt) {
+          return { status: 501, body: { ok: false, error: 'no merge wiring is configured for this environment' } };
+        }
+        const outcome = await mergeItem(row, this.queueMergeDepsOpt);
+        return {
+          status: outcome.ok ? 200 : 409,
+          body: { ok: outcome.ok, jid: null, message: outcome.message, undoable: false },
+        };
+      },
       journalPath: this.journalPath,
       registry: this.registry,
       lanes: this.lanes,
@@ -427,6 +522,7 @@ export class ForgeServer {
       lanesViewAll: () => this.consoleReads.lanesResponse(true, true),
       forgeHomeDir: this.forgeHomeDir,
       queueStore: this.queueStoreForMerge,
+      worktreeState: (cwd: string) => readWorktreeState(cwd),
       // R-53: under the flag, a service in Session 0 cannot open a browser, so the
       // account-login spawn `realSpawnLogin` would otherwise make is intercepted here
       // and turned into a published event the desktop login helper answers instead.
@@ -436,6 +532,10 @@ export class ForgeServer {
         ? { spawnFn: this.loginHelperSpawnFn() }
         : {}),
       ...(options.modelPolicyPath ? { modelPolicyPath: options.modelPolicyPath } : {}),
+      // `POST /ticket/:key/handoff`. Injected so a specimen never reaches Jira; unset in
+      // production, where the route reads the credentials fresh on every press.
+      ...(options.handoffDeps ? { handoffDeps: options.handoffDeps } : {}),
+      ...(options.openPrDeps ? { openPrDeps: options.openPrDeps } : {}),
     });
     this.queueMergeDepsOpt = options.queueMergeDeps;
     // Queue-throughput W2: an explicit `queueMaxInFlight` (from `FORGE_QUEUE_MAX_IN_FLIGHT`
@@ -444,9 +544,14 @@ export class ForgeServer {
     // A later `POST /queue/width` still wins for the rest of this process's life --
     // `response()` and the ticker both read the file fresh, never this captured option.
     if (options.queueMaxInFlight !== undefined) writeQueueWidth(options.queueMaxInFlight);
+    // Named from the same reader a ticket hover uses, so nothing new has to be configured.
+    const ticketTitles = options.ticketTitles
+      ?? (options.jiraRead ? new TicketTitles({ read: options.jiraRead }) : null);
     this.queueRoutes = new QueueRoutes({
       narrator: this.narrator,
       store: this.queueStoreForMerge,
+      ...(ticketTitles ? { ticketTitles } : {}),
+      readFleet: () => this.journalCache.read(this.journalPath),
       search: options.queueSearch ?? {
         searchKeys: async () => {
           throw new Error('jira not configured: missing FORGE_JIRA_SITE, FORGE_JIRA_EMAIL, FORGE_JIRA_TOKEN');
@@ -457,9 +562,73 @@ export class ForgeServer {
       writePaused: (paused) => writeQueuePaused(paused),
       maxInFlight: options.queueMaxInFlight ?? 4,
       publish: (event) => this.publish(event),
-      confirmGate: (body, source, blast, act) => this.consoleWrites.confirmGate(body, source, blast, act),
+      // The descriptor is the whole point of the Queue view's own confirm surviving a
+      // restart, and a four-parameter lambda dropped it silently -- TypeScript accepts
+      // the shorter arrow. `tests/forge/server-merge-confirm.test.ts` now drives the
+      // real server and asserts the row lands on disk, which is what caught this.
+      confirmGate: (body, source, blast, act, descriptor) => this.consoleWrites.confirmGate(body, source, blast, act, descriptor),
       ...(options.queueMergeDeps ? { mergeDeps: options.queueMergeDeps } : {}),
       ...(options.queuePromoteDeps ? { promoteDeps: options.queuePromoteDeps } : {}),
+    });
+    // R-68: the watcher engine and the sync runner/store/routes. `watcher` is public --
+    // `cli.ts`'s boot block starts it, `POST /watcher/on|off` stops and starts it, and
+    // both read its `status()`. The production stage wiring (`buildProductionSyncStages`)
+    // omits stream B's three stages entirely; `run.ts`'s own absent-stage handling marks
+    // each `skipped` rather than `ok`, which is this brief's one permitted placeholder.
+    // R-101: the Jira feed rides the same switch. Its reasoner is the server's own claude
+    // provider on the `triage` class; its questions land in this server's inbox.
+    this.watcher = options.watcher ?? new JiraWatcher({
+      jiraConfig: jiraConfigFromEnv,
+      watermarks: fileWatermarkStore(),
+      store: this.queueStoreForMerge,
+      journal: new Journal(this.journalPath),
+      holdLabels: readHoldLabels(),
+      selfTestUntil: () => readSelfTestUntil(),
+      ...(options.watcherPoller ? { poller: options.watcherPoller } : {}),
+      activity: buildJiraFeedActivity({
+        jiraConfig: jiraConfigFromEnv,
+        store: this.queueStoreForMerge,
+        inbox: this.inbox,
+        journal: new Journal(this.journalPath),
+        reasoner: reasonerFor('claude', {
+          journal: new Journal(this.journalPath),
+          cwd: process.cwd(),
+          ...(options.modelPolicyPath ? { policyPath: options.modelPolicyPath } : {}),
+        }),
+      }),
+    });
+    this.syncStore = options.syncStore ?? new SyncStore();
+    // R-73: real stage wiring is only built when nothing already injected `syncDeps`
+    // (every test that overrides `syncDeps` fakes its own nine stages and never wants
+    // `buildProductionSyncStages`'s real git/gh/session reads running underneath it).
+    const productionStages = options.syncDeps ? undefined : buildProductionSyncStages({
+      queueStore: this.queueStoreForMerge, watcher: this.watcher, journal: new Journal(this.journalPath),
+      registry: this.registry, consoleReads: this.consoleReads,
+    });
+    const syncDeps: RunSyncDeps = options.syncDeps ?? {
+      stages: productionStages!.stages,
+      onFailure: productionStages!.onFailure,
+      journal: new Journal(this.journalPath),
+      store: this.syncStore,
+      // Each stage transition (running, then its terminal status) emits a `sync` slice
+      // frame so the console refetches GET /sync and shows the run advancing live,
+      // instead of only after the whole run resolves.
+      publish: () => this.publish(sliceEvent('sync', 'a sync stage advanced')),
+    };
+    this.syncRunner = createSyncRunner(syncDeps);
+    this.syncRoutes = new SyncRoutes({
+      runner: this.syncRunner,
+      store: this.syncStore,
+      watcher: this.watcher,
+      authorized: (request, response) => this.authorized(request, response),
+      confirmGate: (body, source, blast, act) => this.consoleWrites.confirmGate(body, source, blast, act),
+      writeWatcherState: (state) => writeWatcherState(state),
+      writeSelfTest: (minutes) => writeSelfTest(minutes),
+      defaultProject: () => process.env['FORGE_BACKLOG_PROJECT'] ?? null,
+      blastCounts: () => ({
+        queueItems: this.queueStoreForMerge.all().length,
+        runningWorkers: this.registry.all().filter((row) => this.isAliveFn(row.pid)).length,
+      }),
     });
     this.conductor = new ConductorAgent({
       writes: this.consoleWrites, reads: this.consoleReads, queue: this.queueRoutes,
@@ -860,6 +1029,16 @@ export class ForgeServer {
       // window and the console's top bar both need to say when the queue subsystem is
       // not running at all, distinct from a running queue that is merely paused.
       queue_on: process.env['FORGE_QUEUE'] === '1',
+      // R-81: whether the queue loop is still finishing passes, in a plain sentence and
+      // in raw numbers beside it. Null only when the queue subsystem is off in this
+      // process; a process that boots the server without the queue lock says so in the
+      // field instead, because a null there reads exactly like a loop that has stopped.
+      queue_loop: this.queueLoop?.() ?? null,
+      // Queue-paused visibility fix: the flag file the queue tick itself checks
+      // (`readQueuePaused`, `runQueueTick`'s `deps.paused()`) read fresh on every call --
+      // never cached, never the constructor-time `readPaused` closure captured for
+      // `QueueRoutes` above, because the file changes while this process keeps running.
+      queue_paused: readQueuePaused(),
       build: runtimeVersion(),
       checkoutDir: this.checkoutDirPath,
       consoleDistDir: this.consoleDistDir,
@@ -874,6 +1053,9 @@ export class ForgeServer {
       // every call -- present whether or not FORGE_CHAIN is on, since a packet already
       // in flight still belongs on the console.
       chain: { value: chainStatusRows(foldChainState(fleet.events)), verified_at: journalMtime },
+      // R-68: read fresh on every call, same as router_enabled -- a POST /watcher/on|off
+      // from another request takes effect on this server's very next /state poll.
+      watcher: this.watcher.status(),
     };
   }
 
@@ -1074,6 +1256,7 @@ export class ForgeServer {
 
     if (await this.integrationsConnectRoutes.handle(path, request, response)) return;
     if (await this.queueRoutes.handle(path, request, response)) return;
+    if (await this.syncRoutes.handle(path, request, response)) return;
     if (await this.blockersRoutes.handle(path, request, response)) return;
     if (await this.rounds.handle(path, request, response)) return;
     if (request.method === 'GET') {
@@ -1251,6 +1434,7 @@ export class ForgeServer {
         // this always rides the cross-process inbox queue.
         await deliverAnswer(answered, parsed.key, parsed.answer);
         this.publish({ event: 'ask.answered', key: answered.key, runs: answered.runs });
+        journalInterviewAnswer((row) => appendOnce(this.journalPath, row), answered);
         json(response, 200, answered);
       })();
     });

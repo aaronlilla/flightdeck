@@ -20,6 +20,7 @@ import { chainLinks } from './lanes.js';
 import { forgeHome } from '../paths.js';
 import { queuePath as defaultQueuePath } from '../paths.js';
 import { QueueStore } from '../intake/queueStore.js';
+import { retryItem } from '../intake/queue.js';
 import type { Registry } from '../registry.js';
 import type { Lanes } from '../supervisor.js';
 import { recordAction, type ActionsLedger } from './actions-ledger.js';
@@ -193,10 +194,20 @@ export async function resumeRun(run: string, deps: RunActionsDeps): Promise<RunA
   const guard = guardState('resume', run, deps);
   if (guard) return guard;
   await deps.actuator.resume(asRunId(run), 'resume requested from the console');
+  // A queue run the warden parked has no live process to read the inbox message above,
+  // so on 2026-09-14 five resumes answered "resumed" and started nothing. The queue item
+  // is handed back to the queue the same way a person's Retry does, and the queue's own
+  // launch path relaunches it.
+  const queueStore = deps.queueStore ?? new QueueStore(defaultQueuePath());
+  const item = queueStore.all().find((row) => row.runKey === run);
+  const requeued = item && (item.state === 'parked' || item.state === 'failed')
+    ? retryItem(queueStore, item.id, Date.now(), { askedByAPerson: true })
+    : undefined;
+  const message = requeued ? `resumed ${run}: handed back to the queue to relaunch` : `resumed ${run}`;
   const { jid } = recordAction(deps.journalPath, deps.ledger, {
-    kind: 'resume', run, text: `resumed ${run}`, undo: null,
+    kind: 'resume', run, text: message, undo: null,
   });
-  return { status: 200, body: { ok: true, jid, message: `resumed ${run}`, undoable: false } };
+  return { status: 200, body: { ok: true, jid, message, undoable: false } };
 }
 
 /** `~/.forge/console/caps.json` by default -- the same file, and the same
@@ -251,6 +262,48 @@ function findChainRowForRun(run: string, journalPath: string): (ChainPacketState
   return undefined;
 }
 
+/**
+ * Where a run's repository, branch and worktree live, wherever the run came from.
+ *
+ * A run reaches the board by two routes and only one of them writes a chain packet. A
+ * queue-sourced run never has one, so a lookup that asks the chain alone answers nothing
+ * for it -- which is how Merge on a board tile came to refuse with "no chain packet names
+ * a repo for run BBZ-169" on a lane whose repository, branch and pull request the queue
+ * was holding all along (Aaron, 2026-09-13, after pressing Merge).
+ *
+ * The queue is asked first because it carries the pull request number outright; the chain
+ * packet fills in what the queue does not have.
+ */
+/** Exactly what `whereRunLives` reads, and nothing else.
+ *
+ *  `RunActionsDeps` requires a ledger, an actuator and a token ceiling this function
+ *  never touches, so a caller outside this module had to fake them or cast them away --
+ *  and the cast the console's own wiring used (`as never`) defeats the compiler, so a
+ *  later change here that started reading one of those would fail at runtime with no
+ *  warning. Naming the two fields it actually uses makes that impossible instead of
+ *  merely unlikely. Found by code review. */
+export interface RunLocationDeps {
+  journalPath: string;
+  queueStore?: QueueStore;
+}
+
+export function whereRunLives(run: string, deps: RunLocationDeps): {
+  repo: string | null; branch: string | null; worktreePath: string | null; pr: number | null;
+  base: string | null; ticket: string | null;
+} {
+  const queueStore = deps.queueStore ?? new QueueStore(defaultQueuePath());
+  const item = queueStore.all().find((row) => row.runKey === run);
+  const chainRow = findChainRowForRun(run, deps.journalPath);
+  return {
+    repo: item?.repo ?? chainRow?.repo ?? null,
+    branch: item?.branch ?? chainRow?.provisioned?.branch ?? null,
+    worktreePath: item?.worktreePath ?? chainRow?.provisioned?.worktreePath ?? null,
+    pr: item?.pr?.no ?? null,
+    base: item?.base ?? null,
+    ticket: item?.ticket ?? chainRow?.ticket ?? null,
+  };
+}
+
 interface GhPr {
   number: number;
 }
@@ -261,14 +314,20 @@ interface GhPr {
  * by hand), then spawn `forge gate` exactly as a person would type it.
  */
 async function gateAction(run: string, wantsMerge: boolean, deps: RunActionsDeps): Promise<RunActionResponse> {
-  const row = findChainRowForRun(run, deps.journalPath);
-  if (!row || !row.repo) {
-    return { status: 501, body: { error: 'not wired', reason: `no chain packet names a repo for run ${run}` } };
+  const where = whereRunLives(run, deps);
+  if (!where.repo) {
+    return { status: 501, body: { error: 'not wired', reason: `nothing on record names a repository for run ${run}` } };
   }
-  const branch = row.provisioned?.branch;
+  const branch = where.branch;
   if (!branch) {
-    return { status: 501, body: { error: 'not wired', reason: `no provisioned branch on record for run ${run}` } };
+    return { status: 501, body: { error: 'not wired', reason: `no branch on record for run ${run}` } };
   }
+  const row = { repo: where.repo };
+
+  // The queue carries the pull request number outright. Asking `gh` for it again is a
+  // round trip that can answer nothing -- a squash-merged branch no longer has an OPEN
+  // pull request on it -- while the number sits on the row.
+  if (where.pr) return gateWithPr(run, wantsMerge, where.repo, where.pr, deps, where.worktreePath);
 
   const listResult = await execRun({
     argv: ['gh', 'pr', 'list', '--repo', row.repo, '--head', branch, '--json', 'number'],
@@ -289,13 +348,21 @@ async function gateAction(run: string, wantsMerge: boolean, deps: RunActionsDeps
     return { status: 501, body: { error: 'not wired', reason: `no open PR found for ${row.repo}@${branch}` } };
   }
 
+  return gateWithPr(run, wantsMerge, row.repo, pr, deps, where.worktreePath);
+}
+
+/** The half that runs once a repository and a pull request number are known, whichever
+ *  of the two routes found them. */
+async function gateWithPr(
+  run: string, wantsMerge: boolean, repo: string, pr: number, deps: RunActionsDeps, cwd?: string | null,
+): Promise<RunActionResponse> {
   const argv = [
     ...(deps.cliArgv?.() ?? defaultCliArgv()),
-    'gate', '--repo', row.repo, '--pr', String(pr),
+    'gate', '--repo', repo, '--pr', String(pr),
     ...(wantsMerge ? ['--merge'] : []),
   ];
   const [command, ...args] = argv;
-  const result = await execRun({
+  const runGate = () => execRun({
     argv: [command as string, ...args],
     cwd: process.cwd(),
     owner: `console-${run}-gate`,
@@ -303,12 +370,41 @@ async function gateAction(run: string, wantsMerge: boolean, deps: RunActionsDeps
     fullOutput: true,
     ...(deps.spawnFn ? { spawnFn: deps.spawnFn } : {}),
   });
+
+  let result = await runGate();
+
+  // The gate refuses a head that has no attestation, and says to run the review first.
+  // The queue has re-reviewed on that exact refusal since 2026-09-08
+  // (`intake/queue.ts`); this path did not, so a board item sat there offering the one
+  // action that could never succeed, however many times it was pressed. Review this head
+  // once and gate again. Only this refusal is retried: anything else the gate says (red
+  // checks, a FIX FIRST verdict, a stale attestation) is a real answer and stands.
+  if (result.returncode !== 0 && (result.full ?? result.tail).includes('no attestation for')) {
+    const reviewArgv = [
+      ...(deps.cliArgv?.() ?? defaultCliArgv()),
+      'council', '--repo', repo, '--pr', String(pr),
+      ...(cwd ? ['--cwd', cwd] : []),
+    ];
+    const [reviewCommand, ...reviewArgs] = reviewArgv;
+    await execRun({
+      argv: [reviewCommand as string, ...reviewArgs],
+      cwd: process.cwd(),
+      owner: `console-${run}-rereview`,
+      cls: 'script',
+      fullOutput: true,
+      env: { ...process.env, FORGE_COUNCIL_CODEX: 'always' },
+      ...(deps.spawnFn ? { spawnFn: deps.spawnFn } : {}),
+    });
+    // The gate is the referee, not the review's own stdout: if the review refused or came
+    // back FIX FIRST, this second run says so in words the operator can act on.
+    result = await runGate();
+  }
   const ok = result.returncode === 0;
   const summary = (result.full ?? result.tail).trim().split('\n').filter(Boolean).slice(-3).join(' | ')
     || (ok ? 'gate passed' : `gate exited ${result.returncode}`);
   const { jid } = recordAction(deps.journalPath, deps.ledger, {
     kind: wantsMerge ? 'merge' : 'verify', run, text: summary, undo: null,
-    extra: { exitCode: result.returncode, repo: row.repo, pr },
+    extra: { exitCode: result.returncode, repo: repo, pr },
   });
   return { status: ok ? 200 : 502, body: { ok, jid, message: summary, undoable: false } };
 }

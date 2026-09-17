@@ -12,7 +12,17 @@ import { existsSync, readFileSync } from 'node:fs';
 import type { ForgeEvent } from '../journal.js';
 import type { InboxEntry } from '../inbox.js';
 import type { RunMessage } from '../runinbox.js';
-import type { Message, ThreadResponse } from '../../shared/console-model.js';
+import { CONFIRM_TTL_MS, type Message, type ThreadResponse } from '../../shared/console-model.js';
+import { RAIL_TYPES } from '../../shared/rail-kinds.js';
+
+export { RAIL_TYPES };
+
+/** `GET /thread`'s response since R-75: the rail's own list, plus the status cards that
+ *  left it. Declared here rather than in `src/shared/console-model.ts` so the shared
+ *  model stays exactly as stream C's `LaneQuestion` work left it. */
+export interface ThreadSplit extends ThreadResponse {
+  cards: Message[];
+}
 import { jidFor, textFor } from './journal-route.js';
 import { collapseWardenChips, railChipText, type TitleForFn } from './journal-narrative.js';
 import { clock, commandEcho, humanizeParkReason, receiptText, stripMachineIds } from '../../shared/humanize.js';
@@ -135,6 +145,55 @@ export interface ComputeThreadOptions {
    *  when unset, so a caller that has not wired the full inbox still answers open
    *  questions correctly, just not already-answered ones. */
   allAsks?: InboxEntry[];
+  /** Whether `confirm <token>` would still find something to run.
+   *
+   *  A confirm card is rebuilt from its `conductor.receipt` journal row on every read,
+   *  and the row is permanent, so without this the card outlives the token it addresses
+   *  by days. Measured live on 2026-09-12: 67 confirm cards on screen, 12 tokens in the
+   *  durable store, every one of the 12 already past its two-hour life. All 67 were
+   *  offered as something a person could answer and not one of them could be.
+   *
+   *  Unwired, the fall-back is the token's own lifetime: past `CONFIRM_TTL_MS` the
+   *  durable store refuses the token outright, so no card older than that is answerable
+   *  by anyone. Inside that window an in-memory token may still be live, so an unwired
+   *  caller leaves the card alone rather than guess. */
+  confirmPending?: (token: string) => boolean;
+  /** Whether the work an open question is about still exists, and what it is called.
+   *
+   *  Measured live on 2026-09-12: 92 open questions, and 90 pointed at a queue item that
+   *  had been pruned. Answering one would post to work that has gone, and the card gave a
+   *  person no way to tell -- its only pointer was the item id, which the board is built
+   *  to hide. Aaron: "a worthless question that can never be answered by a human
+   *  reasonably without extensive research."
+   *
+   *  Unwired, every question reads as live and unlabelled: the same answer as before this
+   *  existed, so a caller that cannot resolve work never hides a real question. */
+  askContext?: (runs: readonly string[]) => { live: boolean; label: string | null };
+}
+
+/** The token a confirm card's own Confirm button addresses, or null when the card
+ *  carries no such button. */
+function confirmToken(card: Message): string | null {
+  for (const button of card.btns ?? []) {
+    const match = /^confirm\s+(\S+)$/.exec(button.cmd.trim());
+    if (match?.[1]) return match[1];
+  }
+  return null;
+}
+
+/**
+ * A confirm nobody can answer is not an ask. It keeps its place in the history -- this
+ * marks it `resolved`, which is what every reader already uses to mean "no longer
+ * waiting on you", rather than dropping a row a person may need to look back at.
+ */
+export function settleDeadConfirms(cards: Message[], now: number, pending?: (token: string) => boolean): Message[] {
+  return cards.map((card) => {
+    if (card.type !== 'confirm' || card.resolved) return card;
+    const token = confirmToken(card);
+    if (token === null) return card;
+    const answerable = pending ? pending(token) : now - card.ts < CONFIRM_TTL_MS;
+    return answerable ? card : { ...card, resolved: 'expired' as const };
+  });
 }
 
 /** Deliverable 8: a persisted rail row humanized at read time, so an operator bubble or
@@ -168,11 +227,14 @@ function humanizeMessage(message: Message, labelFor: TitleForFn, questionFor: (k
  * still empty, so a fresh console does not replay the fleet's whole history as chips on
  * its very first read), plus one answerable question card per still-open inbox ask that
  * has not already been persisted under the same key.
+ *
+ * Split per `RAIL_TYPES` into `messages` (the rail) and `cards` (everything else); no
+ * row is dropped, and no row lands on both sides.
  */
 export function computeThread(
   persisted: Message[], events: ForgeEvent[], now: number, openAsks: InboxEntry[] = [],
   titleFor: TitleForFn = () => null, options: ComputeThreadOptions = {},
-): ThreadResponse {
+): ThreadSplit {
   const earliest = persisted.length ? Math.min(...persisted.map((message) => message.ts)) : now;
   const windowed = events.filter((row) => row.at >= earliest);
   const ordinaryChips = windowed
@@ -181,8 +243,19 @@ export function computeThread(
   const blockerCards = windowed.filter((row) => row.event === 'blocker.raised').map((row) => blockerCardFor(row, titleFor));
   const chips = [...ordinaryChips, ...blockerCards, ...wardenChipMessages(windowed.filter((row) => WARDEN_CHIP_EVENTS.has(row.event)), titleFor)];
   const persistedKeys = new Set(persisted.map((message) => message.k));
+  const askContext = options.askContext;
   let questions = openAsks
-    .map(questionMessageFor)
+    // A question about work that no longer exists is not a question. It keeps its place in
+    // the history, marked the way every reader already understands, and stops being an ask.
+    .map((entry) => {
+      const message = questionMessageFor(entry);
+      if (!askContext) return message;
+      const context = askContext(entry.runs);
+      if (!context.live) return { ...message, resolved: 'expired' as const };
+      // What the question is ABOUT, which is the one thing that made these answerable:
+      // "is flipping this flag part of this ticket" needs the ticket named.
+      return context.label ? { ...message, kicker: context.label } : message;
+    })
     .filter((message) => !persistedKeys.has(message.k));
   let persistedRows = persisted;
   if (!options.verbose) {
@@ -195,8 +268,11 @@ export function computeThread(
     // its own run id or ask key sitting in plain view.
     questions = questions.map((message) => humanizeMessage(message, titleFor, questionFor));
   }
-  const messages = [...persistedRows, ...chips, ...questions].sort((a, b) => a.ts - b.ts);
-  return { messages };
+  const all = [...persistedRows, ...chips, ...questions].sort((a, b) => a.ts - b.ts);
+  return {
+    messages: all.filter((message) => RAIL_TYPES.has(message.type)),
+    cards: settleDeadConfirms(all.filter((message) => !RAIL_TYPES.has(message.type)), now, options.confirmPending),
+  };
 }
 
 /** `forge_report`'s own text fields (`ForgeReportInputSchema` in `contracts.ts`), joined
@@ -307,6 +383,7 @@ export function plainEventText(row: ForgeEvent): string {
  *  part of one. A burst ends the moment a row outside this set is seen. */
 const BURST_EVENTS = new Set([
   'tool.start', 'tool.end', 'turn.end', 'result.usage', 'burn.mismatch', 'reasoner.call', 'registry.abandoned',
+  'task.backgrounded', 'task.settled',
 ]);
 
 /** Tool name -> [singular, plural] category label for the activity digest's own count

@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Chrome } from '../../src/console/components/Chrome.js';
 import { FlightReview } from '../../src/console/components/FlightReview.js';
 import { LanesGrid } from '../../src/console/components/LanesGrid.js';
-import { buildNeeds } from '../../src/console/components/NeedsYou.js';
+import { NeedsYou, buildNeeds } from '../../src/console/components/NeedsYou.js';
 import { QueueView } from '../../src/console/components/QueueView.js';
 import { Settings } from '../../src/console/components/Settings.js';
 import { TicketSheet } from '../../src/console/components/TicketSheet.js';
@@ -69,7 +69,7 @@ describe('the Board', () => {
     const onOpen = vi.fn();
     const ready = lane({ id: 'ABC-2', state: 'done', pr: { no: 4, url: 'https://x/4', draft: false, merged: false, checks: 'success', verdict: 'PASS' }, mergeable: { ok: true } });
     const blocked = lane({ id: 'ABC-3', state: 'blocked', reason: 'gate: FIX FIRST' });
-    render(<LanesGrid lanes={[lane({ id: 'ABC-1' }), ready, blocked]} blockers={[]} queue={queue} needs={[]} now={now} onOpen={onOpen} onCommand={onCommand} onLaneCommand={vi.fn()} onQueue={vi.fn()} />);
+    render(<LanesGrid lanes={[lane({ id: 'ABC-1' }), ready, blocked]} blockers={[]} queue={queue} now={now} onOpen={onOpen} onCommand={onCommand} onLaneCommand={vi.fn()} onQueue={vi.fn()} />);
     expect(screen.getAllByTestId('idle-slot')).toHaveLength(1);
     expect(screen.getByTestId('idle-slot')).toHaveTextContent('Waiting for a Ready ticket; nothing is in the queue.');
     await userEvent.click(within(screen.getByTestId('lane-ABC-1')).getByTestId('primary-action'));
@@ -80,11 +80,16 @@ describe('the Board', () => {
     expect(onCommand).toHaveBeenCalledWith('ABC-3', 'resume');
   });
 
+  // R-75 item 3 (spec `doctrine/design/operator-experience.md` §5): the questions left
+  // the Board. They are asked one at a time in the strip above the tabs, so this case
+  // now renders the strip rather than the grid; the card contract it asserts is the
+  // same one, through the same shared component.
   it('a lane that asked something renders the question card with its options and a typed answer', async () => {
     const onLaneCommand = vi.fn();
     const asked = lane({ id: 'ABC-5', state: 'parked', question: { key: 'k5', text: 'A or B?', opts: ['A', 'B'], askedAt: now - 120_000 } });
-    const needs = buildNeeds([asked], [], vi.fn());
-    render(<LanesGrid lanes={[asked]} blockers={[]} queue={queue} needs={needs} now={now} onOpen={vi.fn()} onCommand={vi.fn()} onLaneCommand={onLaneCommand} onQueue={vi.fn()} />);
+    const needs = buildNeeds([asked], []);
+    render(<NeedsYou items={needs} now={now} onCommand={onLaneCommand} />);
+    expect(screen.queryByTestId('needs-you')).toBeInTheDocument();
     const card = within(screen.getByTestId('needs-you')).getByTestId('question-card');
     await userEvent.click(within(card).getAllByTestId('question-option')[1]!);
     expect(onLaneCommand).toHaveBeenCalledWith('ABC-5', 'answer k5 B');

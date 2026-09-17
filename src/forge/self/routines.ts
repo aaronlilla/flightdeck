@@ -70,3 +70,21 @@ export function appendRoutinesSection(brief: string, routines: Routine[]): strin
   const section = ['## Routines', '', ...routines.map((routine) => routine.body)].join('\n\n');
   return `${brief}\n\n${section}`;
 }
+
+/**
+ * Item 7, 2026-09-12: the whole brief a worker is handed, routines included.
+ *
+ * Lifted out of `queue-wire.ts#writeBrief` so a specimen can assert what a worker
+ * actually reads rather than a copy of the assembly. The rule that matters most here
+ * is `verify-before-commit`: commit before running the project's full check suite,
+ * because anything past the 120-second foreground limit is moved to the background and
+ * a run that ends its turn waiting on one dies with its work uncommitted -- six runs on
+ * one ticket died exactly that way. The routine carrying that rule reaches every brief
+ * only because `general` is always in the keywords and the routine is tagged `general`.
+ * Nothing failed if either half changed, which is why this function exists to be tested.
+ */
+export function briefWithRoutines(text: string, routines: Routine[], repoKind?: string): string {
+  const keywords = [...new Set(text.toLowerCase().match(/[a-z][a-z0-9-]{2,}/g) ?? [])];
+  const matched = matchRoutines({ ...(repoKind ? { repoKind } : {}), keywords: ['general', ...keywords] }, routines);
+  return appendRoutinesSection(text, matched);
+}

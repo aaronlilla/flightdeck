@@ -13,6 +13,7 @@ import { run as execRun, type RunRequest } from '../exec.js';
 import type { Inbox } from '../inbox.js';
 import type { Registry } from '../registry.js';
 import type { QueueStore } from '../intake/queueStore.js';
+import { askContextForRuns } from './askContext.js';
 import type {
   AskInput, BillingSignalInput, DetectionInputs, IntegrationInput, LaneInput,
 } from './blockers.js';
@@ -206,8 +207,18 @@ export function gatherBlockers(deps: BlockersGatherDeps): () => Promise<Detectio
     );
     const billing = billingRows.filter((row): row is BillingSignalInput => row !== null);
 
+    // A question about work that no longer exists is not a question: answering it posts
+    // to a queue item that has been pruned. 90 of the 92 on the board were in that state
+    // on 2026-09-12. Without a queue store to ask, every question counts as live, which
+    // is what this did before and never hides a real one.
+    const askInput = { items: deps.queueStore?.all() ?? [], laneIds: new Set(view.lanes.map((lane) => lane.id)) };
+    const askAlive = deps.queueStore
+      ? (runs: readonly string[]): boolean => askContextForRuns(runs, askInput).live
+      : undefined;
+
     return {
       now, asks, integrations, lanes, billing, registryLive,
+      ...(askAlive ? { askAlive } : {}),
       ...(deps.jiraSite ? { jiraSite: deps.jiraSite } : {}),
     };
   };

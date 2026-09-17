@@ -4,7 +4,7 @@
  * real `projects/` directory (a drive-rooted worktree path maps one-to-one onto its own
  * dash-joined directory name): every `:`, `/` and `\` becomes `-`.
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 export function cwdKey(cwd: string): string {
@@ -13,6 +13,19 @@ export function cwdKey(cwd: string): string {
 
 export function transcriptPathFor(configDir: string, cwd: string, sessionId: string): string {
   return join(configDir, 'projects', cwdKey(cwd), `${sessionId}.jsonl`);
+}
+
+/** The first of `configDirs` that holds this session's transcript. A run launches on
+ *  whichever login the account picker chose, and the SDK writes under that login's own
+ *  folder, so the fleet login's folder alone misses every account-launched run. Session
+ *  ids are unique, so the first file found is the run's own. `undefined` when none has
+ *  it yet. */
+export function findTranscriptPath(configDirs: readonly string[], cwd: string, sessionId: string): string | undefined {
+  for (const dir of configDirs) {
+    const path = transcriptPathFor(dir, cwd, sessionId);
+    if (existsSync(path)) return path;
+  }
+  return undefined;
 }
 
 /** The last `maxLines` lines of a run's transcript file, oldest first, for the drift

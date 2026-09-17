@@ -33,6 +33,7 @@ import {
   checkLaunch,
   launchEnv,
   pinnedRuntime,
+  runtimeCheckout,
   runtimeVersion,
 } from '../../src/forge/launcher.js';
 
@@ -213,5 +214,25 @@ describe('what a refusal says', () => {
 
   it('is quiet when there is nothing to refuse', () => {
     expect(check().refusals).toEqual([]);
+  });
+});
+
+/**
+ * A start says which checkout it is serving. Before this, the banner carried a version
+ * and a port only, so a console on a stale tree read identically to one on the trunk.
+ */
+describe('runtimeCheckout', () => {
+  it('reports the repository root git names', () => {
+    expect(runtimeCheckout(() => 'D:/work/repo\n')).toBe('D:/work/repo');
+  });
+
+  it('falls back to its own directory rather than saying nothing when git cannot answer', () => {
+    const thrown = runtimeCheckout(() => { throw new Error('not a git repository'); });
+    expect(thrown).not.toBe('');
+    expect(thrown.length).toBeGreaterThan(0);
+  });
+
+  it('falls back when git answers with nothing', () => {
+    expect(runtimeCheckout(() => '  \n').length).toBeGreaterThan(0);
   });
 });

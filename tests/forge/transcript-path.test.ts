@@ -3,13 +3,15 @@
  * CLI's own encoding exactly, or the judge reads nothing and silently drifts back to
  * tool-names-only behaviour.
  */
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { cwdKey, readTranscriptTail, transcriptPathFor } from '../../src/forge/transcript-path.js';
+import {
+  cwdKey, findTranscriptPath, readTranscriptTail, transcriptPathFor,
+} from '../../src/forge/transcript-path.js';
 
 describe('cwdKey', () => {
   it('replaces colons, backslashes and slashes with dashes', () => {
@@ -26,6 +28,34 @@ describe('transcriptPathFor', () => {
   it('joins configDir/projects/<cwd-key>/<sessionId>.jsonl', () => {
     const path = transcriptPathFor('D:\\fake\\config', 'D:\\fake\\worktree--x', 'sess-1');
     expect(path).toBe(join('D:\\fake\\config', 'projects', 'D--fake-worktree--x', 'sess-1.jsonl'));
+  });
+});
+
+/**
+ * Aaron, 2026-09-14: every queue run parked as "its log is empty with no work recorded"
+ * within a minute of launching. The judge was handed the fleet login's folder, but runs
+ * launch on a linked account and the SDK writes the transcript under that account's
+ * folder, so the file never existed where it was looked for.
+ */
+describe('findTranscriptPath', () => {
+  const CWD = 'D:\\fake\\worktree--bbz-304';
+  const SESSION = 'b33b63bd-188c-49c8-877e-7d4129dc9f4f';
+
+  it("finds the transcript under the account the run launched on, not only the fleet login's folder", () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-find-transcript-'));
+    const fleet = join(root, 'fleet');
+    const account = join(root, 'account');
+    mkdirSync(join(fleet, 'projects'), { recursive: true });
+    const expected = transcriptPathFor(account, CWD, SESSION);
+    mkdirSync(join(account, 'projects', cwdKey(CWD)), { recursive: true });
+    writeFileSync(expected, '{"type":"assistant"}\n');
+
+    expect(findTranscriptPath([fleet, account], CWD, SESSION)).toBe(expected);
+  });
+
+  it('returns undefined when no folder has the transcript yet', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-find-transcript-'));
+    expect(findTranscriptPath([join(root, 'fleet'), join(root, 'account')], CWD, SESSION)).toBeUndefined();
   });
 });
 

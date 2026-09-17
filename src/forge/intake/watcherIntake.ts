@@ -36,6 +36,8 @@ export interface WatcherIntakeDeps {
   store: QueueStore;
   emit?: (event: IntakeOnceEvent) => void;
   now?: () => number;
+  /** R-101: a new ticket carrying one of these labels is queued with `noMerge`. */
+  holdLabels?: readonly string[];
 }
 
 /** A lane the watcher may drop a comment into as a `/send`: an item mid-flight or
@@ -43,8 +45,10 @@ export interface WatcherIntakeDeps {
  *  or already `done`/`review` (nothing left running to send an instruction to). */
 const SEND_STATES = new Set(['running', 'parked', 'review']);
 
+/** R-68: includes a `done` item on purpose -- a ticket the queue has already handled
+ *  once must never be re-added as a fresh queue item just because Jira still lists it. */
 function ownedItem(store: QueueStore, ticket: string) {
-  return store.all().find((item) => item.ticket === ticket && item.state !== 'done');
+  return store.all().find((item) => item.ticket === ticket);
 }
 
 /**
@@ -73,7 +77,9 @@ export async function runWatcherIntake(deps: WatcherIntakeDeps): Promise<Watcher
     const owned = ownedItem(deps.store, ticket);
 
     if (!owned) {
-      addTicketItem(deps.store, ticket, now());
+      const hold = (deps.holdLabels ?? []).map((label) => label.toLowerCase());
+      const noMerge = (detail?.labels ?? []).some((label) => hold.includes(label.toLowerCase()));
+      addTicketItem(deps.store, ticket, now(), noMerge ? { noMerge: true } : undefined);
       addedTickets.push(ticket);
       continue;
     }

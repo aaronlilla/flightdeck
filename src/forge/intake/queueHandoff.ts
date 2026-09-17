@@ -25,16 +25,136 @@ export interface QueueHandoffInput {
    *  honest for a non-visual change; the comment says so plainly rather than inventing
    *  steps. */
   testPlan: string[];
+  /** Item 13, 2026-09-12: the repo-relative paths this pull request changes, so the
+   *  comment can name the screens rather than guess whether anyone needs to look.
+   *  Absent means the caller does not know, which is never the same as "nothing to
+   *  see". It includes deletions and renames, which is why the heading below says
+   *  "adds, changes or removes" rather than promising each file still exists. */
+  changedFiles?: string[];
 }
 
+/**
+ * A file that renders something. Extension-gated on purpose (code review, 2026-09-12):
+ * matching any path under `features/` swept in slices, barrels, types, tests and
+ * snapshots, and a list padded with those trains a reader to skim past it.
+ */
+const VIEW_FILE = /\.(tsx|jsx)$/i;
+/** Tests and snapshots render nothing a person opens. */
+const NOT_A_VIEW = /\.(test|spec|stories)\.(tsx|jsx)$|\.snap$|(^|\/)(__tests__|__mocks__|test-utils|jest)\//i;
+/** A file every screen renders under, so a change here is not one screen's problem.
+ *  Anchored to the repository root (code review, 2026-09-12): matching a bare
+ *  `Navigation.tsx` or any directory named `navigation` anywhere claimed "this
+ *  reaches every screen" for one feature's own nav file. Named explicitly for the
+ *  same reason: `AuthStack` and `RegistrationStack` live beside the real wrappers
+ *  and wrap one flow, not the app, so matching the directory said it of them too. */
+const APP_ROOT_PATH = /^(src\/)?(app\/)?(App|AppRoot|RootNavigator|RootStack)\.(tsx|jsx)$|^(src\/)?navigation\/(index|MainStack|MainTabs|CustomTabBar)\.(tsx|jsx)$/i;
+/** At most this many names before the list stops being read. The comment is checked
+ *  against a prose-word ceiling that DENIES, and a denied comment posts nothing at
+ *  all -- so the biggest diffs, which most need the warning, got silence. */
+const MAX_NAMED = 8;
+
+/** Folder names that tell two files apart from nothing. */
+const GENERIC_DIR = /^(components?|screens?|views?|containers?|ui|src|app)$/i;
+
+/** Names in the diff that render something, deduped by full path rather than by
+ *  basename: two `Header.tsx` under different features are two files, and collapsing
+ *  them told a reader one screen changed when two did. */
+function viewNamesIn(files: readonly string[]): string[] {
+  const paths: string[] = [];
+  const seen = new Set<string>();
+  for (const file of files) {
+    const path = file.split('\\').join('/');
+    if (!VIEW_FILE.test(path) || NOT_A_VIEW.test(path)) continue;
+    if (seen.has(path)) continue;
+    seen.add(path);
+    paths.push(path);
+  }
+
+  // Two passes, because one cannot see a collision it has not reached yet. The first
+  // renders the short name; the second re-renders EVERY member of a colliding group
+  // with its full path. A single pass widened only the later file, so the earlier one
+  // kept a short name that claimed a path with no file at it, and where widening ran
+  // out of segments it printed the same name twice -- both proven by running this
+  // function (code review, 2026-09-12).
+  const shortOf = (path: string): string => {
+    const parts = path.split('/');
+    const base = parts.pop()!.replace(/\.(tsx|jsx)$/i, '');
+    while (parts.length && GENERIC_DIR.test(parts[parts.length - 1]!)) parts.pop();
+    const parent = parts.pop();
+    return parent ? `${parent}/${base}` : base;
+  };
+  const counts = new Map<string, number>();
+  for (const path of paths) counts.set(shortOf(path), (counts.get(shortOf(path)) ?? 0) + 1);
+
+  // Backticked: the readability contract counts prose words and scans them for banned
+  // words, so a path segment could deny the whole comment and post nothing at all.
+  // Code in backticks is exempt from both.
+  return paths.map((path) => {
+    const short = shortOf(path);
+    const rendered = (counts.get(short) ?? 0) > 1 ? path.replace(/\.(tsx|jsx)$/i, '') : short;
+    return `\`${rendered}\``;
+  });
+}
+
+/**
+ * Item 13, 2026-09-12. The comment posted at 16:01 on 2026-09-11 said "No visual check
+ * needed here -- this one is covered by the suite." Nobody had looked at a screen, and
+ * the change installed a touch handler at the app root, so every screen was affected.
+ * The text is generated, so it kept saying it.
+ *
+ * The rule this file now holds: **no sentence makes a claim about the rendered result.**
+ * A file list can say what is IN a diff. It can never say that what is missing from the
+ * list does not render -- a colour token or a navigator changes every screen and looks
+ * like neither. So the comment names what it found, says nobody looked, and asserts
+ * nothing about the rest. Rewritten after a review found the first version saying "there
+ * is nothing on screen to compare", which is the same unearned claim in new words.
+ */
 export function buildQueueHandoffComment(input: QueueHandoffInput): string {
   const lines: string[] = [`Opened ${input.prUrl}.`, input.what];
   if (input.testPlan.length) {
     lines.push('Quick visual check:');
     input.testPlan.forEach((step, index) => lines.push(`${index + 1}. ${step}`));
-  } else {
-    lines.push('No visual check needed here -- this one is covered by the suite.');
   }
+
+  const files = input.changedFiles ?? [];
+  // Filtered through NOT_A_VIEW first (code review, 2026-09-12): the root pattern's
+  // `[^/]+` ate `MainStack.test`, so a pull request repairing one navigation test told
+  // QA the change reaches every screen -- the same unearned claim, pointing the other
+  // way.
+  const renderPaths = files
+    .map((file) => file.split('\\').join('/'))
+    .filter((path) => VIEW_FILE.test(path) && !NOT_A_VIEW.test(path));
+  if (renderPaths.some((path) => APP_ROOT_PATH.test(path))) {
+    lines.push('This touches the app root, so it reaches every screen.');
+  }
+  const names = viewNamesIn(files);
+  if (names.length) {
+    const shown = names.slice(0, MAX_NAMED).join(', ');
+    const rest = names.length - MAX_NAMED;
+    // "adds, changes or removes", never "files that render": the list comes from the
+    // pull request's own file list, which includes deletions, and pointing somebody at
+    // a screen that no longer exists wastes the look (code review, 2026-09-12).
+    // "at least": the pull request's file list pages at 100, so on a larger diff the
+    // names are a prefix and the count understates (code review, 2026-09-12).
+    const more = rest > 0 ? `, and at least ${rest} more` : '';
+    lines.push(`Screens this diff adds, changes or removes: ${shown}${more}.`);
+  }
+  // The one sentence. It says what is NOT known, and claims nothing that is.
+  // A first draft said "the tests pass and the types are clean", which nothing in this
+  // input carries: an item whose worker was parked reaches this handoff anyway, and a
+  // repo whose only green check is a build would have had the same sentence written
+  // about it (code review, 2026-09-12). Removing an unearned claim and adding one a
+  // line below it is the same defect twice.
+  // The clause about the list is only true when a list was printed (code review,
+  // 2026-09-12). Most of what the queue ships is backend or plain TypeScript, which
+  // names nothing, and the sentence then pointed at a list that was never there.
+  // Kept short on purpose (code review, 2026-09-12). The comment is measured against
+  // a prose-word ceiling that DENIES, and a denied comment posts nothing at all -- the
+  // long version plus a supplied test plan came to 98 words against a ceiling of 80,
+  // and QA lost the link, the plan and the list together.
+  lines.push(names.length
+    ? 'Nobody has looked at this on a screen, the list above included.'
+    : 'Nobody has looked at this on a screen.');
   return lines.join('\n');
 }
 

@@ -18,7 +18,11 @@ import {
   QUEUE_IN_FLIGHT_STATES, removeItem, retryItem, slugMatches, type QueueMergeDeps, type QueuePromoteDeps, type QueueTicketSearch,
 } from '../intake/queue.js';
 import { resolveGoalBlock } from '../intake/goalFile.js';
+import { JournalCache, type FleetState } from '../journal.js';
+import { journalPath, registryDir } from '../paths.js';
 import { buildBacklogJql as defaultBuildBacklogJql, readQueueWidth, writeQueueWidth } from '../queue-wire.js';
+import { processAlive, Registry } from '../registry.js';
+import { deriveQueueItem, liveRunReason, readQueueRun, type ComputeLiveDeps, type QueueRunReading } from './live.js';
 import { queueTitleFor } from './queue-title.js';
 import type { QueueStore } from '../intake/queueStore.js';
 import type {
@@ -31,6 +35,9 @@ import type { Narrator } from './narrate-store.js';
 const QUEUE_SOURCES: readonly QueueSource[] = ['ticket', 'brief', 'query', 'backlog', 'hotfix', 'goal'];
 
 const ITEM_ROUTE = /^\/queue\/([^/]+)\/(remove|retry|merge|promote)$/;
+
+/** The stored states `deriveQueueItem` can contradict; every other state is read as stored. */
+const DERIVED_QUEUE_STATES: ReadonlySet<QueueItem['state']> = new Set(['running', 'parked', 'failed', 'queued']);
 
 export interface QueueRoutesOptions {
   /** The narration layer. Absent means every card serves its own template sentence in
@@ -69,11 +76,32 @@ export interface QueueRoutesOptions {
    *  rail resolves the same pending entry the click created. Absent (a bare specimen),
    *  the action runs at once. */
   confirmGate?: ConfirmGate;
+  /** What a queued ticket is called before a brief exists for it. Absent (no Jira
+   *  credentials, or a bare specimen) means a ticket card falls back to its key, the
+   *  same answer it gave before this was wired -- never a blank card, and never a
+   *  blocking read on the poll path. */
+  ticketTitles?: TicketTitlesLike;
+  /** The journal fold every queue read checks its runs against. `ForgeServer` passes its
+   *  own cache over its own journal path, so the queue and the lane cards read one fold.
+   *  Absent (a bare specimen), this route folds `paths.ts#journalPath` itself. */
+  readFleet?: () => FleetState;
 }
+
+/** Spelled structurally rather than imported, so this route stays independent of how the
+ *  titles are read (`ticket-titles.ts` in production, a map in a test). */
+export interface TicketTitlesLike {
+  get(key: string): string | null;
+  want(keys: Iterable<string>): void;
+}
+
+/** The descriptor a queue route hands the gate so the confirm survives a restart. Spelled
+ *  structurally rather than imported from `command.ts`, which imports this module. */
+export type QueueConfirmDescriptor = { kind: 'queue-merge'; itemId: string; label: string };
 
 export type ConfirmGate = (
   body: Record<string, unknown> | null | undefined, source: string, blast: string,
   act: () => Promise<{ status: number; body: unknown }>,
+  descriptor?: QueueConfirmDescriptor,
 ) => Promise<{ status: number; body: unknown }>;
 
 function respond(response: ServerResponse, status: number, body: unknown): void {
@@ -207,7 +235,30 @@ export class QueueRoutes {
   }
 
   retry(id: string): ActionResult {
-    const retried = retryItem(this.opts.store, id);
+    // 2026-09-14 (BBZ-303): the retry acts on the state the card shows, read from the run
+    // now. A live worker refuses it by name: a relaunch would put a second worker on the
+    // same worktree. An item stored `running` whose run has no process (Q-fdeab07a) parks on
+    // disk with its run key cleared, so the retry below queues a fresh launch with no one
+    // editing the store by hand.
+    const now = Date.now();
+    const stored = this.opts.store.get(id);
+    if (stored?.runKey) {
+      const reading = this.runReadings(now)(stored.runKey);
+      if (reading.alive) {
+        return { ok: false, jid: null, message: `${id} was not retried: ${liveRunReason(stored.runKey, reading.pidAlive ? reading.pid : null)}`, undoable: false };
+      }
+      const derived = deriveQueueItem(stored, reading);
+      if (derived.state !== stored.state) {
+        // A killed run keeps its key: the retry then runs the queue's own relaunch, which
+        // sends a PR that is already up to the gate and refuses while a pid lives. A silent
+        // orphan's launcher never reports it finished, so only a cleared key relaunches it.
+        const orphaned = reading.runState !== 'killed';
+        this.opts.store.append({ id, at: now, state: derived.state, reason: derived.reason, ...(orphaned ? { runKey: null } : {}), updatedAt: now });
+      }
+    }
+    // A person clicked this, so the item gets its recovery budgets back. The sweep's
+    // own calls do not pass this, deliberately: see `retryItem`.
+    const retried = retryItem(this.opts.store, id, now, { askedByAPerson: true });
     return retried
       ? { ok: true, jid: null, message: `${id} is queued again`, undoable: false }
       : { ok: false, jid: null, message: `${id} is not parked or failed`, undoable: false };
@@ -217,13 +268,25 @@ export class QueueRoutes {
     // `title`, `whyNext` and `startsIn` are filled here, on the way out, rather than
     // stored on the item: every item already on disk gets them on the next read, and a
     // brief edited under a queued item retitles itself with no write.
-    const items = this.opts.store.all();
+    // Every stored state is checked against its run first (`deriveQueueItem`), so the
+    // order, the in-flight count and the card all read what the run is doing now.
+    const read = this.runReadings(Date.now());
+    const items = this.opts.store.all().map((item) => (
+      item.runKey && DERIVED_QUEUE_STATES.has(item.state) ? deriveQueueItem(item, read(item.runKey)) : item
+    ));
     const paused = this.opts.readPaused();
     const maxInFlight = readQueueWidth();
     const ctx = queueOrderContext(items, { paused, maxInFlight });
+    // Ask about every key on this page before naming any of them. The reads run in the
+    // background: this call returns at once, and the keys it started land on the next
+    // poll a few seconds later.
+    const titles = this.opts.ticketTitles;
+    titles?.want(items.map((item) => item.ticket).filter((key): key is string => Boolean(key)));
     return {
       items: items.map((item) => this.narrateItem({
-        ...item, title: queueTitleFor(item), ...queueOrderWordsWith(item, ctx),
+        ...item,
+        title: queueTitleFor(item, titles ? (key) => titles.get(key) : undefined),
+        ...queueOrderWordsWith(item, ctx),
       })),
       paused, maxInFlight,
     };
@@ -237,6 +300,25 @@ export class QueueRoutes {
    * no cache key, and the three registers come back byte-identical. `whyNext` and
    * `startsIn` are the queue's own arithmetic and are narrated from their facts.
    */
+  /**
+   * One read of each run for a single call: the journal folded once, the registry pid, and
+   * `processAlive` through `computeLive` -- the same fold a lane card reads, never a second
+   * definition of alive. The journal is only read when some item has a run to ask about.
+   */
+  private runReadings(now: number): (runKey: string) => QueueRunReading {
+    let deps: ComputeLiveDeps | undefined;
+    return (runKey) => {
+      if (!deps) {
+        const registry = new Registry(registryDir());
+        const fleet = this.opts.readFleet ? this.opts.readFleet() : (this.journal ??= new JournalCache()).read(journalPath());
+        deps = { fleet, registryGet: (run) => registry.get(run), isAlive: processAlive };
+      }
+      return readQueueRun(runKey, deps, now);
+    };
+  }
+
+  private journal: JournalCache | undefined;
+
   private narrateItem(item: QueueItem): QueueItem {
     const bag: NarrationBag = {};
     const binder = new Binder(this.opts.narrator ?? null, 'queue');
@@ -410,11 +492,14 @@ export class QueueRoutes {
         }
         const mergeDeps = this.opts.mergeDeps;
         const body = await readBody<Record<string, unknown>>(request);
+        // Item 4, round 2: the descriptor is what lets a restarted process rebuild this
+        // click. Without it the Queue view's Merge was still answered `nothing pending`
+        // after a restart, which is the surface the reported symptom came from.
         const gated = await gate(body, 'console', `merges ${id}: merges its pull request and closes the ticket.`, async () => {
           const outcome = await mergeItem(item, mergeDeps);
           const result: ActionResult = { ok: outcome.ok, jid: null, message: outcome.message, undoable: false };
           return { status: outcome.ok ? 200 : 409, body: result };
-        });
+        }, { kind: 'queue-merge', itemId: id, label: item.ticket ?? id });
         respond(response, gated.status, gated.body);
         return true;
       }

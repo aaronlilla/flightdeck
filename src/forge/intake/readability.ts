@@ -330,7 +330,11 @@ export function readabilityVerdict(
   const wordsDenyFrom = contract.words_deny_from;
 
   const isJira = surface.startsWith('jira');
-  const inScope = isJira || (repo !== null && outwardRepos.includes(repo));
+  // R-76: a Slack question goes to a teammate, so it is outward-facing text with no
+  // repository attached to it -- in scope the same way a Jira comment is, rather than
+  // waved through for lack of a repo name to match.
+  const isSlack = surface.startsWith('slack');
+  const inScope = isJira || isSlack || (repo !== null && outwardRepos.includes(repo));
   if (!inScope) {
     return { verdict: 'SILENT', reason: `${repo ?? 'no repo'} is not an outward-facing repo` };
   }
@@ -437,4 +441,22 @@ function finalize(verdict: ReadabilityVerdictKind, messages: string[]): Readabil
     return { verdict, reason: `${reason} (set HARNESS_READABILITY_OFF=1 to bypass)` };
   }
   return { verdict, reason };
+}
+
+/**
+ * The repository name behind whatever a caller carries: an `owner/name` slug, a checkout
+ * path, or a worktree path.
+ *
+ * Every worktree in this workspace is named `<repo>--<slug>`, so the marker and
+ * everything after it comes off. Getting this backwards is not a cosmetic bug: the name
+ * is compared against `outward_repos`, a slug matches nothing, and every gate keyed on
+ * the repository turns into a silent no-op for all work done in a worktree. Found by a
+ * review on 2026-09-12, in code whose own comment warned about this exact failure.
+ */
+export function repoNameFrom(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const last = value.replace(/\\/g, '/').split('/').filter(Boolean).pop();
+  if (!last) return null;
+  const name = last.replace(/--.*$/, '');
+  return name ? name.toLowerCase() : null;
 }

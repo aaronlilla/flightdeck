@@ -22,6 +22,7 @@ import { appendOnce } from '../journal.js';
 import { claudeMcpList, type McpRow } from './mcp-runner.js';import { integrationWordsFor } from '../../shared/integration-words.js';
 import { consoleDir, recordAction, type ActionsLedger } from './actions-ledger.js';
 import { narrateIntegrations } from './integrations-narrate.js';
+import { missingSlackEnv, slackConfigFromEnv } from '../intake/slack.js';
 import type { Narrator } from './narrate-store.js';
 import type {
   Integration, IntegrationsResponse, IntegrationStatus, LanesResponse, McpConnState, ReconnectResponse,
@@ -127,6 +128,20 @@ function jiraProbe(spawnFn?: RunRequest['spawnFn']): Probe {
       headers: { authorization: `Basic ${auth}` },
     });
     return { ok: response.ok, detail: response.ok ? undefined : `myself endpoint returned ${response.status}`, scope: site };
+  }, spawnFn);
+}
+
+/** R-76: Pass to… needs all three Slack variables set and a bot in the questions
+ *  channel. This row checks only that the variables are there -- the bot's membership is
+ *  something only a real post finds out, and a probe that posted to prove itself would
+ *  be exactly the unsolicited message this feature promises never to send. Neither the
+ *  token nor any user id reaches the row's own text. */
+function slackProbe(spawnFn?: RunRequest['spawnFn']): Probe {
+  return () => timed(async () => {
+    const missing = missingSlackEnv();
+    if (missing.length) return { ok: false, detail: `${missing.join(' / ')} not set` };
+    const names = Object.keys(slackConfigFromEnv()?.users ?? {});
+    return { ok: true, scope: `${names.length} teammate${names.length === 1 ? '' : 's'} known` };
   }, spawnFn);
 }
 
@@ -335,6 +350,7 @@ const BUILTIN_DECLS: IntegrationDecl[] = [
   { id: 'model-provider', kind: 'conn', name: 'Model provider', desc: 'fleet login', reconnectLabel: 'Reconnect via SSO' },
   { id: 'codex', kind: 'conn', name: 'Codex', desc: 'codex CLI', reconnectLabel: 'Reconnect' },
   { id: 'aws', kind: 'conn', name: 'AWS', desc: 'FORGE_AWS_PROFILE via SSO', reconnectLabel: 'Reconnect AWS via SSO' },
+  { id: 'slack', kind: 'conn', name: 'Slack', desc: 'FORGE_SLACK_* for Pass to…', reconnectLabel: null },
 ];
 
 function defaultProbes(spawnFn?: RunRequest['spawnFn']): Record<string, Probe> {
@@ -344,6 +360,7 @@ function defaultProbes(spawnFn?: RunRequest['spawnFn']): Record<string, Probe> {
     'model-provider': modelProviderProbe(spawnFn),
     codex: codexProbe(spawnFn),
     aws: awsProbe(spawnFn),
+    slack: slackProbe(spawnFn),
   };
 }
 

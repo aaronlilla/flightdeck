@@ -13,7 +13,7 @@
  * one level up: `Run plan` sends `run <token>`.
  */
 import { randomUUID } from 'node:crypto';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { dirname, join } from 'node:path';
 
@@ -21,13 +21,14 @@ import type { Actuator } from '../contracts.js';
 import { foldChainState } from '../chain.js';
 import type { Inbox, InboxEntry } from '../inbox.js';
 import { deliverAnswer } from '../runinbox.js';
+import { journalInterviewAnswer } from '../intake/interviewPlanner.js';
 import { appendOnce, replay } from '../journal.js';
 import type { StuckSignal } from '../liveness.js';
 import { processAlive, type Registry } from '../registry.js';
 import type { RunRequest } from '../exec.js';
 import {
   accountName, accountsRegistryPath, addAccount, interactiveSentence, liveRunsByAccount,
-  loadAccounts, pickAccount, removeAccount, updateAccount,
+  defaultLoginOff, loadAccounts, pickAccount, removeAccount, setDefaultLoginOff, updateAccount,
 } from '../accounts.js';
 import { deleteLeftover, listLeftovers } from '../accounts-leftovers.js';
 import { AccountsService, diskWriters, fleetLoginDir, realProbe, type AccountsServiceDeps } from '../accounts-service.js';
@@ -38,18 +39,27 @@ import type { Lanes } from '../supervisor.js';
 import type { QueueStore } from '../intake/queueStore.js';
 import { conductorAgentEnabled, governorBudget } from '../policy.js';
 import { fleetConfigDir, forgeHome } from '../paths.js';
-import { retireLane } from './retire.js';
+import { retireAbandonedLane, retireLane } from './retire.js';
 import { consoleDir, recordAction, ActionsLedger, actionsLedgerPath } from './actions-ledger.js';
 import {
   compactRun, killRun, mergeRun, pauseRun, reauditRun, reopenRun, restoreRunCap,
   resumeRun, setRunCap, verifyRun, type RunActionsDeps,
 } from './run-actions.js';
+import { handOffTicket, handoffDepsFromEnv, type TicketHandoffDeps } from './ticket-handoff.js';
+import { openPullRequest, type OpenPrDeps } from './open-pr.js';
 import { capsOverridesPath, effectiveHardTokens, readCapsOverrides } from './caps-read.js';
 import { restoreCaps, writeCaps, type CapsWriteDeps } from './caps-write.js';
 import { IntegrationsRegistry, type IntegrationsDeps } from './integrations.js';
+import {
+  MAX_OPEN_PASSES, missingEnvSentence, missingSlackEnv, openPassCount, postQuestion,
+  slackConfigFromEnv, type SlackConfig,
+} from '../intake/slack.js';
 import { labelFor as laneLabelFor, laneStateNowFor, meaningfulEvents, tokensToday } from './lanes.js';
 import { signalPhrase } from './journal-narrative.js';
 import { plainEventText } from './thread.js';
+import { sweepAbandonedLanes as sweepAbandoned, type AbandonedSweepResult } from './abandoned-sweep.js';
+import type { WorktreeState } from './abandoned.js';
+import { CONFIRM_TTL_MS } from '../../shared/console-model.js';
 import {
   applyRule, dismissRule, restoreRule, rulesPath, setRuleStatus, startEnforcementTick,
   type RulesDeps,
@@ -187,6 +197,7 @@ export type Intent =
   | { kind: 'what-stuck' }
   | { kind: 'spend-today' }
   | { kind: 'status' }
+  | { kind: 'pass'; askKey: string; name: string }
   | { kind: 'answer'; askKey: string | null; text: string }
   | { kind: 'answer-by-number'; askKey: string | null; optionNumber: number }
   | { kind: 'confirm'; token: string }
@@ -241,6 +252,14 @@ export function parseIntent(raw: string): Intent {
   if (/^what'?s\s+stuck\??$/i.test(text)) return { kind: 'what-stuck' };
   if (/^spend\s+today$/i.test(text)) return { kind: 'spend-today' };
   if (/^status$/i.test(text)) return { kind: 'status' };
+  // R-76: Pass to… is a click on the question card, which sends exactly this. There is
+  // no other path to a Slack post -- no tag, no keyword, no automatic hand-off.
+  if ((match = text.match(/^pass\s+(\S+)\s+to\s+(.+)$/i))) {
+    return { kind: 'pass', askKey: match[1]!, name: match[2]!.trim() };
+  }
+  if ((match = text.match(/^pass\s+(\S+)\s+(.+)$/i))) {
+    return { kind: 'pass', askKey: match[1]!, name: match[2]!.trim() };
+  }
   // `answer <askKey> <text>` (deliverable 3): the first token is an ask key -- an id at
   // least 8 hex characters long -- and only the text after it is the answer. Matching
   // it here, ahead of the plain free-text form below, is what stops the whole tail
@@ -268,6 +287,11 @@ export function parseIntent(raw: string): Intent {
 // ---------------------------------------------------------------------------------------
 
 export interface ConsoleWritesDeps {
+  /** Item 4, round 2: runs the Queue view's merge for one item, so a `queue-merge`
+   *  confirm minted before a restart can be rebuilt by the process the operator clicks
+   *  against. Absent means this process has no queue merge wiring, and a rebuilt click
+   *  is refused with that sentence rather than silently answering `done`. */
+  queueMerge?: (itemId: string) => Promise<RouteOutcome>;
   journalPath: string;
   registry: Registry;
   lanes?: Lanes;
@@ -294,6 +318,9 @@ export interface ConsoleWritesDeps {
    *  repo/PR/base/worktree (`POST /run/:id/reaudit`). Defaults to `RunActionsDeps`'s own
    *  default (`defaultQueuePath()`, which follows `FORGE_HOME`) when unset. */
   queueStore?: QueueStore;
+  /** Reads what a worktree holds, for the abandoned sweep's courtesy check. Absent means
+   *  the check is skipped, which is safe: retiring writes one row and touches no tree. */
+  worktreeState?: (cwd: string) => WorktreeState | null;
   /** What `remove | archive | retire <lane>` retires against: the archived-inclusive
    *  lanes view (`lanesResponse(true, true)`) the retire rule reads heart and PR off.
    *  Falls back to `lanesView` when unset. */
@@ -303,6 +330,20 @@ export interface ConsoleWritesDeps {
   /** Overrides where the account registry lives. A specimen only; production reads
    *  `accounts.ts`'s own default under `forgeHome()`. */
   accountsRegistryPath?: string;
+  /** R-76, Pass to…: the Slack config, read fresh on every click so a token exported
+   *  after the console started still works, and the poster itself. Both injected, so no
+   *  specimen reaches Slack and a console with no Slack configured refuses with a
+   *  sentence instead of failing somewhere quieter. */
+  slackConfig?: () => SlackConfig | undefined;
+  postQuestion?: typeof postQuestion;
+  /** `POST /ticket/:key/handoff`: the Jira write client and the destinations it knows,
+   *  read fresh on every press so credentials exported after the console started still
+   *  work. Injected so no specimen reaches Jira, and a console with nothing configured
+   *  refuses with a sentence rather than writing somewhere quieter. */
+  handoffDeps?: () => TicketHandoffDeps;
+  /** `POST /run/:id/open-pr`: the lane read, the `gh` calls and the readability rule.
+   *  Injected so no specimen reaches GitHub. */
+  openPrDeps?: () => OpenPrDeps;
 }
 
 function readBody<T>(request: IncomingMessage): Promise<T | null> {
@@ -341,7 +382,15 @@ function respond(response: ServerResponse, status: number, body: unknown): void 
  */
 export type ConfirmDescriptor =
   | { kind: 'kill'; laneId: string; reason: string; andRetire: boolean; label: string }
-  | { kind: 'retire'; laneId: string; label: string };
+  | { kind: 'retire'; laneId: string; label: string }
+  /** Item 4 (2026-09-11): the Merge click. It waits longer than any other confirm -- it
+   *  waits for a person to read a diff -- so it was the one most often voided by a
+   *  restart. The lane id is all the rebuilt action needs; `mergeRun` reads the PR off
+   *  the lane the same way the closure did. */
+  | { kind: 'merge'; laneId: string; label: string }
+  /** Round 2: the Queue view's own Merge click, which goes through `queue-route.ts` and
+   *  was the last confirm surface a restart could still void. */
+  | { kind: 'queue-merge'; itemId: string; label: string };
 
 interface PersistedConfirm {
   token: string;
@@ -354,8 +403,13 @@ interface PersistedConfirm {
 /** A pending confirm is stale after this long. Short on purpose: a card that survives a
  *  restart also survives the board moving on underneath it, and the shorter the window the
  *  less there is to move. The restart cadence is minutes, so this still covers many of
- *  them; a card older than this is refused and the operator re-issues the action. */
-const CONFIRM_TTL_MS = 2 * 60 * 60_000;
+ *  them; a card older than this is refused and the operator re-issues the action.
+ *  Declared in `shared/console-model.ts` so the thread builder can read it too. */
+
+
+/** How long past its expiry a spent-out row is still kept, so a refusal can say
+ *  "expired at ..." rather than "nothing pending". */
+const CONFIRM_NAMEABLE_MS = 24 * 60 * 60_000;
 
 /** Newest-first hard ceiling, so a wedged proposer cannot grow the file without end. */
 const CONFIRM_MAX = 200;
@@ -373,22 +427,46 @@ const CONFIRM_MAX = 200;
  * by this file. Say so rather than claim an atomicity it does not have.
  */
 class PendingConfirmStore {
+  /** The last parse, keyed on the file's own mtime and size. `has()` is now called once
+   *  per unresolved confirm card on every `/thread` read, and the console polls every
+   *  five seconds: with the 67 cards measured on 2026-09-12 that was around 800
+   *  synchronous whole-file reads a minute on the server's event loop (found in review,
+   *  2026-09-12). A write through this class rewrites the file, so the stamp moves and
+   *  the next read re-parses; a write by anything else moves it too. */
+  private cache: { key: string; rows: PersistedConfirm[] } | null = null;
+
   constructor(private readonly path: string) {}
 
   private read(): PersistedConfirm[] {
-    if (!existsSync(this.path)) return [];
+    if (!existsSync(this.path)) { this.cache = null; return []; }
+    let key: string;
+    try {
+      const stat = statSync(this.path);
+      key = `${stat.mtimeMs}:${stat.size}`;
+    } catch {
+      key = String(Date.now());
+    }
+    if (this.cache?.key === key) return this.cache.rows;
     try {
       const parsed: unknown = JSON.parse(readFileSync(this.path, 'utf8'));
-      return Array.isArray(parsed) ? (parsed as PersistedConfirm[]) : [];
+      const rows = Array.isArray(parsed) ? (parsed as PersistedConfirm[]) : [];
+      this.cache = { key, rows };
+      return rows;
     } catch {
       // A half-written or hand-edited file must not take the console down with it: an
       // unreadable store means no token survives, which is today's behaviour anyway.
+      // Not cached: the next read should see the file once it is whole again.
+      this.cache = null;
       return [];
     }
   }
 
   private write(rows: PersistedConfirm[], now: number): void {
-    const live = rows.filter((row) => now - row.at < CONFIRM_TTL_MS).slice(-CONFIRM_MAX);
+    // Kept for a day past expiry, not dropped at it: a row the prune removes can no
+    // longer be named, so the operator gets "nothing pending" for a token that was real
+    // -- the answer this whole change exists to stop. A row past its TTL is refused by
+    // `take` regardless, so keeping it spends nothing but a line of disk.
+    const live = rows.filter((row) => now - row.at < CONFIRM_TTL_MS + CONFIRM_NAMEABLE_MS).slice(-CONFIRM_MAX);
     mkdirSync(dirname(this.path), { recursive: true });
     // Temp file then rename: the store is rewritten whole, so a torn write would lose
     // EVERY pending confirm (read() treats unparseable as empty), not the one row.
@@ -408,8 +486,20 @@ class PendingConfirmStore {
     const rows = this.read();
     const found = rows.find((row) => row.token === token);
     if (!found) return undefined;
+    // Item 4: an expired row is NOT spent here. Spending it would leave the refusal with
+    // nothing to read, and the operator would get "nothing pending" for a token that was
+    // real -- the answer this whole change exists to stop. `write`'s own TTL prune clears
+    // it on the next put.
+    if (now - found.at >= CONFIRM_TTL_MS) return undefined;
     this.write(rows.filter((row) => row.token !== token), now);
-    return now - found.at < CONFIRM_TTL_MS ? found : undefined;
+    return found;
+  }
+
+  /** When this token was minted, if it exists and has aged out. Undefined for a token
+   *  that is still live, and for one nobody ever minted. */
+  expiredAt(token: string, now: number): number | undefined {
+    const found = this.read().find((row) => row.token === token);
+    return found && now - found.at >= CONFIRM_TTL_MS ? found.at : undefined;
   }
 
   has(token: string, now: number): boolean {
@@ -508,6 +598,7 @@ export class ConsoleWrites {
       recordReadError: diskWriters.recordReadError,
       liveRuns: () => this.liveRunsByAccount(),
       fleetConfigDir: deps.fleetLoginDir ?? fleetLoginDir(() => fleetConfigDir()),
+      defaultLoginOff: () => defaultLoginOff(this.accountsPath),
       probe: deps.accountsProbe ?? realProbe(),
       // R-58, wired. A login that has just run out leaves one note per live terminal on
       // it saying where to come back; the shim reads it after its child exits. Without
@@ -727,6 +818,33 @@ export class ConsoleWrites {
   }
 
   /**
+   * One pass of the abandoned-lane sweep (`abandoned-sweep.ts`), wired here because this
+   * class already owns `retireDeps` and the lanes view.
+   *
+   * Aaron, 2026-09-12: "if a lane is stuck it needs to self heal ... what would my options
+   * even be? leave it and just let it hold up the entire system? what a useless question."
+   * Three lanes had sat blocked for 70 hours or more with no process and no queue row, and
+   * the board's only exit for each was Kill, so it raised a confirm and asked every ten
+   * minutes whether to destroy something already gone.
+   *
+   * The worktree is read off the run's own registry row, and a lane with no such row
+   * reports none -- which is fine, because retiring writes one row and never touches a
+   * tree. See `abandoned.ts` for why that is a courtesy check rather than a safety gate.
+   */
+  sweepAbandonedLanes(): AbandonedSweepResult {
+    const deps = this.retireDeps();
+    return sweepAbandoned({
+      lanesAll: deps.lanesAll,
+      queue: () => this.deps.queueStore?.all() ?? [],
+      worktreeFor: (lane) => {
+        const cwd = this.deps.registry.get(lane.id)?.cwd;
+        return cwd ? this.deps.worktreeState?.(cwd) ?? null : null;
+      },
+      retire: (id, why) => { retireAbandonedLane(id, why, deps); },
+    });
+  }
+
+  /**
    * Registers a server-side confirm for an irreversible action and returns the token
    * and the card. The grammar's kill/retire and every irreversible Conductor-agent tool
    * (W2) go through this one map, so a typed or clicked `confirm <token>` finds the
@@ -754,6 +872,22 @@ export class ConsoleWrites {
     const pending: PendingConfirm = {
       blast: row.blast, descriptor: d,
       run: async () => {
+        if (d.kind === 'queue-merge') {
+          const outcome = this.deps.queueMerge
+            ? await this.deps.queueMerge(d.itemId)
+            : { status: 501, body: { ok: false, error: 'no queue merge wiring is configured for this process' } };
+          pending.outcome = outcome;
+          return [outcome.status === 200
+            ? receiptCard(source, outcome.body as ActionResult)
+            : refusalCard(source, actionFailureText(outcome.body, `could not merge ${d.label}`))];
+        }
+        if (d.kind === 'merge') {
+          const outcome = await mergeRun(d.laneId, this.runActionsDeps());
+          pending.outcome = outcome;
+          return [outcome.status === 200
+            ? receiptCard(source, outcome.body as ActionResult)
+            : refusalCard(source, actionFailureText(outcome.body, `could not merge ${d.label}`))];
+        }
         if (d.kind === 'retire') {
           const outcome = retireLane(d.laneId, true, this.retireDeps());
           pending.outcome = outcome;
@@ -794,6 +928,17 @@ export class ConsoleWrites {
     return row ? this.rebuild(row) : undefined;
   }
 
+  /** Item 4: why a confirm found nothing. A token that was real and has aged out says so
+   *  and names when it was minted, so the operator knows to start the action again
+   *  rather than reading a bare "nothing pending" as the console losing their click. */
+  confirmRefusal(token: string): string {
+    const at = this.durableConfirms.expiredAt(token, Date.now());
+    if (at === undefined) return `nothing pending for ${token}`;
+    const hours = CONFIRM_TTL_MS / 3_600_000;
+    return `confirm ${token} expired: it was proposed at ${new Date(at).toISOString()} and a confirm `
+      + `is good for ${hours} hours. Start the action again from its own button.`;
+  }
+
   /** Whether `confirm <token>` would still find something to run. */
   hasPending(token: string): boolean {
     return this.pendingConfirms.has(token) || this.durableConfirms.has(token, Date.now());
@@ -814,7 +959,7 @@ export class ConsoleWrites {
     const token = body?.['confirm'];
     if (typeof token === 'string') {
       const pending = this.takeConfirm(token);
-      if (!pending) return { status: 409, body: { error: `nothing pending for ${token}` } };
+      if (!pending) return { status: 409, body: { error: this.confirmRefusal(token) } };
       const cards = await pending.run();
       for (const card of cards) appendThread(card);
       return pending.outcome ?? { status: 200, body: { ok: true, jid: null, message: cards[0]?.text ?? 'done', undoable: false } };
@@ -855,6 +1000,7 @@ export class ConsoleWrites {
     const answered = this.deps.inbox.answer(match.key, text);
     if (!answered) return [refusalCard(source, `could not answer ${match.key}`)];
     await deliverAnswer(answered, match.key, text);
+    journalInterviewAnswer((row) => appendOnce(this.deps.journalPath, row), answered);
     const { jid } = recordAction(this.deps.journalPath, this.ledger, {
       kind: 'answer', text: `answered ${match.key}: ${text}`, undo: null, extra: { askKey: match.key },
     });
@@ -864,14 +1010,95 @@ export class ConsoleWrites {
     })];
   }
 
+  /**
+   * Pass to… (R-76, spec §10): accept first, work second.
+   *
+   * The click sets the three passed fields and journals `action.accepted` with this
+   * action's own id, then returns. The Slack post runs after the response, on a detached
+   * promise that no route ever waits on, and journals `action.done` or -- through
+   * `postQuestion` itself -- `slack.failed` and `action.failed`, rolling the fields back
+   * so the board un-passes the card. A Slack API call can take seconds; a board that
+   * freezes for them is a board nobody trusts.
+   */
+  private async passAsk(intent: { askKey: string; name: string }, source: string): Promise<Message[]> {
+    const entry = this.deps.inbox.entry(intent.askKey);
+    if (!entry) return [refusalCard(source, `I can't pass that on: there is no open question ${intent.askKey}.`)];
+    const config = (this.deps.slackConfig ?? slackConfigFromEnv)();
+    if (!config) {
+      const missing = missingSlackEnv();
+      return [refusalCard(source, missingEnvSentence(missing.length ? missing : ['FORGE_SLACK_BOT_TOKEN']))];
+    }
+    const name = intent.name.trim();
+    if (!config.users[name.toLowerCase()]) {
+      const known = Object.keys(config.users);
+      return [refusalCard(
+        source,
+        `I can't pass that on: I don't know who ${name} is.${known.length ? ` I know ${known.join(', ')}.` : ''}`,
+      )];
+    }
+
+    // The cap belongs HERE, not in the poster. Accepting first means `passedTo` is
+    // already set by the time the poster looks, and the poster skips its own cap for an
+    // ask that is already passed -- so on the real path the cap could never fire, while
+    // the poster's own specimen (which calls it on an un-passed ask) stayed green. Found
+    // by code review, 2026-09-11.
+    if (!entry.passedTo && openPassCount(this.deps.inbox) >= MAX_OPEN_PASSES) {
+      return [refusalCard(
+        source,
+        `I can't pass that on: ${MAX_OPEN_PASSES} questions are already out with the team.`,
+      )];
+    }
+
+    const post = this.deps.postQuestion ?? postQuestion;
+    this.deps.inbox.pass(intent.askKey, name, Date.now(), null);
+    const { jid } = recordAction(this.deps.journalPath, this.ledger, {
+      kind: 'pass', text: `passed ${intent.askKey} to ${name}`, undo: null,
+      extra: { askKey: intent.askKey, to: name },
+    });
+    appendOnce(this.deps.journalPath, {
+      event: 'action.accepted', actor: 'console', action: 'pass', actionId: jid,
+      askKey: intent.askKey, to: name,
+    });
+
+    // Detached on purpose: no route waits on Slack. Every outcome is journaled from
+    // inside, so nothing about this post is invisible just because nobody awaited it.
+    void post(intent.askKey, name, {
+      config,
+      inbox: this.deps.inbox,
+      append: (row) => { appendOnce(this.deps.journalPath, row); },
+    }).then((outcome) => {
+      appendOnce(this.deps.journalPath, {
+        event: outcome.ok ? 'action.done' : 'action.failed', actor: 'console', action: 'pass',
+        actionId: jid, askKey: intent.askKey, to: name,
+        ...(outcome.ok ? {} : { reason: outcome.reason ?? 'the post did not land' }),
+      });
+    }).catch((error: unknown) => {
+      this.deps.inbox.clearPass(intent.askKey);
+      appendOnce(this.deps.journalPath, {
+        event: 'action.failed', actor: 'console', action: 'pass', actionId: jid,
+        askKey: intent.askKey, to: name, reason: (error as Error).message,
+      });
+    });
+
+    return [receiptCard(source, {
+      ok: true, jid, message: `Passed to ${name}. I'll bring the reply back here.`, undoable: false,
+    })];
+  }
+
   private async executeIntent(intent: Intent, source: string): Promise<Message[]> {
     switch (intent.kind) {
+      case 'pass':
+        return this.passAsk(intent, source);
+
       case 'cancel':
         return [replyCard(source, 'cancelled')];
 
       case 'confirm': {
         const pending = this.takeConfirm(intent.token);
-        if (!pending) return [refusalCard(source, `nothing pending for ${intent.token}`)];
+        // Item 4: the same sentence the clicked route gives. The typed path is where the
+        // live `nothing pending for <uuid>` answers came from, so fixing only the route
+        // would have left the reported symptom in place.
+        if (!pending) return [refusalCard(source, this.confirmRefusal(intent.token))];
         return pending.run();
       }
 
@@ -1261,6 +1488,21 @@ export class ConsoleWrites {
       return true;
     }
 
+    // The machine's own login has no registry row, so there is nothing to unlink and the
+    // row carried no control at all -- Aaron, 2026-09-12: "i have no way to unlink the
+    // other account, which i should be able to." This is the control: it takes that login
+    // out of the rotation and leaves it logged in, and it refuses while no Claude account
+    // is registered, since the machine would then have nothing to run on.
+    if (path === '/accounts/default-login' && method === 'POST') {
+      if (!this.deps.authorized(request, response)) return true;
+      const body = await readBody<{ off?: boolean }>(request);
+      const result = setDefaultLoginOff(body?.off === true, this.accountsPath);
+      respond(response, result.ok ? 200 : 409, result.ok
+        ? { ok: true as const, off: body?.off === true }
+        : { ok: false as const, error: result.reason });
+      return true;
+    }
+
     if ((match = path.match(/^\/integrations\/([^/]+)\/check$/)) && method === 'POST') {
       if (!this.deps.authorized(request, response)) return true;
       respond(response, 200, await this.integrations.check(decodeURIComponent(match[1]!)));
@@ -1269,6 +1511,93 @@ export class ConsoleWrites {
     if ((match = path.match(/^\/integrations\/([^/]+)\/reconnect$/)) && method === 'POST') {
       if (!this.deps.authorized(request, response)) return true;
       respond(response, 200, await this.integrations.reconnect(decodeURIComponent(match[1]!)));
+      return true;
+    }
+
+    // Opening a pull request, from the lane that has the branch. The only `gh pr create`
+    // in this codebase runs inside a worker's own turn, so a branch a worker pushed and
+    // stopped short of could only become a request from a terminal (Aaron, 2026-09-13).
+    if ((match = path.match(/^\/run\/([^/]+)\/open-pr$/)) && method === 'POST') {
+      if (!this.deps.authorized(request, response)) return true;
+      const run = decodeURIComponent(match[1]!);
+      const body = await readBody<Record<string, unknown>>(request);
+      const deps = this.deps.openPrDeps?.();
+      if (!deps) {
+        respond(response, 501, { error: 'not wired',
+          reason: 'this console has no GitHub wiring, so it cannot open a pull request' });
+        return true;
+      }
+      const title = String(body?.['title'] ?? '');
+      const draft = body?.['draft'] === true;
+      // Irreversible enough to ask first, and on the frontend repository a pull request
+      // -- draft included -- spends an Android build. The blast says so, because that is
+      // the part a person needs to know before the second press, not after.
+      const outcome = await this.confirmGate(
+        body, 'console',
+        `opens a ${draft ? 'draft ' : ''}pull request for ${run}: notifies its reviewers, and on the app repo spends a build.`,
+        async () => {
+          const result = await openPullRequest(run, title, String(body?.['body'] ?? ''), deps, { draft });
+          // A refusal opened nothing. 409 rather than 400 when a request already exists,
+          // because the request was fine and the world was not what it assumed.
+          const status = result.ok ? 200 : (result.number ? 409 : 400);
+          return { status, body: result.ok ? result : { ...result, error: result.refused } };
+        },
+      );
+      respond(response, outcome.status, outcome.body);
+      return true;
+    }
+
+    // Commenting, assigning and moving a ticket, as one press. Everything needed to do
+    // it has existed since `intake/jiraHandoff.ts`; nothing could ask for it from a
+    // screen, so every handoff was a terminal job (Aaron, 2026-09-13).
+    if ((match = path.match(/^\/ticket\/([^/]+)\/handoff$/)) && method === 'POST') {
+      if (!this.deps.authorized(request, response)) return true;
+      const key = decodeURIComponent(match[1]!);
+      const body = await readBody<{ to?: unknown; comment?: unknown }>(request);
+      const deps = this.deps.handoffDeps?.() ?? handoffDepsFromEnv();
+      const to = String(body?.['to'] ?? '');
+      const comment = String(body?.['comment'] ?? '');
+      // Irreversible, and it writes to somebody else's board: a comment cannot be
+      // unposted and a transition cannot be taken back from here. Behind the same
+      // confirm as kill and merge, for the same reason.
+      const outcome = await this.confirmGate(
+        body, 'console', `hands ${key} to ${to || 'nobody'}: comments, assigns and moves it.`,
+        async () => {
+          const result = await handOffTicket(key, to, comment, deps);
+          // Kill and merge both leave a `decision.made` row and its ledger mirror, and
+          // the worker's own Jira writes emit external.intent/call/complete. This route
+          // wrote to Jira -- irreversibly, on a board other people read -- and left
+          // nothing but a chat card, so a handoff that half-landed could not be
+          // reconstructed afterwards at all. Found by design critique.
+          //
+          // The row carries the per-step outcome rather than one verdict, for the same
+          // reason the response does: two of three is the case somebody needs to find
+          // later. Not undoable, because none of the three writes can be.
+          recordAction(this.deps.journalPath, this.ledger, {
+            kind: 'ticket-handoff',
+            text: result.refused
+              ? `did not hand ${key} to ${to}: ${result.refused}`
+              : `handed ${key} to ${to} -- ${result.steps.map((step) => `${step.name}: ${step.detail}`).join('; ')}`,
+            undo: null,
+            extra: { ticket: key, to, ok: result.ok, steps: result.steps },
+          });
+          // A refusal attempted nothing, so it is a request problem, not a partial
+          // write -- and the two must not answer alike, or a caller cannot tell "no"
+          // from "half". Missing credentials is the machine's problem, not the
+          // caller's (503), so retrying the same request forever is not the answer.
+          //
+          // The sentence goes in `error` as well as `refused`. The console throws on any
+          // non-2xx and reads the body through `redactErrorBody`, which looks for `error`
+          // and otherwise says "the server did not say why" -- so a refusal carrying its
+          // reason only in `refused` reached the operator as nothing at all, which is the
+          // whole point of the route. Found by code review before this shipped.
+          if (result.refused) {
+            return { status: deps.client ? 400 : 503, body: { ...result, error: result.refused } };
+          }
+          return { status: 200, body: result };
+        },
+      );
+      respond(response, outcome.status, outcome.body);
       return true;
     }
 
@@ -1294,7 +1623,7 @@ export class ConsoleWrites {
           break;
         case 'merge':
           outcome = await this.confirmGate(body, 'console', `merges ${label}: merges the PR and closes the ticket.`,
-            () => mergeRun(run, deps));
+            () => mergeRun(run, deps), { kind: 'merge', laneId: run, label });
           break;
         case 'reopen':
           outcome = await reopenRun(run, deps);

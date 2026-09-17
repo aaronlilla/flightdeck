@@ -265,6 +265,27 @@ describe('pauseRun / resumeRun', () => {
     expect(actuator.resumed.map((r) => r.run)).toEqual(['alpha']);
   });
 
+  it('resuming a parked queue run hands its item back to the queue to relaunch', async () => {
+    // Aaron, 2026-09-14: five resumes answered "resumed" and nothing started, because a
+    // warden-parked queue run has no live process to read the resume message.
+    registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: 999_999 });
+    appendOnce(journalPath, { event: 'run.started', run: 'alpha' });
+    appendOnce(journalPath, { event: 'run.parked', run: 'alpha', key: 'warden:alpha', reason: 'drift confirmed off-brief' });
+    const queueStore = new QueueStore(join(dir, 'queue.jsonl'));
+    queueStore.append({
+      id: 'Q-1', at: 1000, source: 'ticket', input: 'ABC-1', ticket: 'ABC-1', repo: null, briefPath: null,
+      state: 'parked', reason: 'drift confirmed off-brief', runKey: 'alpha', pr: null, journalIds: [], createdAt: 1000, updatedAt: 1000,
+    });
+    deps.queueStore = queueStore;
+
+    const result = await resumeRun('alpha', deps);
+
+    expect(result.status).toBe(200);
+    const item = new QueueStore(join(dir, 'queue.jsonl')).get('Q-1');
+    expect(item?.state).toBe('running');
+    expect(item?.retriedAt).toBeGreaterThan(0);
+  });
+
   it('refuses to resume a run that is not paused or parked', async () => {
     registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
     appendOnce(journalPath, { event: 'run.started', run: 'alpha' });
@@ -301,10 +322,45 @@ describe('setRunCap', () => {
 });
 
 describe('mergeRun / verifyRun', () => {
-  it('answers 501 when no chain packet names a repo for the run', async () => {
+  it('answers 501 when nothing on record names a repository for the run', async () => {
     const result = await mergeRun('alpha', deps);
     expect(result.status).toBe(501);
     expect((result.body as { error: string }).error).toBe('not wired');
+    // The reason names what is missing, not where it looked.
+    expect(String((result.body as { reason: string }).reason)).toMatch(/nothing on record names a repository/);
+  });
+
+  // Aaron, 2026-09-13, after pressing Merge on the board: "Refused -- no chain packet
+  // names a repo for BBZ-169". A run reaches the board by two routes and only one of them
+  // writes a chain packet; that lane came in through the queue, which was holding its
+  // repository, branch and pull request number the whole time.
+  it('merges a queue-sourced run, whose repository and pull request only the queue knows', async () => {
+    const queueStore = new QueueStore(join(dir, 'queue.jsonl'));
+    queueStore.append({
+      id: 'Q-1', at: 1, source: 'ticket', input: 'ABC-1', ticket: 'ABC-1', repo: 'owner/name',
+      briefPath: null, branch: 'feature/abc-1', worktreePath: dir, base: 'develop',
+      state: 'review', reason: null, runKey: 'alpha',
+      pr: { no: 159, url: 'https://github.com/owner/name/pull/159', files: 1, add: 1, del: 0, draft: true },
+      journalIds: [], createdAt: 1, updatedAt: 1,
+    } as never);
+    appendOnce(journalPath, { event: 'run.finished', run: 'alpha', verdict: 'done' });
+
+    const spawned: string[][] = [];
+    deps.spawnFn = ((command: string, args: string[]) => {
+      spawned.push(args);
+      return fakeSpawn(0, 'gate passed')();
+    }) as RunActionsDeps['spawnFn'];
+
+    const result = await mergeRun('alpha', { ...deps, queueStore });
+
+    expect(result.status, JSON.stringify(result.body)).toBe(200);
+    // Straight to the gate with the number the queue held: no `gh pr list` round trip,
+    // which answers nothing once the branch has been squashed away.
+    expect(spawned.some((args) => args.includes('list')), 'it asked gh for a PR it already had').toBe(false);
+    const gate = spawned.find((args) => args.includes('gate'));
+    expect(gate).toContain('--merge');
+    expect(gate).toContain('159');
+    expect(gate).toContain('owner/name');
   });
 
   it('answers 501 when a chain packet exists but no PR is open for its branch', async () => {
@@ -344,6 +400,97 @@ describe('mergeRun / verifyRun', () => {
     expect(calls).toBe(2);
     expect(result.status).toBe(200);
     expect(result.body).toMatchObject({ ok: true });
+  });
+
+  /**
+   * The gate refuses a head with no council attestation, telling the operator to run
+   * `forge council` first. The queue has re-councilled on that exact refusal since
+   * 2026-09-08; the console's own Verify and Merge did not, so a board item sat with one
+   * button that could never succeed no matter how many times it was pressed.
+   */
+  const chainWithPr = () => {
+    appendOnce(journalPath, { event: 'intake.planned', packetId: 'p1', repo: 'acme/widget' });
+    appendOnce(journalPath, { event: 'chain.provisioned', packetId: 'p1', worktreePath: dir, branch: 'feat/x' });
+    appendOnce(journalPath, { event: 'chain.launched', packetId: 'p1', runKey: 'alpha' });
+  };
+
+  const NO_ATTESTATION = 'refused: no attestation for acme/widget#42 at head abc123 -- run forge council first';
+
+  it('runs the council and gates again when the gate refuses for a missing attestation', async () => {
+    chainWithPr();
+
+    const spawned: string[][] = [];
+    let gateCalls = 0;
+    deps.spawnFn = ((command: string, args: string[]) => {
+      spawned.push(args);
+      if (args.includes('list')) return fakeSpawn(0, JSON.stringify([{ number: 42 }]))();
+      if (args.includes('council')) return fakeSpawn(0, 'council: PASS')();
+      gateCalls += 1;
+      return gateCalls === 1 ? fakeSpawn(1, NO_ATTESTATION)() : fakeSpawn(0, 'gate passed')();
+    }) as RunActionsDeps['spawnFn'];
+
+    const result = await verifyRun('alpha', deps);
+
+    expect(spawned.some((args) => args.includes('council'))).toBe(true);
+    expect(gateCalls).toBe(2);
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({ ok: true });
+  });
+
+  it('does the same for merge, which hits the same refusal', async () => {
+    chainWithPr();
+    appendOnce(journalPath, { event: 'run.finished', run: 'alpha', verdict: 'done' });
+
+    let gateCalls = 0;
+    let councilRan = false;
+    deps.spawnFn = ((command: string, args: string[]) => {
+      if (args.includes('list')) return fakeSpawn(0, JSON.stringify([{ number: 42 }]))();
+      if (args.includes('council')) { councilRan = true; return fakeSpawn(0, 'council: PASS')(); }
+      gateCalls += 1;
+      return gateCalls === 1 ? fakeSpawn(1, NO_ATTESTATION)() : fakeSpawn(0, 'merged')();
+    }) as RunActionsDeps['spawnFn'];
+
+    const result = await mergeRun('alpha', deps);
+
+    expect(councilRan).toBe(true);
+    expect(result.status).toBe(200);
+  });
+
+  it('reports the second gate refusal rather than looping', async () => {
+    chainWithPr();
+
+    let gateCalls = 0;
+    deps.spawnFn = ((command: string, args: string[]) => {
+      if (args.includes('list')) return fakeSpawn(0, JSON.stringify([{ number: 42 }]))();
+      if (args.includes('council')) return fakeSpawn(0, 'council: FIX FIRST')();
+      gateCalls += 1;
+      return fakeSpawn(1, gateCalls === 1 ? NO_ATTESTATION : "refused: the attestation's verdict is FIX FIRST")();
+    }) as RunActionsDeps['spawnFn'];
+
+    const result = await verifyRun('alpha', deps);
+
+    expect(gateCalls).toBe(2);
+    expect(result.status).toBe(502);
+    expect(String((result.body as { message: string }).message)).toContain('FIX FIRST');
+  });
+
+  it('leaves a refusal that is not about an attestation alone', async () => {
+    chainWithPr();
+
+    let councilRan = false;
+    let gateCalls = 0;
+    deps.spawnFn = ((command: string, args: string[]) => {
+      if (args.includes('list')) return fakeSpawn(0, JSON.stringify([{ number: 42 }]))();
+      if (args.includes('council')) { councilRan = true; return fakeSpawn(0, 'council: PASS')(); }
+      gateCalls += 1;
+      return fakeSpawn(1, 'refused: checks are red on head abc123')();
+    }) as RunActionsDeps['spawnFn'];
+
+    const result = await verifyRun('alpha', deps);
+
+    expect(councilRan).toBe(false);
+    expect(gateCalls).toBe(1);
+    expect(result.status).toBe(502);
   });
 });
 
