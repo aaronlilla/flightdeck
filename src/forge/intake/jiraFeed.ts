@@ -29,6 +29,12 @@ import { redact } from '../redact.js';
 import type { JiraCallResult, JiraConfig } from './jira.js';
 import { voiceGuard } from './voiceGuard.js';
 import { humanizerRule } from '../rules/humanizer.js';
+import {
+  critiquePrompt, parseCritique, repairPrompt, runGauntlet, type BarComment, type GauntletRound,
+} from './replyGauntlet.js';
+import {
+  claimBlocked, claimPrompt, parseClaim, performClaim, type ClaimContext, type ClaimLedgerRow,
+} from './ticketClaim.js';
 
 /** The run name every feed question is raised under, so the feed can find its own
  *  answered questions again and nothing else's. */
@@ -352,6 +358,28 @@ function clip(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max)}...` : text;
 }
 
+/** How many gauntlet rounds a reply gets before it goes to a person. Three is what the
+ *  53-question run on 2026-09-18 needed: most wins landed on round one or two, and a
+ *  draft still losing on round three was losing on a gap a rewrite was not going to fix. */
+const DEFAULT_GAUNTLET_ROUNDS = 3;
+
+/** The whole ticket as the critic reads it: what it says, then every comment in order.
+ *  The thread is what makes "is this claim supported?" answerable, and the bottom of it
+ *  is where the answer to the question often already sits. */
+function threadText(issue: FeedIssue): string {
+  const lines = [
+    `Ticket ${issue.key}: ${issue.summary}`,
+    `Status: ${issue.status || 'unknown'}. Assignee: ${issue.assigneeName ?? 'nobody'}.`,
+    '',
+    issue.description ? clip(issue.description, 2000) : '(no description)',
+    '',
+  ];
+  for (const c of issue.comments) {
+    lines.push(`${c.authorName || 'someone'}: ${clip(c.body, 1200)}`);
+  }
+  return lines.join('\n');
+}
+
 export function feedPrompt(
   issue: FeedIssue, comment: FeedComment, relevance: Exclude<FeedRelevance, 'self'>, operatorName: string,
   repair?: { reply: string; refusal: string },
@@ -488,6 +516,19 @@ export interface FeedActivityDeps {
   /** Words the team's comment check refuses, named in the prompt so a reply avoids them
    *  on the first try instead of spending a rewording. */
   avoidWords?: () => string[];
+  /**
+   * The claim half (2026-09-18). Absent means the feed behaves exactly as it did before:
+   * reply, defer or ignore, and a comment can never become work. Present means a comment
+   * asking for a change reaches the same decision an assigned ticket does.
+   */
+  claim?: {
+    /** Repos the intake map can route to. A claim naming anything else downgrades to defer. */
+    repos: () => string[];
+    assign: (ticket: string, accountId: string) => Promise<JiraCallResult>;
+    enqueue: (ticket: string) => void;
+  };
+  /** How many gauntlet rounds a reply gets before it goes to a person. Absent is 3. */
+  maxGauntletRounds?: number;
 }
 
 export interface FeedActivityResult {
@@ -498,6 +539,8 @@ export interface FeedActivityResult {
   ignored: string[];
   failed: string[];
   answered: string[];
+  /** Tickets this pass took: replied to, assigned to the operator, and queued. */
+  claimed: string[];
 }
 
 interface Candidate { issue: FeedIssue; comment: FeedComment; relevance: Exclude<FeedRelevance, 'self'>; selfTest: boolean }
@@ -522,7 +565,7 @@ function descriptionCandidate(issue: FeedIssue, me: FeedMe): FeedComment | null 
 export async function runFeedActivity(deps: FeedActivityDeps): Promise<FeedActivityResult> {
   const now = deps.now ?? Date.now;
   const result: FeedActivityResult = {
-    considered: 0, replied: [], deferred: [], sent: [], ignored: [], failed: [], answered: [],
+    considered: 0, replied: [], deferred: [], sent: [], ignored: [], failed: [], answered: [], claimed: [],
   };
   const me = await deps.me();
   if (!me) throw new Error('could not read the Jira account behind the token');
@@ -592,6 +635,11 @@ export async function runFeedActivity(deps: FeedActivityDeps): Promise<FeedActiv
   // 15.6 s, the second waiting on the first's model call.
   const reservedReplies = new Map<string, number>();
 
+  /** Claims made this pass and this hour, for `claimBlocked`. Kept in memory: a restart
+   *  losing the hourly count is a smaller problem than a claim nobody can explain. */
+  const claimRows: ClaimLedgerRow[] = [];
+  let claimedThisPass = 0;
+
   const decide = async (
     candidate: Candidate, repair?: { reply: string; refusal: string },
   ): Promise<{ decision: FeedDecision | null; error: string }> => {
@@ -616,6 +664,111 @@ export async function runFeedActivity(deps: FeedActivityDeps): Promise<FeedActiv
     const posted = await deps.post(ticket, text);
     if (posted.id) ledger.posted.push(posted.id);
     return posted.ok ? null : `the reply was refused by Jira: ${posted.body ?? posted.status ?? 'no detail'}`;
+  };
+
+  /**
+   * The bar: comments other people wrote on the tickets this pass read. Real text, never
+   * a description of a voice, because a critic given "write like a developer" invents the
+   * comparison and approves anything. Built from what the poll already fetched, so it
+   * costs no extra Jira call.
+   */
+  const bar: BarComment[] = [];
+  for (const issue of issues) {
+    for (const c of issue.comments) {
+      if (c.authorAccountId === me.accountId) continue;
+      if (c.body.trim().length < 40) continue;
+      bar.push({ ticket: issue.key, author: c.authorName, body: c.body });
+    }
+  }
+
+  const critiqueDraft = async (
+    candidate: Candidate, draft: string, roundNo: number,
+  ): Promise<GauntletRound | null> => {
+    // No bar means no honest comparison, so the loop passes the draft through to the
+    // mechanical gates rather than pretending a critic judged it.
+    if (bar.length === 0) {
+      return { round: roundNo, draft, verdict: 'ours', supported: true, gap: '', note: 'no comments by other people to compare against' };
+    }
+    try {
+      const answer = await deps.reasoner.call({
+        className: 'triage',
+        replyShape: 'text',
+        prompt: critiquePrompt({
+          draft,
+          thread: threadText(candidate.issue),
+          bar,
+          question: `${candidate.comment.authorName || 'Someone'}: ${clip(candidate.comment.body, 1200)}`,
+        }),
+      });
+      return parseCritique(answer.text, roundNo, draft);
+    } catch {
+      return null;
+    }
+  };
+
+  /**
+   * The claim branch. Runs only when the caller wired one, and only for a comment aimed
+   * at the operator: an unmarked `maybe` comment is never grounds for taking a ticket.
+   * Returns true when it handled the candidate, so the caller stops.
+   */
+  const maybeClaim = async (candidate: Candidate, reply: string, why: string): Promise<boolean> => {
+    const claim = deps.claim;
+    if (!claim || candidate.relevance === 'maybe') return false;
+    const { issue } = candidate;
+    // A ticket the queue already owns is already being worked; claiming it again would
+    // open a second lane on the same ticket.
+    if (deps.queueItems().some((item) => item.ticket === issue.key)) return false;
+
+    const blocked = claimBlocked(claimRows, claimedThisPass, now());
+    if (blocked) {
+      deps.journal.append({ event: 'claim.capped', actor: 'feed', ticket: issue.key, reason: blocked, at: now() });
+      return false;
+    }
+
+    const repos = claim.repos();
+    if (repos.length === 0) return false;
+
+    const context: ClaimContext = {
+      ticket: issue.key,
+      summary: issue.summary,
+      description: clip(issue.description, 2000),
+      status: issue.status,
+      comment: { author: candidate.comment.authorName || 'someone', body: clip(candidate.comment.body, 1200) },
+      repos,
+    };
+    let decision;
+    try {
+      const answer = await deps.reasoner.call({
+        className: 'triage', replyShape: 'text', prompt: claimPrompt(context, deps.operatorName()),
+      });
+      decision = parseClaim(answer.text, repos);
+    } catch {
+      decision = null;
+    }
+    if (!decision || decision.action !== 'claim') return false;
+
+    // Claimed before the first await so two candidates decided in parallel cannot both
+    // pass the same cap.
+    claimedThisPass += 1;
+    const outcome = await performClaim(issue.key, reply, {
+      comment: (ticket, body) => deps.post(ticket, body),
+      assign: claim.assign,
+      enqueue: claim.enqueue,
+      operatorAccountId: me.accountId,
+      journal: deps.journal,
+      now,
+    });
+    if (outcome.ok) {
+      claimRows.push({ ticket: issue.key, at: now() });
+      record(candidate, 'replied', `claimed: ${decision.why || 'took the work'}`, result.claimed);
+      return true;
+    }
+    // A partial claim is a person's problem, not a silent retry: the inbox says which
+    // stage stopped it, and the comment (if it landed) is already on the ticket.
+    claimedThisPass -= 1;
+    raiseQuestion(deps, candidate, reply);
+    record(candidate, 'deferred', outcome.reason, result.deferred);
+    return true;
   };
 
   const handle = async (candidate: Candidate): Promise<void> => {
@@ -661,20 +814,50 @@ export async function runFeedActivity(deps: FeedActivityDeps): Promise<FeedActiv
       // Reserved before the first await, so replies decided in parallel cannot all pass the cap.
       reservedReplies.set(key, (reservedReplies.get(key) ?? 0) + 1);
       try {
-        let text = decision.reply;
+        // The gauntlet: a builder and a separate critic, looping until the critic picks
+        // ours over real comments other people wrote. It replaces the single rewording
+        // this path used to get, which was measured on 2026-09-18 to miss claims the
+        // thread does not support and answers to questions already settled lower down.
+        const outcome = await runGauntlet({
+          maxRounds: deps.maxGauntletRounds ?? DEFAULT_GAUNTLET_ROUNDS,
+          gate: (text) => replyRefusal(text, me.names),
+          build: async ({ round: roundNo, critique }) => {
+            if (roundNo === 1) return decision?.reply ?? '';
+            if (!critique) return decision?.reply ?? '';
+            const next = await decide(candidate, { reply: critique.draft, refusal: critique.gap || critique.note });
+            if (next.decision?.action === 'reply') decision = next.decision;
+            return next.decision?.reply ?? '';
+          },
+          critique: (input) => critiqueDraft(candidate, input.draft, input.round),
+        });
+
+        if (!outcome.won) {
+          // Losing the loop is a deferral, never a post: the best draft goes to a person
+          // with the critic's own reason attached.
+          raiseQuestion(deps, candidate, outcome.bestDraft);
+          record(candidate, 'deferred', outcome.reason, result.deferred);
+          return;
+        }
+
+        const claimed = await maybeClaim(candidate, outcome.reply, decision?.why ?? '');
+        if (claimed) return;
+
+        let text = outcome.reply;
         let refusal = await tryPost(key, text);
         if (refusal) {
-          // Measured live: a correct reply refused for one filler word fell to the inbox.
-          // One rewording with the refusal in hand, then the inbox if that fails too.
+          // The loop's gate is our own copy of the rules; Jira and the readability check
+          // have the last word and can still refuse. Measured live 2026-09-14: a correct
+          // reply refused for one filler word fell to the inbox when one rewording would
+          // have posted it, so the sink's own refusal buys one more round.
           const second = await decide(candidate, { reply: text, refusal });
-          if (second.decision?.action === 'reply') {
+          if (second.decision?.action === 'reply' && second.decision.reply) {
             text = second.decision.reply;
             decision = second.decision;
             refusal = await tryPost(key, text);
           }
         }
         if (!refusal) {
-          record(candidate, 'replied', decision.why || 'answered from the ticket', result.replied);
+          record(candidate, 'replied', decision?.why || 'answered from the ticket', result.replied);
           return;
         }
         raiseQuestion(deps, candidate, text);
