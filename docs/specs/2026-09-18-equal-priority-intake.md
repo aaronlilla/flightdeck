@@ -73,14 +73,54 @@ comment-born claim enters `queue.ts` as the same `ticket` item an assigned ticke
 produces, so plan, implement, PR, gate and merge are literally the same code path. There
 is no second pipeline to keep in sync, which is the point.
 
+## The stages a claimed ticket passes through
+
+Aaron, 2026-09-18, on the shape:
+
+> ingestion -> processing (planning phase, goal creation phase, audit on the goal and
+> potential adjustments to the goal, goal running phase, etc) -> PR -> merge -> tickets
+> and ticket comments updated accordingly -> finished
+
+That is the shape, with three additions it needs to survive contact with the board.
+
+1. **Ingest.** A poll finds a new ticket assigned to Aaron, or a comment aimed at him.
+2. **Claim.** `ticketClaim.ts` decides take it, answer it, or defer. Taking it posts the
+   reply and assigns the ticket to Aaron before any work starts, so the board shows an
+   owner from the first minute rather than after a pull request appears from nowhere.
+3. **Plan.** `queue.ts` `advanceItem`, unchanged.
+4. **Goal.** Written from the plan, unchanged.
+5. **Goal audit.** A gauntlet round on the goal itself, not on prose: a critic with fresh
+   context reads the goal against the ticket and names what the goal would fail to
+   deliver. Adjust and re-audit until it passes or the round cap defers to the inbox.
+   This is the cheapest place to catch a misread ticket, because nothing has been built.
+6. **Run.** The implementation phase, unchanged.
+7. **Verify.** Tests, typecheck and the repo's own checks. **A failure loops back to the
+   goal, it never opens a pull request.** The original chain went straight from running
+   to PR, which turns a red build into a review request for somebody else to reject.
+8. **PR.**
+9. **Gate.** Council's existing attestation and merge gate.
+10. **Merge, or park with the reason on the ticket.** Not every ticket is ours to merge:
+    `BBManagementSystemV2` is controlled code and stops at a draft pull request for Joe,
+    and a ticket carrying a hold label stops at a pull request by configuration. Parking
+    is a first-class ending, not a failure, and the reason goes on the ticket.
+11. **Close the loop.** Comment on the ticket with what landed, and answer the comment
+    that started it if a comment did. Both go through the gauntlet and both gates.
+12. **Finished.**
+
+**Every stage can park with a reason.** A stage that cannot finish raises an inbox
+question naming the stage and what it needs, and the ticket gets a comment saying it is
+waiting. A stall that produces silence is the failure this whole system exists to remove,
+so "no progress and no explanation" is never a legal state.
+
 ## Rules that still bind
 
 Everything in `BRIEF.md` binds on every posted reply: Aaron is the author, casual
-register, no em dash, no banned word, 160 characters of prose, 80 words, no agent
+register, no em dash, no banned word, 160 words of prose (no character limit), no agent
 narration. The gauntlet sits in front of those gates, it does not replace them: a reply
 that wins the loop and then fails `replyRefusal` is still refused.
 
 ## Out of scope
 
-Merging. `queue.ts` already owns that, and the hold labels already decide which tickets
-stop at a pull request.
+The mechanics of merging. `queue.ts` already owns that, and the hold labels already
+decide which tickets stop at a pull request; this spec only adds the park-with-reason
+ending and the closing comment.
