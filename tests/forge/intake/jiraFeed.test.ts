@@ -147,6 +147,16 @@ describe('replyRefusal', () => {
     expect(long.length).toBeLessThan(700);
     expect(replyRefusal(long, ME.names)).toMatch(/100 words of prose, over the 80-word ceiling/);
   });
+
+  it('refuses a reply over the 160-character prose ceiling', () => {
+    const long = 'the deposit screen keeps the old balance until you pull to refresh, only after a card deposit, and the bank path is fine, so I think it is the cache tag on that mutation';
+    expect(long.split(/\s+/).length).toBeLessThan(80);
+    expect(replyRefusal(long, ME.names)).toMatch(/characters of prose, over the 160-character ceiling/);
+  });
+
+  it('passes a reply inside both ceilings', () => {
+    expect(replyRefusal('yeah that one is mine, on develop now, will promote with the rest on Friday', ME.names)).toBeNull();
+  });
 });
 
 describe('runFeedActivity', () => {

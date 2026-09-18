@@ -24,6 +24,13 @@ export interface ReadabilityContract {
   banned_words: string[];
   required_sections: string[];
   prose_ceiling_words: Record<string, number>;
+  /**
+   * A hard character ceiling per surface, checked alongside the word ceiling. Added
+   * 2026-09-18 for `jira-comment`: a comment can sit under the word ceiling and still be
+   * longer than anyone wants to read on a ticket, and characters are what the writer can
+   * see while typing. Optional, so a contract written before this stamp still loads.
+   */
+  prose_ceiling_chars?: Record<string, number>;
   words_deny_from: string;
   production_ceiling: { lines: number; files: number };
   exempt_globs: string[];
@@ -63,6 +70,10 @@ function contractShapeProblem(value: unknown): string | undefined {
   }
   if (typeof c['prose_ceiling_words'] !== 'object' || c['prose_ceiling_words'] === null) {
     return '"prose_ceiling_words" must be an object';
+  }
+  const chars = c['prose_ceiling_chars'];
+  if (chars !== undefined && (typeof chars !== 'object' || chars === null)) {
+    return '"prose_ceiling_chars" must be an object when present';
   }
   const ceiling = c['production_ceiling'];
   if (
@@ -214,6 +225,14 @@ export function proseWordCount(text: string): number {
   return tokens.length;
 }
 
+/** The same strip as `proseWordCount`, measured in characters with runs of whitespace
+ *  counted as one. A fenced snippet or a long path in backticks is not what a character
+ *  ceiling is trying to limit, so both are excluded the same way words exclude them. */
+export function proseCharCount(text: string): number {
+  const stripped = stripInlineBackticks(stripHeadings(stripFences(text)));
+  return stripped.trim().replace(/\s+/g, ' ').length;
+}
+
 function findBannedWords(text: string, bannedWords: string[]): string[] {
   const prose = stripInlineBackticks(stripFences(text));
   const hits: string[] = [];
@@ -324,6 +343,7 @@ export function readabilityVerdict(
   const bannedWords = contract.banned_words;
   const requiredSections = contract.required_sections;
   const proseCeilings = contract.prose_ceiling_words;
+  const charCeilings = contract.prose_ceiling_chars ?? {};
   const productionCeiling = contract.production_ceiling;
   const fenceMaxLines = contract.fence_max_lines;
   const exemptGlobs = contract.exempt_globs;
@@ -423,6 +443,15 @@ export function readabilityVerdict(
     if (count > ceilingWords) {
       const level: ReadabilityVerdictKind = asOf >= wordsDenyFrom ? 'DENY' : 'ADVISE';
       findings.push({ level, message: `${count} words of prose, over the ${ceilingWords}-word ceiling for ${surface}` });
+    }
+  }
+
+  const ceilingChars = charCeilings[surface];
+  if (ceilingChars !== undefined) {
+    const count = proseCharCount(body);
+    if (count > ceilingChars) {
+      const level: ReadabilityVerdictKind = asOf >= wordsDenyFrom ? 'DENY' : 'ADVISE';
+      findings.push({ level, message: `${count} characters of prose, over the ${ceilingChars}-character ceiling for ${surface}` });
     }
   }
 
