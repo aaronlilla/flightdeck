@@ -141,6 +141,12 @@ describe('replyRefusal', () => {
     expect(replyRefusal('fixed on develop — should be green now', ME.names)).toMatch(/humanizer rule refused it/);
     expect(replyRefusal('that fix is crucial for the deposit screen', ME.names)).toMatch(/humanizer rule refused it/);
   });
+
+  it('refuses a reply over the comment check word ceiling even when it fits the character ceiling', () => {
+    const long = `${'word '.repeat(100)}`.trim();
+    expect(long.length).toBeLessThan(700);
+    expect(replyRefusal(long, ME.names)).toMatch(/100 words of prose, over the 80-word ceiling/);
+  });
 });
 
 describe('runFeedActivity', () => {

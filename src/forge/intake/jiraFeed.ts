@@ -44,6 +44,24 @@ const MAX_WINDOW_MINUTES = 24 * 60;
 const MIN_WINDOW_MINUTES = 2;
 /** A reply longer than this is not a quick answer and goes to a person instead. */
 const MAX_REPLY_CHARS = 700;
+
+/**
+ * The comment check's own prose ceiling for `jira-comment`, in words. A reply can sit
+ * under MAX_REPLY_CHARS and still be refused at write time for running long, which is
+ * how a correct reply fell to the inbox for a reason the drafter was never told. Named
+ * here so the prompt can carry it and `replyRefusal` can catch it before the write.
+ */
+export const MAX_REPLY_WORDS = 80;
+
+/** The same count `readability.ts` performs on a comment body: strip fenced code blocks,
+ *  heading lines and inline backtick spans, then count whitespace-separated tokens. */
+export function proseWordCount(text: string): number {
+  const stripped = text
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/^#{1,6} .*$/gm, ' ')
+    .replace(/`[^`\n]*`/g, ' ');
+  return stripped.split(/\s+/).filter(Boolean).length;
+}
 /** Ledger entries older than this are dropped on write. */
 const LEDGER_KEEP_MS = 30 * 24 * 60 * 60 * 1000;
 /** While the self-test switch is on: at most this many replies to one ticket in an hour. */
@@ -383,6 +401,7 @@ function feedPromptBody(
     'A reply reads as the developer typing to a teammate: first person, casual, short (one',
     'to three sentences), plain words, no greeting, no sign-off, no headings or bullets, no',
     'mention of being automated, and never refers to the developer by name.',
+    `The comment check refuses any reply over ${MAX_REPLY_WORDS} words of prose, so keep it under that.`,
     // The team's comment check refuses these outright, so a reply using one never posts.
     ...(avoidWords.length ? [`The reply must never use these words: ${avoidWords.join(', ')}.`] : []),
     '',
@@ -428,6 +447,11 @@ export function parseDecision(text: string): FeedDecision | null {
 export function replyRefusal(reply: string, operatorNames: readonly string[]): string | null {
   if (reply.length === 0) return 'the drafted reply is empty';
   if (reply.length > MAX_REPLY_CHARS) return `the drafted reply is ${reply.length} characters, over ${MAX_REPLY_CHARS}`;
+  // Measured live 2026-09-18: 27 of 29 hand-reviewed replies sat under the character
+  // ceiling and were still refused at write time by the comment check's 80-word prose
+  // ceiling. Catching it here means the feed rewords instead of losing the reply.
+  const words = proseWordCount(reply);
+  if (words > MAX_REPLY_WORDS) return `the drafted reply is ${words} words of prose, over the ${MAX_REPLY_WORDS}-word ceiling the comment check enforces`;
   const voice = voiceGuard(reply);
   if (!voice.ok) return voice.reason ?? 'the reply failed the voice check';
   // The same humanizer rule Council's gate runs on a commit message and a PR body. A
