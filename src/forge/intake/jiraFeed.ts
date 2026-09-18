@@ -42,16 +42,16 @@ const MAX_WINDOW_MINUTES = 24 * 60;
 /** The narrowest: a poll every few seconds still re-reads a couple of minutes, because
  *  Jira's search index can lag a fresh comment by a few seconds. */
 const MIN_WINDOW_MINUTES = 2;
-/** A reply longer than this is not a quick answer and goes to a person instead. */
-const MAX_REPLY_CHARS = 700;
 
 /**
- * The comment check's own prose ceiling for `jira-comment`, in words. A reply can sit
- * under MAX_REPLY_CHARS and still be refused at write time for running long, which is
- * how a correct reply fell to the inbox for a reason the drafter was never told. Named
- * here so the prompt can carry it and `replyRefusal` can catch it before the write.
+ * The comment check's prose ceiling for `jira-comment`, in words, and the only length
+ * rule on a reply: 160 words, no character limit (Aaron, 2026-09-18). A reply used to be
+ * cut off at 700 characters by a rule the comment check knew nothing about, so a reply
+ * could pass every check the drafter knew and still be refused at the sink. Named here
+ * so the prompt can carry the real number and `replyRefusal` can catch a breach before
+ * the write.
  */
-export const MAX_REPLY_WORDS = 80;
+export const MAX_REPLY_WORDS = 160;
 
 /** The same count `readability.ts` performs on a comment body: strip fenced code blocks,
  *  heading lines and inline backtick spans, then count whitespace-separated tokens. */
@@ -446,10 +446,9 @@ export function parseDecision(text: string): FeedDecision | null {
  *  names why, and the comment becomes a question instead. */
 export function replyRefusal(reply: string, operatorNames: readonly string[]): string | null {
   if (reply.length === 0) return 'the drafted reply is empty';
-  if (reply.length > MAX_REPLY_CHARS) return `the drafted reply is ${reply.length} characters, over ${MAX_REPLY_CHARS}`;
-  // Measured live 2026-09-18: 27 of 29 hand-reviewed replies sat under the character
-  // ceiling and were still refused at write time by the comment check's 80-word prose
-  // ceiling. Catching it here means the feed rewords instead of losing the reply.
+  // Measured live 2026-09-18: replies sat inside every limit the drafter knew about and
+  // were still refused at write time by the comment check's prose ceiling. Catching it
+  // here means the feed rewords instead of losing the reply.
   const words = proseWordCount(reply);
   if (words > MAX_REPLY_WORDS) return `the drafted reply is ${words} words of prose, over the ${MAX_REPLY_WORDS}-word ceiling the comment check enforces`;
   const voice = voiceGuard(reply);

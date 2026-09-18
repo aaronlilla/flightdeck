@@ -132,7 +132,6 @@ describe('replyRefusal', () => {
 
   it('refuses empty, long, third-person and self-described automated replies', () => {
     expect(replyRefusal('', ME.names)).toMatch(/empty/);
-    expect(replyRefusal('x'.repeat(701), ME.names)).toMatch(/over 700/);
     expect(replyRefusal('Robin will look at this', ME.names)).toMatch(/third person/);
     expect(replyRefusal('this is an automated reply', ME.names)).toMatch(/automated/);
   });
@@ -142,10 +141,14 @@ describe('replyRefusal', () => {
     expect(replyRefusal('that fix is crucial for the deposit screen', ME.names)).toMatch(/humanizer rule refused it/);
   });
 
-  it('refuses a reply over the comment check word ceiling even when it fits the character ceiling', () => {
-    const long = `${'word '.repeat(100)}`.trim();
-    expect(long.length).toBeLessThan(700);
-    expect(replyRefusal(long, ME.names)).toMatch(/100 words of prose, over the 80-word ceiling/);
+  it('refuses a reply over the comment check word ceiling, and allows a long one under it', () => {
+    const over = `${'word '.repeat(161)}`.trim();
+    expect(replyRefusal(over, ME.names)).toMatch(/161 words of prose, over the 160-word ceiling/);
+    // 900 characters, well past the old 700-character rule, but inside the word ceiling:
+    // words are the only length rule on a comment now.
+    const longButFine = `${'word '.repeat(150)}`.trim();
+    expect(longButFine.length).toBeGreaterThan(700);
+    expect(replyRefusal(longButFine, ME.names)).toBeNull();
   });
 });
 
