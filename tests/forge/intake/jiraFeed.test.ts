@@ -136,6 +136,11 @@ describe('replyRefusal', () => {
     expect(replyRefusal('Robin will look at this', ME.names)).toMatch(/third person/);
     expect(replyRefusal('this is an automated reply', ME.names)).toMatch(/automated/);
   });
+
+  it('refuses a reply the humanizer rule catches', () => {
+    expect(replyRefusal('fixed on develop — should be green now', ME.names)).toMatch(/humanizer rule refused it/);
+    expect(replyRefusal('that fix is crucial for the deposit screen', ME.names)).toMatch(/humanizer rule refused it/);
+  });
 });
 
 describe('runFeedActivity', () => {

@@ -28,6 +28,7 @@ import type { Ask, InboxEntry } from '../inbox.js';
 import { redact } from '../redact.js';
 import type { JiraCallResult, JiraConfig } from './jira.js';
 import { voiceGuard } from './voiceGuard.js';
+import { humanizerRule } from '../rules/humanizer.js';
 
 /** The run name every feed question is raised under, so the feed can find its own
  *  answered questions again and nothing else's. */
@@ -429,6 +430,11 @@ export function replyRefusal(reply: string, operatorNames: readonly string[]): s
   if (reply.length > MAX_REPLY_CHARS) return `the drafted reply is ${reply.length} characters, over ${MAX_REPLY_CHARS}`;
   const voice = voiceGuard(reply);
   if (!voice.ok) return voice.reason ?? 'the reply failed the voice check';
+  // The same humanizer rule Council's gate runs on a commit message and a PR body. A
+  // Jira comment is the surface where the AI tells show hardest, and this path posts
+  // with nobody looking, so the rule runs here rather than only at review time.
+  const humanized = humanizerRule.evaluate({ kind: 'reply', text: reply });
+  if (!humanized.allow) return `the humanizer rule refused it: ${humanized.reason}`;
   if (namesOperator(reply, operatorNames)) return 'the reply names the operator in the third person';
   if (/\b(as an ai|language model|automated|bot)\b/i.test(reply)) return 'the reply describes itself as automated';
   return null;

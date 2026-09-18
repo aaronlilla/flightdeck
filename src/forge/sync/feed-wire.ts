@@ -19,6 +19,7 @@ import type { JiraFeedActivity } from './watcher-state.js';
 import { readSelfTestUntil } from './feed-self-test.js';
 import { loadContract } from '../intake/readability.js';
 import { readabilityDir } from '../paths.js';
+import { AI_VOCABULARY_WORDS } from '../rules/humanizer.js';
 
 export interface JiraFeedWireOptions {
   jiraConfig: () => JiraConfig | undefined;
@@ -41,13 +42,14 @@ export function feedNames(displayName: string, env: NodeJS.ProcessEnv = process.
 
 export function buildJiraFeedActivity(options: JiraFeedWireOptions): JiraFeedActivity {
   const ledger = options.ledger ?? fileFeedLedger(jiraFeedLedgerPath());
-  // The comment check's own word list, read once. An unreadable contract names nothing,
-  // and the check itself still refuses at write time.
+  // The comment check's own word list, plus the humanizer rule's vocabulary, read once.
+  // Both refuse at write time; naming them in the prompt saves a rewording round.
   let banned: string[] | null = null;
   const avoidWords = (): string[] => {
     if (banned === null) {
       const loaded = loadContract(readabilityDir());
-      banned = loaded.ok ? [...loaded.contract.banned_words] : [];
+      const contractWords = loaded.ok ? [...loaded.contract.banned_words] : [];
+      banned = [...new Set([...contractWords, ...AI_VOCABULARY_WORDS])];
     }
     return banned;
   };
