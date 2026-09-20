@@ -752,6 +752,15 @@ describe('provisionRunClone: real repository', () => {
     expect(readFileSync(join(out.worktreePath, '.git/objects/info/alternates'), 'utf8'))
       .toContain('checkout');
 
+    // `git clone <local-path>` would otherwise leave `origin` pointing at `checkout`'s
+    // OWN filesystem path (the clone source), not at the real remote `checkout` itself
+    // pushes to -- so a run's own `git push`/`gh pr create` would resolve to a folder on
+    // this disk instead of the real repository. This proves the rewrite: the run's
+    // `origin` must match `checkout`'s own `origin` URL (the bare repo), never `checkout`'s
+    // path on disk.
+    expect(git(['remote', 'get-url', 'origin'], out.worktreePath)).toBe(origin);
+    expect(git(['remote', 'get-url', 'origin'], out.worktreePath)).not.toBe(checkout);
+
     // The run commits, then poisons its own hooks on the way out.
     writeFileSync(join(out.worktreePath, 'work.ts'), 'export const made = "inside";\n');
     git(['add', '-A'], out.worktreePath);
