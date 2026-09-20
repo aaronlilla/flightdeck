@@ -636,6 +636,35 @@ export async function provisionRunClone(input: {
     });
     if (!cloned.ok) throw new Error(tailOfCommand(cloned.tail));
 
+    // `git clone <local-path>` names ITS argument as `origin`'s URL, so a clone taken
+    // from `checkout` (a path on this disk, e.g. C:/dev/worktrees/x--merge-base) gets an
+    // `origin` that resolves right back to that local folder -- not to GitHub. Every push
+    // and `gh pr create` a run's own `origin` remote could otherwise reach silently goes
+    // nowhere real, and every ticket run through this path needed `git remote add
+    // github ...` by hand afterward (BBZ-40/192/225/282, 2026-09-19/20). Rewriting
+    // `origin`'s URL to the PRIMARY checkout's own real remote closes that: the primary
+    // is a real clone of GitHub (or whatever the operator actually pushes to), so its
+    // `origin` URL is the one this run's `origin` should have had from the start. A
+    // primary with no `origin` (a bare local-only repo) leaves the clone's local-path
+    // origin in place rather than failing the whole provision over a repo nobody
+    // intended to push from here.
+    const primaryOrigin = await runner({
+      argv: ['git', '-C', checkout, 'remote', 'get-url', 'origin'],
+      cwd: checkout, owner: `chain-${input.ticket}`, cls: 'script',
+    });
+    const primaryOriginUrl = primaryOrigin.ok ? (primaryOrigin.tail ?? '').trim() : '';
+    if (primaryOriginUrl) {
+      const rewrote = await runner({
+        argv: ['git', '-C', clonePath, 'remote', 'set-url', 'origin', primaryOriginUrl],
+        cwd: clonePath, owner: `chain-${input.ticket}`, cls: 'script',
+      });
+      if (!rewrote.ok) {
+        input.onNote?.(`could not rewrite origin to ${primaryOriginUrl}: push/PR from this run's own origin will fail`);
+      }
+    } else {
+      input.onNote?.(`primary checkout ${checkout} has no origin remote of its own: this run's origin still points at the local clone source`);
+    }
+
     const checkedOut = await runner({
       argv: ['git', '-C', clonePath, 'checkout', '-B', branch, `origin/${base}`],
       cwd: clonePath, owner: `chain-${input.ticket}`, cls: 'script',
