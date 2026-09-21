@@ -71,6 +71,14 @@ function LaterRow({ item }: { item: QueueItem }): JSX.Element {
       <span className="kick" style={{ fontSize: 'var(--fs-meta)' }}>{state}</span>
       <span>{item.ticket ? <WhatIsHover refText={item.ticket}><span className="key" style={{ marginRight: 10 }}>{item.ticket}</span></WhatIsHover> : null}<span className="hd" data-testid="queue-card-title" style={{ fontSize: 'var(--fs-rowhead)' }}>{titleOf(item)}</span></span>
       <span style={{ color: 'var(--ink2)' }}><Linkify text={(item.reason ? humanizeParkReason(item.reason) : null) ?? (item.pr ? `PR #${item.pr.no}${item.pr.draft ? ' (draft)' : ''}` : '')} repo={item.repo} /></span>
+      {item.sibling || item.siblingNote || item.heldBecause ? (
+        <span
+          data-testid={`queue-sibling-${item.id}`}
+          style={{ gridColumn: '2 / 4', fontSize: 'var(--fs-meta)', color: item.heldBecause ? 'var(--warn)' : 'var(--ink3)' }}
+        >
+          {item.heldBecause || item.siblingNote || 'also being worked in another repo'}
+        </span>
+      ) : null}
       <span>{action && verdict.live
         ? <button type="button" className={`btn ${action.kind}`} onClick={action.run}>{action.label}</button>
         : action
