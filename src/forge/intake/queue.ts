@@ -1543,7 +1543,38 @@ export async function runQueueTick(deps: QueueRuntimeDeps, items: QueueItem[]): 
         if (await deps.prMerged(item.repo!, item.pr!.no)) {
           const current = deps.store.get(item.id) ?? item;
           if (current.mergedBy === 'queue') continue;
-          writeTransition(item, { state: 'done', reason: `PR #${item.pr!.no} merged outside the queue` }, deps, 'queue.done', { hop: 'merged-elsewhere' });
+          // The ticket does not care which route merged its pull request. Workers run
+          // with no push credentials, so in practice the operator merges from the host
+          // and every one of those merges lands here rather than on the gate hop above
+          // -- and until this ran, the queue item closed while Jira kept the ticket
+          // assigned to the operator in its old status forever. Seven shipped tickets
+          // were found stranded that way on 2026-09-21. Same two writes the gate hop
+          // makes, in the same order, under the same best-effort contract: a Jira
+          // outage must never stop the item closing, or the next sweep re-merges it.
+          const mergedAt = deps.clock();
+          if (deps.jiraHandoff && !current.handoffAt && current.ticket && !current.noMerge) {
+            try {
+              await deps.jiraHandoff({ item: current, pr: { no: current.pr!.no, url: current.pr!.url } });
+            } catch {
+              // Best effort, exactly as on the gate hop.
+            }
+          }
+          if (deps.jiraDone && current.ticket) {
+            try {
+              await deps.jiraDone({ item: current, pr: { no: current.pr!.no, url: current.pr!.url }, mergedAt });
+            } catch {
+              // Best effort, exactly as on the gate hop.
+            }
+          }
+          writeTransition(
+            item,
+            {
+              state: 'done',
+              reason: `PR #${item.pr!.no} merged outside the queue`,
+              ...(current.handoffAt ? {} : { handoffAt: mergedAt }),
+            },
+            deps, 'queue.done', { hop: 'merged-elsewhere' },
+          );
         }
       } catch {
         // an unreadable PR is not evidence of a merge; the next sweep asks again

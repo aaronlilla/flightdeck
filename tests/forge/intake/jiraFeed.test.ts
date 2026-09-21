@@ -249,11 +249,21 @@ describe('runFeedActivity', () => {
     expect(h.rows.some((row) => row['event'] === 'feed.left')).toBe(true);
   });
 
-  it('ignores an unmarked comment the reasoner says is not aimed at the operator', async () => {
+  it('defers, never ignores, an unmarked comment the reasoner drafted an answer for but did not call directed', async () => {
+    // `action` and `directed` are two independent lines out of one turn. A model that
+    // contradicts itself used to lose the draft entirely; the contradiction now goes to
+    // a person with the draft attached.
     const h = harness({ board: [issue({ comments: [comment({ body: 'lgtm' })] })], reply: decision('reply', 'thanks', 'no') });
     const result = await runFeedActivity(h.deps);
-    expect(result.ignored).toEqual(['ABC-1']);
+    expect(result.deferred).toEqual(['ABC-1']);
     expect(h.posts).toHaveLength(0);
+    expect(h.inbox.open()).toHaveLength(1);
+  });
+
+  it('still ignores an unmarked comment the reasoner explicitly decides to ignore', async () => {
+    const h = harness({ board: [issue({ comments: [comment({ body: 'lgtm' })] })], reply: decision('ignore', '', 'no') });
+    const result = await runFeedActivity(h.deps);
+    expect(result.ignored).toEqual(['ABC-1']);
     expect(h.inbox.open()).toHaveLength(0);
   });
 
@@ -263,14 +273,16 @@ describe('runFeedActivity', () => {
     expect(result.replied).toEqual(['ABC-1']);
   });
 
-  it('defers a marked comment when the reasoner fails, and ignores an unmarked one', async () => {
+  it('defers a comment the reasoner could not decide on, marked or unmarked', async () => {
+    // A reasoner that timed out has decided nothing. Recording that as ignored made a
+    // transient outage a permanent verdict on a comment nobody would ever see again.
     const marked = harness({ board: [issue({ comments: [comment({ mentions: ['acc-me'] })] })], reply: new Error('timed out') });
     expect((await runFeedActivity(marked.deps)).deferred).toEqual(['ABC-1']);
     expect(marked.inbox.open()).toHaveLength(1);
 
     const unmarked = harness({ board: [issue({ comments: [comment()] })], reply: new Error('timed out') });
-    expect((await runFeedActivity(unmarked.deps)).ignored).toEqual(['ABC-1']);
-    expect(unmarked.inbox.open()).toHaveLength(0);
+    expect((await runFeedActivity(unmarked.deps)).deferred).toEqual(['ABC-1']);
+    expect(unmarked.inbox.open()).toHaveLength(1);
   });
 
   it('defers instead of posting a reply that fails the safety checks or that Jira refuses', async () => {

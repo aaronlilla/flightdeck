@@ -787,16 +787,32 @@ export async function runFeedActivity(deps: FeedActivityDeps): Promise<FeedActiv
       const first = await decide(candidate);
       let decision = first.decision;
       if (!decision) {
-        if (relevance === 'maybe') {
-          record(candidate, 'ignored', `no decision on an unmarked comment: ${first.error}`, result.ignored);
-        } else {
-          raiseQuestion(deps, candidate, '');
-          record(candidate, 'deferred', `no decision: ${first.error}`, result.deferred);
-        }
+        // A reasoner that errored or answered unreadably has decided NOTHING. Recording
+        // that as `ignored` is a permanent verdict drawn from a transient failure: the
+        // handled ledger is keyed by comment id, so the comment is never looked at
+        // again, and a real question addressed to the operator disappears with nobody
+        // told. Found live on 2026-09-21 (three comments lost to a spent account and an
+        // unparseable answer). A failure to decide is a deferral at every relevance,
+        // exactly as it already was for a mention or a ticket the operator owns.
+        raiseQuestion(deps, candidate, '');
+        record(candidate, 'deferred', `no decision: ${first.error}`, result.deferred);
         return;
       }
-      if (decision.action === 'ignore' || (relevance === 'maybe' && !decision.directed)) {
+      if (decision.action === 'ignore') {
         record(candidate, 'ignored', decision.why || 'not aimed at the operator', result.ignored);
+        return;
+      }
+      // `directed` and `action` come out of the same single turn as two independent
+      // lines, and a model that contradicts itself used to lose the drafted reply
+      // entirely. An action of reply or defer IS the model saying this comment wants an
+      // answer, so the contradiction resolves to a person rather than to silence.
+      if (relevance === 'maybe' && !decision.directed) {
+        raiseQuestion(deps, candidate, decision.reply);
+        record(
+          candidate, 'deferred',
+          `drafted an answer but did not call the comment directed: ${decision.why || 'no reason given'}`,
+          result.deferred,
+        );
         return;
       }
       if (decision.action !== 'reply') {
