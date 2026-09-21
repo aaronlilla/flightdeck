@@ -2255,6 +2255,49 @@ describe('a review item whose PR merged elsewhere', () => {
     expect(store.get(item.id)?.reason).toBe('PR #118 merged outside the queue');
   });
 
+  it('hands the ticket to QA and closes it in Jira, the same as a queue-driven merge', async () => {
+    // Workers cannot push, so in practice the operator merges from the host and every
+    // one of those merges lands on this sweep rather than the gate hop. Until this ran,
+    // the queue item closed while Jira kept the ticket assigned to the operator: seven
+    // shipped tickets were found stranded that way on 2026-09-21.
+    const { resetMergedSweep } = await import('../../../src/forge/intake/queue.js');
+    resetMergedSweep();
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    store.append({ id: item.id, at: 2000, state: 'review', repo: 'owner/name', pr: { no: 119, url: 'u', files: 1, add: 1, del: 0, draft: true }, updatedAt: 2000 } as never);
+    const handoffs: string[] = [];
+    const dones: string[] = [];
+    const { deps } = buildDeps(store, {});
+    deps.prMerged = async (_repo, pr) => pr === 119;
+    deps.jiraHandoff = async ({ item: row }) => { handoffs.push(row.ticket ?? ''); };
+    deps.jiraDone = async ({ item: row }) => { dones.push(row.ticket ?? ''); };
+
+    await runQueueTick(deps, store.all());
+
+    expect(handoffs).toEqual(['ABC-1']);
+    expect(dones).toEqual(['ABC-1']);
+    expect(store.get(item.id)?.state).toBe('done');
+    expect(store.get(item.id)?.handoffAt).toBeDefined();
+  });
+
+  it('closes the item even when the Jira write-back throws', async () => {
+    // A Jira outage must never strand a merged PR in a non-done state, or the next
+    // sweep merges it again.
+    const { resetMergedSweep } = await import('../../../src/forge/intake/queue.js');
+    resetMergedSweep();
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    store.append({ id: item.id, at: 2000, state: 'review', repo: 'owner/name', pr: { no: 120, url: 'u', files: 1, add: 1, del: 0, draft: true }, updatedAt: 2000 } as never);
+    const { deps } = buildDeps(store, {});
+    deps.prMerged = async (_repo, pr) => pr === 120;
+    deps.jiraHandoff = async () => { throw new Error('jira is down'); };
+    deps.jiraDone = async () => { throw new Error('jira is down'); };
+
+    await runQueueTick(deps, store.all());
+
+    expect(store.get(item.id)?.state).toBe('done');
+  });
+
   it('never relabels a merge the queue performed itself, even off a stale snapshot (BBZ-178)', async () => {
     const { resetMergedSweep } = await import('../../../src/forge/intake/queue.js');
     resetMergedSweep();
