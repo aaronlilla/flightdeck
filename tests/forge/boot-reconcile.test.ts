@@ -40,6 +40,7 @@ function entry(over: Partial<InboxEntry> & { key: string }): InboxEntry {
     at: over.at ?? 1_000,
     disposition: 'park',
     ...(over.ticket ? { ticket: over.ticket } : {}),
+    ...(over.sourceCommentAt !== undefined ? { sourceCommentAt: over.sourceCommentAt } : {}),
     ...(over.answer !== undefined ? { answer: over.answer } : {}),
   } as InboxEntry;
 }
@@ -202,24 +203,63 @@ describe('retireDeadAsks', () => {
 });
 
 describe('retireAnsweredJiraAsks', () => {
-  it('retires an ask the operator answered on the ticket afterwards', () => {
+  it('compares against the relayed comment, not the moment the ask was raised', () => {
+    // The live failure: Aaron answered at 10:33, the poller raised the ask at 10:34, and
+    // comparing against the raise time read his answer as predating the question. Four
+    // answered tickets sat on the board because of this one minute.
+    const inbox = fakeInbox([entry({
+      key: 'a', ticket: 'BBZ-87', at: 1_120_000, sourceCommentAt: 1_000_000,
+    })]);
+
+    const retired = retireAnsweredJiraAsks(inbox, 'aaron', new Map([
+      ['BBZ-87', [{ authorAccountId: 'aaron', createdMs: 1_060_000 }]],
+    ]));
+
+    expect(retired).toEqual([{ key: 'a', ticket: 'BBZ-87', why: 'answered on the ticket after the comment it relays' }]);
+  });
+
+  it('falls back to the ask time for an entry written before sourceCommentAt existed', () => {
     const inbox = fakeInbox([entry({ key: 'a', ticket: 'BBZ-96', at: 5_000 })]);
 
     const retired = retireAnsweredJiraAsks(inbox, 'aaron', new Map([
       ['BBZ-96', [{ authorAccountId: 'haiping', createdMs: 4_000 }, { authorAccountId: 'aaron', createdMs: 9_000 }]],
     ]));
 
-    expect(retired).toEqual([{ key: 'a', ticket: 'BBZ-96', why: 'answered on the ticket after it was asked' }]);
+    expect(retired.map((r) => r.why)).toEqual(['answered on the ticket after the comment it relays']);
   });
 
-  it('keeps an ask whose only operator comment predates it', () => {
-    const inbox = fakeInbox([entry({ key: 'a', ticket: 'BBZ-96', at: 9_000 })]);
+  it('retires an ask on a ticket assigned to somebody else, whatever the comments say', () => {
+    // Fourteen of Haiping's own In Review tickets were on the board because nothing ever
+    // asked whose ticket it was.
+    const inbox = fakeInbox([entry({ key: 'hers', ticket: 'BBZ-138', at: 1_000 })]);
+
+    const retired = retireAnsweredJiraAsks(inbox, 'aaron', new Map([['BBZ-138', []]]), new Map([
+      ['BBZ-138', { assigneeAccountId: 'haiping', statusIsDone: false }],
+    ]));
+
+    expect(retired).toEqual([{ key: 'hers', ticket: 'BBZ-138', why: 'the ticket is assigned to somebody else' }]);
+  });
+
+  it('retires an ask on a done ticket the operator still owns', () => {
+    const inbox = fakeInbox([entry({ key: 'done', ticket: 'BBZ-311', at: 1_000 })]);
+
+    const retired = retireAnsweredJiraAsks(inbox, 'aaron', new Map([['BBZ-311', []]]), new Map([
+      ['BBZ-311', { assigneeAccountId: 'aaron', statusIsDone: true }],
+    ]));
+
+    expect(retired[0]?.why).toBe('the ticket is done');
+  });
+
+  it('keeps an unanswered ask on a live ticket the operator owns', () => {
+    const inbox = fakeInbox([entry({ key: 'mine', ticket: 'BBZ-287', at: 9_000, sourceCommentAt: 9_000 })]);
+
     expect(retireAnsweredJiraAsks(inbox, 'aaron', new Map([
-      ['BBZ-96', [{ authorAccountId: 'aaron', createdMs: 4_000 }]],
-    ]))).toEqual([]);
+      ['BBZ-287', [{ authorAccountId: 'haiping', createdMs: 9_500 }]],
+    ]), new Map([['BBZ-287', { assigneeAccountId: 'aaron', statusIsDone: false }]]))).toEqual([]);
+    expect(inbox.open()).toHaveLength(1);
   });
 
-  it('retires nothing for a ticket whose comments could not be read', () => {
+  it('retires nothing for a ticket whose comments and state could not be read', () => {
     const inbox = fakeInbox([entry({ key: 'a', ticket: 'BBZ-96', at: 1_000 })]);
     expect(retireAnsweredJiraAsks(inbox, 'aaron', new Map())).toEqual([]);
     expect(inbox.open()).toHaveLength(1);
