@@ -42,6 +42,16 @@ export interface Ask {
   /** What kind of wall this is. A `blocker` propagates to every run sharing its key. */
   kind?: 'question' | 'blocker';
   ticket?: string;
+  /**
+   * The tracker comment this ask relays, when it relays one (`jiraFeed.ts`). Carried so
+   * a later reconcile can ask "has the operator replied to THIS comment", rather than
+   * comparing against `at` -- the moment the poller got around to raising it, which can
+   * land a minute AFTER the operator already answered. That off-by-a-poll is how four
+   * answered tickets stayed on the board looking live.
+   */
+  sourceCommentId?: string;
+  /** When that comment was written, in epoch milliseconds. */
+  sourceCommentAt?: number;
 }
 
 /** Pass to… (R-76): who an ask was handed to, when, which Slack thread carries it, and
@@ -90,6 +100,11 @@ export interface InboxEntry extends PassFields {
   /** What the worker does about it: park, never wait. */
   disposition: 'park';
   ticket?: string;
+  /** See `Ask.sourceCommentId`: the tracker comment this entry relays, when it relays
+   *  one. Absent on every ask raised by a run rather than a feed, and on every entry
+   *  written before this field existed. */
+  sourceCommentId?: string;
+  sourceCommentAt?: number;
   /**
    * F3: computed fresh on every read, never stored on the file. `true` when none of
    * `runs` has a registry row left, meaning every run that ever hit this wall is gone
@@ -289,6 +304,8 @@ export class Inbox {
       };
     }
     if (ask.ticket) entry.ticket = ask.ticket;
+    if (ask.sourceCommentId !== undefined) entry.sourceCommentId = ask.sourceCommentId;
+    if (ask.sourceCommentAt !== undefined) entry.sourceCommentAt = ask.sourceCommentAt;
     if (ask.recommended !== undefined) entry.recommended = ask.recommended;
     if (ask.optionSource !== undefined) entry.optionSource = ask.optionSource;
     this.write(entry);

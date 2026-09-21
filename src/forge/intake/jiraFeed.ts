@@ -895,6 +895,11 @@ function raiseQuestion(deps: FeedActivityDeps, candidate: Candidate, draft: stri
     ...(draft ? { recommended: 0, optionSource: 'drafted' as const } : {}),
     kind: 'question',
     ticket: issue.key,
+    // The comment being relayed, not the moment this ask was raised. A poll can land a
+    // minute after the operator has already replied on the ticket, and comparing against
+    // the raise time then reads their answer as predating the question.
+    sourceCommentId: comment.id,
+    sourceCommentAt: comment.created,
   });
 }
 

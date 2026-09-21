@@ -7,7 +7,7 @@
  */
 import { existsSync } from 'node:fs';
 
-import { bootReconcile, type BootReconcileResult, type CloneToCheck, type GitRun, type ReconcileRepo, type TicketComment } from './boot-reconcile.js';
+import { bootReconcile, type BootReconcileResult, type CloneToCheck, type GitRun, type ReconcileRepo, type TicketComment, type TicketState } from './boot-reconcile.js';
 import { baseFor, type ChainEnv } from './chain-env.js';
 import { run as execRun } from './exec.js';
 import type { Inbox } from './inbox.js';
@@ -62,7 +62,11 @@ interface JiraCommentRow { author?: JiraCommentAuthor; created?: string }
  */
 export async function readJiraEvidence(
   config: JiraConfig | undefined, tickets: string[],
-): Promise<{ operatorAccountId: string; commentsByTicket: Map<string, TicketComment[]> } | undefined> {
+): Promise<{
+  operatorAccountId: string;
+  commentsByTicket: Map<string, TicketComment[]>;
+  ticketStates: Map<string, TicketState>;
+} | undefined> {
   if (!config || tickets.length === 0) return undefined;
   const fetchFn = config.fetchFn ?? fetch;
   const authorization = `Basic ${Buffer.from(`${config.email}:${config.token}`).toString('base64')}`;
@@ -79,7 +83,25 @@ export async function readJiraEvidence(
   }
 
   const commentsByTicket = new Map<string, TicketComment[]>();
+  const ticketStates = new Map<string, TicketState>();
   for (const ticket of tickets) {
+    try {
+      const issue = await fetchFn(
+        `${config.site}/rest/api/3/issue/${ticket}?fields=status,assignee`, { headers },
+      );
+      if (issue.ok) {
+        const body = (await issue.json()) as {
+          fields?: { assignee?: { accountId?: string } | null; status?: { statusCategory?: { key?: string } } };
+        };
+        ticketStates.set(ticket, {
+          assigneeAccountId: body.fields?.assignee?.accountId ?? null,
+          statusIsDone: body.fields?.status?.statusCategory?.key === 'done',
+        });
+      }
+    } catch {
+      // An unreadable ticket is simply absent from the map: pass 4 then falls through to
+      // the comment evidence, and retires nothing if that is missing too.
+    }
     try {
       const response = await fetchFn(
         `${config.site}/rest/api/3/issue/${ticket}/comment?maxResults=100&orderBy=created`, { headers },
@@ -98,7 +120,7 @@ export async function readJiraEvidence(
       continue;
     }
   }
-  return { operatorAccountId, commentsByTicket };
+  return { operatorAccountId, commentsByTicket, ticketStates };
 }
 
 export interface RunBootReconcileDeps {

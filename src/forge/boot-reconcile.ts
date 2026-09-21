@@ -252,33 +252,72 @@ export interface TicketComment {
   createdMs: number;
 }
 
+/** What a ticket looks like to the reconcile: who owns it, and whether it is still live.
+ *  Absent from the map means the ticket could not be read, which is never evidence. */
+export interface TicketState {
+  assigneeAccountId: string | null;
+  /** The status category, not the status name: every board names its columns
+   *  differently, but `done` is the one category Jira guarantees. */
+  statusIsDone: boolean;
+}
+
+/** Jira statuses aside, an ask on a ticket somebody else owns is not the operator's
+ *  work. This is the rule that would have kept fourteen of Haiping's own In Review
+ *  tickets off the board in the first place. */
+function notTheOperators(state: TicketState | undefined, operatorAccountId: string): boolean {
+  if (!state) return false;
+  return state.assigneeAccountId !== operatorAccountId;
+}
+
 /**
- * Pass 4: retire relayed Jira asks the operator has already answered on the ticket.
+ * Pass 4: retire relayed Jira asks that are not the operator's to answer any more.
  *
- * The feed records what it posted, never what came back, so an ask stays open forever once
- * the operator replies in Jira. Any comment by the operator's own account, created after
- * the ask, is the answer: the operator does not comment on their own board to say nothing.
- * Comments are fetched per ticket by the caller so a Jira outage degrades to "retire
- * nothing", never to a wrong retirement.
+ * Three ways an ask stops being live, all read off the ticket itself rather than off the
+ * board:
+ *
+ * - The operator replied after the comment the ask relays. **After the COMMENT, not after
+ *   the ask was raised**: the feed polls, so an ask can be minted a minute after the reply
+ *   it was already answered by, and comparing against the raise time then keeps four
+ *   answered tickets on the board looking live. `sourceCommentAt` is the comparison;
+ *   `at` is only the fallback for entries written before that field existed.
+ * - The ticket is assigned to somebody else. A teammate reporting test results on their
+ *   own ticket is doing their job, not waiting on the operator.
+ * - The ticket is Done.
+ *
+ * A ticket whose state could not be read retires nothing. A missing read must never be
+ * mistaken for "nobody answered".
  */
 export function retireAnsweredJiraAsks(
   inbox: Pick<Inbox, 'open' | 'retire'>,
   operatorAccountId: string,
   commentsByTicket: ReadonlyMap<string, TicketComment[]>,
+  ticketStates: ReadonlyMap<string, TicketState> = new Map(),
 ): RetiredAsk[] {
   const retired: RetiredAsk[] = [];
   for (const entry of inbox.open()) {
     const ticket = entry.ticket;
     if (!ticket) continue;
-    const comments = commentsByTicket.get(ticket);
-    // A ticket whose comments could not be read is not evidence of anything.
-    if (!comments) continue;
-    // One second of slack: the ask's own timestamp and the comment that triggered it can
-    // land in either order, and retiring an ask on the comment that raised it is wrong.
-    const answered = comments.some((c) => c.authorAccountId === operatorAccountId && c.createdMs > entry.at + 1000);
-    if (!answered) continue;
+    const state = ticketStates.get(ticket);
+    let why: string | undefined;
+    if (notTheOperators(state, operatorAccountId)) {
+      why = 'the ticket is assigned to somebody else';
+    } else if (state?.statusIsDone) {
+      why = 'the ticket is done';
+    } else {
+      const comments = commentsByTicket.get(ticket);
+      // A ticket whose comments could not be read is not evidence of anything.
+      if (!comments) continue;
+      // One second of slack against the relayed comment's own timestamp: the comment and
+      // the ask can share a clock tick, and retiring an ask on the comment that raised it
+      // would be wrong.
+      const since = entry.sourceCommentAt ?? entry.at;
+      if (comments.some((c) => c.authorAccountId === operatorAccountId && c.createdMs > since + 1000)) {
+        why = 'answered on the ticket after the comment it relays';
+      }
+    }
+    if (!why) continue;
     if (!inbox.retire(entry.key)) continue;
-    retired.push({ key: entry.key, ticket, why: 'answered on the ticket after it was asked' });
+    retired.push({ key: entry.key, ticket, why });
   }
   return retired;
 }
@@ -292,7 +331,11 @@ export interface BootReconcileDeps {
   liveQueueItemIds: ReadonlySet<string>;
   /** Absent when Jira is not configured or unreachable: pass 4 then retires nothing
    *  rather than guessing. */
-  jira?: { operatorAccountId: string; commentsByTicket: ReadonlyMap<string, TicketComment[]> };
+  jira?: {
+    operatorAccountId: string;
+    commentsByTicket: ReadonlyMap<string, TicketComment[]>;
+    ticketStates?: ReadonlyMap<string, TicketState>;
+  };
   now?: number;
 }
 
@@ -303,7 +346,9 @@ export async function bootReconcile(deps: BootReconcileDeps): Promise<BootReconc
   const clones = await reconcileRunClones(deps.clones, deps.git);
   const deadAsks = retireDeadAsks(deps.inbox, deps.hasRegistryRow, deps.liveQueueItemIds, now);
   const answeredAsks = deps.jira
-    ? retireAnsweredJiraAsks(deps.inbox, deps.jira.operatorAccountId, deps.jira.commentsByTicket)
+    ? retireAnsweredJiraAsks(
+      deps.inbox, deps.jira.operatorAccountId, deps.jira.commentsByTicket, deps.jira.ticketStates ?? new Map(),
+    )
     : [];
   const movedCheckouts = checkouts.outcomes.filter((o) => o.fastForwarded);
   const movedClones = clones.passes.filter((p) => p.refreshed);
