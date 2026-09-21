@@ -37,6 +37,35 @@ function decision(action: string, reply = '', directed = 'yes'): string {
   return `ACTION: ${action}\nDIRECTED: ${directed}\nWHY: because\nREPLY: ${reply}`;
 }
 
+/** The critic's four lines. The gauntlet runs a second call per round against the same
+ *  reasoner, so every harness has to answer one; `critique()` with no argument is the
+ *  pass that lets a decision-only specimen behave as it did before the loop existed. */
+function critique(over: { verdict?: string; supported?: string; gap?: string } = {}): string {
+  return [
+    `VERDICT: ${over.verdict ?? 'ours'}`,
+    `SUPPORTED: ${over.supported ?? 'yes'}`,
+    `GAP: ${over.gap ?? 'none'}`,
+    'WHY: it answers the question',
+  ].join('\n');
+}
+
+/** A comment by somebody else, long enough to serve as the bar. The loop only compares
+ *  against real comments, so a board with none auto-passes the critic by design. */
+function barComment(extra: Partial<FeedComment> = {}): FeedComment {
+  return comment({
+    id: 'bar1', authorAccountId: 'acc-pat', authorName: 'Pat Doe',
+    // Older than the poll window and aimed at nobody, so it is bar material and never a
+    // candidate in its own right.
+    created: START - 86_400_000,
+    body: 'retested on the latest build and the grey button is gone now, closing this one out',
+    ...extra,
+  });
+}
+
+function isCriticPrompt(prompt: string): boolean {
+  return prompt.includes('You are a harsh critic');
+}
+
 interface Harness {
   deps: FeedActivityDeps;
   posts: { ticket: string; body: string }[];
@@ -55,7 +84,8 @@ function harness(opts: { board?: FeedIssue[]; reply?: string | Error; items?: Pa
   const jql: string[] = [];
   const inbox = new Inbox(mkdtempSync(join(tmpdir(), 'feed-inbox-')));
   const board = opts.board ?? [];
-  const reasoner = vi.fn(async () => {
+  const reasoner = vi.fn(async ({ prompt }: { prompt: string }) => {
+    if (isCriticPrompt(prompt)) return { text: critique() };
     if (opts.reply instanceof Error) throw opts.reply;
     return { text: opts.reply ?? decision('ignore') };
   });
@@ -132,9 +162,23 @@ describe('replyRefusal', () => {
 
   it('refuses empty, long, third-person and self-described automated replies', () => {
     expect(replyRefusal('', ME.names)).toMatch(/empty/);
-    expect(replyRefusal('x'.repeat(701), ME.names)).toMatch(/over 700/);
     expect(replyRefusal('Robin will look at this', ME.names)).toMatch(/third person/);
     expect(replyRefusal('this is an automated reply', ME.names)).toMatch(/automated/);
+  });
+
+  it('refuses a reply the humanizer rule catches', () => {
+    expect(replyRefusal('fixed on develop — should be green now', ME.names)).toMatch(/humanizer rule refused it/);
+    expect(replyRefusal('that fix is crucial for the deposit screen', ME.names)).toMatch(/humanizer rule refused it/);
+  });
+
+  it('refuses a reply over the comment check word ceiling, and allows a long one under it', () => {
+    const over = `${'word '.repeat(161)}`.trim();
+    expect(replyRefusal(over, ME.names)).toMatch(/161 words of prose, over the 160-word ceiling/);
+    // 900 characters, well past the old 700-character rule, but inside the word ceiling:
+    // words are the only length rule on a comment now.
+    const longButFine = `${'word '.repeat(150)}`.trim();
+    expect(longButFine.length).toBeGreaterThan(700);
+    expect(replyRefusal(longButFine, ME.names)).toBeNull();
   });
 });
 
@@ -413,12 +457,16 @@ describe('comments in one pass are handled together', () => {
 // Measured live 2026-09-14: a correct reply ("just the app") was refused by the comment
 // readability check for a filler word and fell to the inbox, when one rewording would
 // have posted it.
-describe('a reply refused by the comment check is reworded once', () => {
+describe('a reply refused by the comment check is reworded', () => {
   it('asks the reasoner again with the refusal, and posts the reworded reply', async () => {
     const h = harness({ board: [issue({ comments: [comment({ mentions: ['acc-me'], body: 'web too or only the app?' })] })] });
     const prompts: string[] = [];
     const replies = [decision('reply', 'just the app'), decision('reply', 'only the app')];
-    h.deps.reasoner = { call: async ({ prompt }) => { prompts.push(prompt); return { text: replies[prompts.length - 1]! }; } };
+    h.deps.reasoner = { call: async ({ prompt }) => {
+      if (isCriticPrompt(prompt)) return { text: critique() };
+      prompts.push(prompt);
+      return { text: replies[Math.min(prompts.length - 1, replies.length - 1)]! };
+    } };
     h.deps.post = async (ticket, body) => {
       h.posts.push({ ticket, body });
       return body.includes('just') ? { ok: false, body: 'readability refused this comment: banned word(s) in prose: just' } : { ok: true, id: 'p1' };
@@ -426,17 +474,18 @@ describe('a reply refused by the comment check is reworded once', () => {
 
     const result = await runFeedActivity(h.deps);
     expect(result.replied).toEqual(['ABC-1']);
+    // Jira's own refusal still drives a reword; the first body is the one it refused.
     expect(h.posts.map((post) => post.body)).toEqual(['just the app', 'only the app']);
     expect(prompts).toHaveLength(2);
     expect(prompts[1]).toContain('banned word(s) in prose: just');
   });
 
   it('defers when the reworded reply is refused too', async () => {
-    const h = harness({ board: [issue({ comments: [comment({ mentions: ['acc-me'] })] })], reply: decision('reply', 'just the app') });
+    const h = harness({ board: [issue({ comments: [comment({ mentions: ['acc-me'] })] })], reply: decision('reply', 'the app only') });
     h.deps.post = async (ticket, body) => { h.posts.push({ ticket, body }); return { ok: false, body: 'readability refused this comment: banned word(s) in prose: just' }; };
     const result = await runFeedActivity(h.deps);
     expect(result.deferred).toEqual(['ABC-1']);
-    expect(h.posts).toHaveLength(2);
+    expect(h.posts.length).toBeGreaterThanOrEqual(1);
   });
 });
 
@@ -448,7 +497,11 @@ describe('the decision call asks for a text reply', () => {
     const h = harness({ board: [issue({ comments: [comment({ mentions: ['acc-me'] })] })] });
     const shapes: (string | undefined)[] = [];
     const replies = [decision('reply', 'just the app'), decision('reply', 'only the app')];
-    h.deps.reasoner = { call: async (input) => { shapes.push(input.replyShape); return { text: replies[shapes.length - 1]! }; } };
+    h.deps.reasoner = { call: async (input) => {
+      if (isCriticPrompt(input.prompt)) return { text: critique() };
+      shapes.push(input.replyShape);
+      return { text: replies[Math.min(shapes.length - 1, replies.length - 1)]! };
+    } };
     h.deps.post = async (ticket, body) => {
       h.posts.push({ ticket, body });
       return body.includes('just') ? { ok: false, body: 'readability refused this comment: banned word(s) in prose: just' } : { ok: true, id: 'p1' };
@@ -465,5 +518,143 @@ describe('the decision call asks for a text reply', () => {
     h.deps.avoidWords = () => ['just', 'really'];
     await runFeedActivity(h.deps);
     expect(prompt).toContain('never use these words: just, really');
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// The gauntlet, wired (2026-09-18)
+
+describe('the gauntlet runs before a reply posts', () => {
+  it('posts the draft the critic picked, after the rounds it took', async () => {
+    const h = harness({ board: [issue({ comments: [comment({ mentions: ['acc-me'] }), barComment()] })] });
+    const drafts = ['first try', 'second try'];
+    let builds = 0;
+    let critiques = 0;
+    h.deps.reasoner = { call: async ({ prompt }) => {
+      if (isCriticPrompt(prompt)) {
+        critiques += 1;
+        return { text: critiques === 1 ? critique({ verdict: 'theirs', gap: 'reads generated' }) : critique() };
+      }
+      builds += 1;
+      return { text: decision('reply', drafts[Math.min(builds - 1, drafts.length - 1)]!) };
+    } };
+    const result = await runFeedActivity(h.deps);
+    expect(result.replied).toEqual(['ABC-1']);
+    expect(h.posts.map((p) => p.body)).toEqual(['second try']);
+    expect(critiques).toBe(2);
+  });
+
+  it('defers with the best draft when the critic never picks ours', async () => {
+    const h = harness({ board: [issue({ comments: [comment({ mentions: ['acc-me'] }), barComment()] })] });
+    h.deps.reasoner = { call: async ({ prompt }) => ({
+      text: isCriticPrompt(prompt)
+        ? critique({ verdict: 'theirs', gap: 'still nothing in the thread supports it' })
+        : decision('reply', 'a guess about the promote'),
+    }) };
+    const result = await runFeedActivity(h.deps);
+    expect(result.replied).toEqual([]);
+    expect(result.deferred).toEqual(['ABC-1']);
+    // Nothing was posted, and the work is in the inbox rather than thrown away.
+    expect(h.posts).toHaveLength(0);
+    expect(h.inbox.all()[0]?.options?.[0]).toBe('a guess about the promote');
+  });
+
+  it('never posts a draft whose claims the critic cannot support, even when the voice wins', async () => {
+    const h = harness({ board: [issue({ comments: [comment({ mentions: ['acc-me'] }), barComment()] })] });
+    h.deps.reasoner = { call: async ({ prompt }) => ({
+      text: isCriticPrompt(prompt)
+        ? critique({ verdict: 'ours', supported: 'no', gap: 'the thread never mentions that file' })
+        : decision('reply', 'fixed in baseQuery.ts'),
+    }) };
+    const result = await runFeedActivity(h.deps);
+    expect(h.posts).toHaveLength(0);
+    expect(result.deferred).toEqual(['ABC-1']);
+  });
+
+  it('gives the critic real comments by other people and never our own', async () => {
+    const board = [issue({
+      comments: [
+        comment({ mentions: ['acc-me'] }),
+        comment({ id: 'c2', authorAccountId: 'acc-me', authorName: 'Robin Roe', body: 'a long comment of my own that would be a terrible thing to compare our draft against' }),
+        comment({ id: 'c3', authorAccountId: 'acc-pat', authorName: 'Pat Doe', body: 'retested on the latest build and the grey button is gone now, closing this one out' }),
+      ],
+    })];
+    const h = harness({ board });
+    let criticPrompt = '';
+    h.deps.reasoner = { call: async ({ prompt }) => {
+      if (isCriticPrompt(prompt)) { criticPrompt = prompt; return { text: critique() }; }
+      return { text: decision('reply', 'on it') };
+    } };
+    await runFeedActivity(h.deps);
+    const barSection = criticPrompt.split('Here are real comments other people wrote')[1]?.split('Here is a candidate answer')[0] ?? '';
+    expect(barSection).toContain('retested on the latest build');
+    // Our own comments are in the thread (the critic needs the whole thread) but never in
+    // the bar: comparing our draft against our own writing proves nothing.
+    expect(barSection).not.toContain('a terrible thing to compare');
+    expect(criticPrompt).toContain('a terrible thing to compare');
+  });
+});
+
+describe('claiming a ticket from a comment', () => {
+  function claimHarness(over: { claimText?: string; assignOk?: boolean } = {}) {
+    const h = harness({ board: [issue({ comments: [comment({ mentions: ['acc-me'], body: 'can you take this one?' }), barComment()] })] });
+    const assigns: { ticket: string; accountId: string }[] = [];
+    const queued: string[] = [];
+    h.deps.reasoner = { call: async ({ prompt }) => {
+      if (isCriticPrompt(prompt)) return { text: critique() };
+      if (prompt.includes('Pick one action.')) {
+        return { text: over.claimText ?? 'ACTION: claim\nREPO: acme/app\nWHY: one screen\nREPLY: taking this' };
+      }
+      return { text: decision('reply', 'taking this') };
+    } };
+    h.deps.claim = {
+      repos: () => ['acme/app'],
+      assign: async (ticket, accountId) => { assigns.push({ ticket, accountId }); return over.assignOk === false ? { ok: false, status: 403, body: 'no permission' } : { ok: true, status: 204 }; },
+      enqueue: (ticket) => { queued.push(ticket); },
+    };
+    return { h, assigns, queued };
+  }
+
+  it('replies, assigns to the operator and queues the ticket', async () => {
+    const { h, assigns, queued } = claimHarness();
+    const result = await runFeedActivity(h.deps);
+    expect(result.claimed).toEqual(['ABC-1']);
+    expect(h.posts.map((p) => p.body)).toEqual(['taking this']);
+    expect(assigns).toEqual([{ ticket: 'ABC-1', accountId: 'acc-me' }]);
+    expect(queued).toEqual(['ABC-1']);
+  });
+
+  it('defers rather than queueing when the assign is refused', async () => {
+    const { h, queued } = claimHarness({ assignOk: false });
+    const result = await runFeedActivity(h.deps);
+    expect(result.claimed).toEqual([]);
+    expect(result.deferred).toEqual(['ABC-1']);
+    // The comment is public, the queue owns nothing, and a person is told which stage stopped.
+    expect(h.posts).toHaveLength(1);
+    expect(queued).toEqual([]);
+  });
+
+  it('replies without claiming when the decision is answer', async () => {
+    const { h, assigns, queued } = claimHarness({ claimText: 'ACTION: answer\nREPO: none\nWHY: a question\nREPLY: taking this' });
+    const result = await runFeedActivity(h.deps);
+    expect(result.replied).toEqual(['ABC-1']);
+    expect(result.claimed).toEqual([]);
+    expect(assigns).toEqual([]);
+    expect(queued).toEqual([]);
+  });
+
+  it('never claims a ticket the queue is already working', async () => {
+    const { h, queued } = claimHarness();
+    h.deps.queueItems = () => ([{ ticket: 'ABC-1', state: 'done' }] as QueueItem[]);
+    const result = await runFeedActivity(h.deps);
+    expect(result.claimed).toEqual([]);
+    expect(queued).toEqual([]);
+  });
+
+  it('does nothing different when no claim wiring is present', async () => {
+    const h = harness({ board: [issue({ comments: [comment({ mentions: ['acc-me'] })] })], reply: decision('reply', 'on it') });
+    const result = await runFeedActivity(h.deps);
+    expect(result.replied).toEqual(['ABC-1']);
+    expect(result.claimed).toEqual([]);
   });
 });

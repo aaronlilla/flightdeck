@@ -106,6 +106,7 @@ import {
   chainStatusLines, foldChainState, runChainTick, runKeyForBrief,
 } from './chain.js';
 import { readChainEnv, repoKindFor, verifyCommandForCwd } from './chain-env.js';
+import { runBootReconcile } from './boot-reconcile-wire.js';
 import { checkOutwardDraft, draftReportLines, type OutwardDraft } from './intake/draftCheck.js';
 import { runPrOpenedHandoff } from './intake/prOpened.js';
 import { handlePullRequestOpened, readPrAtCheckout } from './intake/prOpenedWatch.js';
@@ -593,6 +594,40 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       // an add from the console and an advance from the worker are never reading two
       // different views of the same file mid-tick.
       const queueStore = new QueueStore(queuePath());
+
+      // Before the queue loop or the Jira watcher are allowed to start: bring this
+      // machine's idea of the world back in line with the world. Checkout bases that the
+      // fetch moved but the branch did not follow, run clones left weeks behind trunk,
+      // asks whose runs are gone, and asks the operator already answered on the ticket.
+      // A run launched from a stale checkout is the failure this prevents, so it has to
+      // finish before the first tick rather than race it. It never throws: every pass
+      // reports, and a reconcile that cannot reach GitHub or Jira still lets the console
+      // come up.
+      const reconcileBootJournal = new Journal(journalPath());
+      const bootLines: string[] = [];
+      try {
+        const bootResult = await runBootReconcile({
+          chainEnv: readChainEnv(),
+          queueItems: queueStore.all(),
+          inbox: new Inbox(inboxDir()),
+          hasRegistryRow: (run) => registry.all().some((row) => row.goal === run),
+          jiraConfig: jiraConfigFromEnv(),
+        });
+        bootLines.push(...bootResult.lines);
+        for (const line of bootResult.lines) {
+          reconcileBootJournal.append({ event: 'note', actor: 'console', message: line } as never);
+        }
+        for (const failure of bootResult.failures) {
+          bootLines.push(`reconcile: ${failure}`);
+          reconcileBootJournal.append({ event: 'note', actor: 'console', message: `reconcile failed: ${failure}` } as never);
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        bootLines.push(`reconcile: skipped (${message})`);
+        reconcileBootJournal.append({ event: 'note', actor: 'console', message: `reconcile skipped: ${message}` } as never);
+      } finally {
+        reconcileBootJournal.close();
+      }
       // Queue-throughput W2: FORGE_QUEUE_MAX_IN_FLIGHT seeds the on-disk width for this
       // `forge up` -- an out-of-range or non-integer value is the same as not setting it
       // at all, since ForgeServer's own `?? 4` default is the honest fallback, not a
@@ -1108,6 +1143,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           `replayed ${state.events.length} events, ${Object.keys(state.runs).length} run(s)`,
           state.torn ? `${state.torn} torn journal line(s) survived and were skipped` : '',
           ...reconcileLines,
+          ...bootLines,
           `inbox: ${inbox.open().length} waiting`,
           chainLine,
           queueLine,

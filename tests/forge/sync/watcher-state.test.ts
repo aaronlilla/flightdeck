@@ -137,7 +137,7 @@ describe('JiraWatcher and the Jira feed (R-101)', () => {
     return () => ({ site: 's', email: 'e', token: 't', fetchFn: (async () => new Response(JSON.stringify({ issues, isLast: true }), { status: 200 })) as typeof fetch });
   }
 
-  const empty = { considered: 0, replied: [], deferred: [], sent: [], ignored: [], failed: [], answered: [] };
+  const empty = { considered: 0, replied: [], deferred: [], sent: [], ignored: [], failed: [], answered: [], claimed: [] };
 
   it('runs the feed after each poll, resets it only on a fresh start, and never overlaps two passes', async () => {
     let release: () => void = () => undefined;
@@ -202,7 +202,7 @@ describe('JiraWatcher on a ticket poller thread (R-101)', () => {
       stop: vi.fn(() => { running = false; }),
       get running() { return running; },
     };
-    const run = vi.fn(async () => ({ considered: 0, replied: [], deferred: [], sent: [], ignored: [], failed: [], answered: [] }));
+    const run = vi.fn(async () => ({ considered: 0, replied: [], deferred: [], sent: [], ignored: [], failed: [], answered: [], claimed: [] }));
     const fetchFn = vi.fn();
     const watcher = new JiraWatcher({
       jiraConfig: () => ({ site: 's', email: 'e', token: 't', fetchFn: fetchFn as never }),
@@ -243,7 +243,7 @@ describe('the comment pass keeps its own short cadence (R-101)', () => {
     const store = new QueueStore(tempPath('queue.jsonl'));
     const journal = new Journal(tempPath('journal.jsonl'));
     const poller = { start: vi.fn(), stop: vi.fn(), get running() { return true; } };
-    const run = vi.fn(async () => ({ considered: 0, replied: [], deferred: [], sent: [], ignored: [], failed: [], answered: [] }));
+    const run = vi.fn(async () => ({ considered: 0, replied: [], deferred: [], sent: [], ignored: [], failed: [], answered: [], claimed: [] }));
     const watcher = new JiraWatcher({
       jiraConfig: () => ({ site: 's', email: 'e', token: 't' }), watermarks: memoryWatermarks(), store, journal,
       pollSeconds: 5, feedSeconds: 2, poller: poller as never, activity: { run, reset: vi.fn() },

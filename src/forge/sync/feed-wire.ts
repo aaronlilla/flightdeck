@@ -12,6 +12,8 @@ import {
   fetchFeedIssues, fileFeedLedger, runFeedActivity, type FeedLedgerStore, type FeedMe,
 } from '../intake/jiraFeed.js';
 import type { QueueStore } from '../intake/queueStore.js';
+import { addTicketItem } from '../intake/queue.js';
+import { parseRepoMap } from '../intake/repoRoute.js';
 import type { Journal } from '../journal.js';
 import { jiraFeedLedgerPath } from '../paths.js';
 import { RunInbox } from '../runinbox.js';
@@ -19,6 +21,7 @@ import type { JiraFeedActivity } from './watcher-state.js';
 import { readSelfTestUntil } from './feed-self-test.js';
 import { loadContract } from '../intake/readability.js';
 import { readabilityDir } from '../paths.js';
+import { AI_VOCABULARY_WORDS } from '../rules/humanizer.js';
 
 export interface JiraFeedWireOptions {
   jiraConfig: () => JiraConfig | undefined;
@@ -39,15 +42,37 @@ export function feedNames(displayName: string, env: NodeJS.ProcessEnv = process.
   return first ? [first] : [];
 }
 
+/**
+ * The repositories a claim may route work into, read off the same
+ * `FORGE_INTAKE_REPO_MAP` the watcher's own intake already routes by, so a claimed ticket
+ * cannot land somewhere the planner would not have sent it anyway. A malformed map is a
+ * configuration error, not a reason to claim into the void: it reads as no repos, which
+ * turns every claim into a defer.
+ */
+export function claimRepos(env: NodeJS.ProcessEnv = process.env): string[] {
+  try {
+    return [...new Set(parseRepoMap(env['FORGE_INTAKE_REPO_MAP']).map((rule) => rule.repo))];
+  } catch {
+    return [];
+  }
+}
+
+/** `FORGE_JIRA_CLAIM` must be `on` for the feed to take a ticket. Absent or anything else
+ *  leaves the feed reply-only, exactly as it behaved before 2026-09-18. */
+export function claimEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return (env['FORGE_JIRA_CLAIM'] ?? '').trim().toLowerCase() === 'on';
+}
+
 export function buildJiraFeedActivity(options: JiraFeedWireOptions): JiraFeedActivity {
   const ledger = options.ledger ?? fileFeedLedger(jiraFeedLedgerPath());
-  // The comment check's own word list, read once. An unreadable contract names nothing,
-  // and the check itself still refuses at write time.
+  // The comment check's own word list, plus the humanizer rule's vocabulary, read once.
+  // Both refuse at write time; naming them in the prompt saves a rewording round.
   let banned: string[] | null = null;
   const avoidWords = (): string[] => {
     if (banned === null) {
       const loaded = loadContract(readabilityDir());
-      banned = loaded.ok ? [...loaded.contract.banned_words] : [];
+      const contractWords = loaded.ok ? [...loaded.contract.banned_words] : [];
+      banned = [...new Set([...contractWords, ...AI_VOCABULARY_WORDS])];
     }
     return banned;
   };
@@ -89,6 +114,21 @@ export function buildJiraFeedActivity(options: JiraFeedWireOptions): JiraFeedAct
         // takes effect on the next pass with no restart.
         selfTest: () => readSelfTestUntil() !== null,
         avoidWords,
+        // The claim half. Switched off unless FORGE_JIRA_CLAIM is on, and dark anyway
+        // when the repo map names nothing, so turning it on is one variable and turning
+        // it off again is the same.
+        ...(claimEnabled(options.env) && claimRepos(options.env).length > 0
+          ? {
+            claim: {
+              repos: () => claimRepos(options.env),
+              assign: (ticket: string, accountId: string) => write.assign(ticket, accountId),
+              // The same call the watcher makes for a ticket already assigned to the
+              // operator, so a claimed ticket and an assigned one are one queue item
+              // shape and one pipeline from here on.
+              enqueue: (ticket: string) => { addTicketItem(options.store, ticket); },
+            },
+          }
+          : {}),
       });
       return result;
     },
