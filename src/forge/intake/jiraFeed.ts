@@ -351,7 +351,11 @@ const RELEVANCE_WORDS: Record<Exclude<FeedRelevance, 'self'>, string> = {
   mention: 'it @-mentions you',
   'my-ticket': 'it is on a ticket you are assigned to or reported',
   named: 'it uses your name',
-  maybe: 'nothing marks it as yours; decide whether it is aimed at you at all',
+  // Deliberately neutral. This used to read "nothing marks it as yours", which told the
+  // model a rule had already looked and found nothing and primed it to ignore. No rule
+  // matched only means no rule CAN match an indirect reference: a nickname, a role, a
+  // question with no named addressee on a ticket this developer worked on.
+  maybe: 'no @-mention or name match, which decides nothing either way',
 };
 
 function clip(text: string, max: number): string {
@@ -384,8 +388,9 @@ export function feedPrompt(
   issue: FeedIssue, comment: FeedComment, relevance: Exclude<FeedRelevance, 'self'>, operatorName: string,
   repair?: { reply: string; refusal: string },
   avoidWords: readonly string[] = [],
+  me?: FeedMe,
 ): string {
-  const base = feedPromptBody(issue, comment, relevance, operatorName, avoidWords);
+  const base = feedPromptBody(issue, comment, relevance, operatorName, avoidWords, me);
   if (!repair) return base;
   // One rewording after the comment check refused a reply: same answer, fixed wording.
   return [
@@ -399,12 +404,23 @@ export function feedPrompt(
 
 function feedPromptBody(
   issue: FeedIssue, comment: FeedComment, relevance: Exclude<FeedRelevance, 'self'>, operatorName: string,
-  avoidWords: readonly string[],
+  avoidWords: readonly string[], me?: FeedMe,
 ): string {
   const thread = issue.comments
     .filter((row) => row.id !== comment.id && row.created <= comment.created)
     .slice(-8)
     .map((row) => `- ${row.authorName || 'someone'}: ${clip(row.body, 600)}`);
+  // Whether this developer is already in the conversation. A comment that refers to him
+  // as "you", "the dev on this" or by a nickname carries no @-mention and no name, so
+  // the only thing that can tell it apart from a note between two other people is
+  // whether he was the last person in the thread. Stated as evidence, not as a verdict.
+  const mine = me
+    ? issue.comments.filter((row) => row.authorAccountId === me.accountId && row.created <= comment.created)
+    : [];
+  const lastIsMine = mine.length > 0
+    && issue.comments
+      .filter((row) => row.id !== comment.id && row.created <= comment.created)
+      .slice(-1)[0]?.authorAccountId === me?.accountId;
   return [
     `You are ${operatorName}, a developer on this team, reading a new Jira comment.`,
     `Why it reached you: ${RELEVANCE_WORDS[relevance]}.`,
@@ -413,9 +429,20 @@ function feedPromptBody(
     `Status: ${issue.status || 'unknown'}. Assignee: ${issue.assigneeName ?? 'nobody'}. Reporter: ${issue.reporterName ?? 'unknown'}.`,
     `Description: ${clip(issue.description, 2000) || '(none)'}`,
     thread.length ? `Earlier comments:\n${thread.join('\n')}` : 'No earlier comments.',
+    mine.length
+      ? `You have commented on this ticket ${mine.length} time(s)${lastIsMine ? ', and yours was the last comment before this one' : ''}.`
+      : 'You have not commented on this ticket before.',
     '',
     `The new comment, from ${comment.authorName || 'someone'}:`,
     clip(comment.body, 2000),
+    '',
+    // An @-mention is the easy case. These are the ones a name-matching rule cannot see,
+    // and they are exactly the comments that went unanswered.
+    'A comment can be aimed at you without naming you: a bare "you" replying to something',
+    'you wrote, a nickname, a role ("whoever did the wallet screen"), or an open question',
+    'on a ticket you have been working. Judge who it is for from the thread, not from',
+    'whether your name appears. A comment addressed to somebody else by name is theirs,',
+    'even when it mentions your work.',
     '',
     'Decide one action:',
     '- reply: the comment asks you something (or needs an acknowledgement) and the ticket',
@@ -425,6 +452,9 @@ function feedPromptBody(
     '- defer: it is aimed at you but needs a decision, a look at code, or a fact not on',
     '  the ticket. Draft the best reply you can anyway, for a person to approve.',
     '- ignore: it is not aimed at you, or needs nothing from you.',
+    '',
+    'When you cannot tell whether it is aimed at you, defer rather than ignore: a question',
+    'that reaches a person late costs less than one nobody ever sees.',
     '',
     'A reply reads as the developer typing to a teammate: first person, casual, short (one',
     'to three sentences), plain words, no greeting, no sign-off, no headings or bullets, no',
@@ -646,7 +676,7 @@ export async function runFeedActivity(deps: FeedActivityDeps): Promise<FeedActiv
     try {
       const reply = await deps.reasoner.call({
         className: 'triage',
-        prompt: feedPrompt(candidate.issue, candidate.comment, candidate.relevance, deps.operatorName(), repair, deps.avoidWords?.() ?? []),
+        prompt: feedPrompt(candidate.issue, candidate.comment, candidate.relevance, deps.operatorName(), repair, deps.avoidWords?.() ?? [], me),
         // The decision is four plain lines. Demanding a JSON wrapper rejected a correct
         // rewording live on 2026-09-14; parseDecision reads either form.
         replyShape: 'text',
