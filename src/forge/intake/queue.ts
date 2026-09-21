@@ -34,6 +34,7 @@ import { workspaceRoot } from '../paths.js';
 import { roadmapIdOpen } from '../roadmap.js';
 import { renderShipPrediction, shipPredictionFor } from './shipPrediction.js';
 import { parkReasonFor } from './parkReason.js';
+import type { GoalAuditOutcome, ProgressNote, ProgressStage } from './ticketProgress.js';
 import { parkRecoverability, PARK_RECOVERY_CAP, type ParkRecoverability, type ParkRecheck } from '../../shared/parkRecoverability.js';
 export { parkRecoverability, PARK_RECOVERY_CAP };
 export type { ParkRecoverability, ParkRecheck };
@@ -437,6 +438,20 @@ export interface QueueRuntimeDeps {
    *  hand (the CLI gate, GitHub itself) lands on `done` on the next sweep instead of
    *  sitting in review with a Merge button forever (seen live 2026-09-07). */
   prMerged?: (repo: string, pr: number) => Promise<boolean>;
+  /** 2026-09-18: the goal audit (`ticketProgress.ts#auditGoal`). Runs once, after the
+   *  brief is planned and before any worker launches, because that is the cheapest
+   *  moment to catch a misread ticket -- nothing has been built yet. A goal that never
+   *  passes parks the item rather than launching a worker against a goal a critic already
+   *  said was wrong. Absent means this environment wires no audit and the plan hop behaves
+   *  exactly as it did before, which is what every specimen written before this stream
+   *  assumes. */
+  goalAudit?: (input: { item: QueueItem; brief: QueuePlannedBrief }) => Promise<GoalAuditOutcome>;
+  /** 2026-09-18: the ticket's own progress note (`ticketProgress.ts#postProgress`).
+   *  Called from `writeTransition` for the state changes worth a comment, so a park, a
+   *  review and a merge say so on the ticket instead of the board going quiet. Never
+   *  awaited and never allowed to throw: losing a comment must not lose the transition
+   *  that earned it. Absent means no Jira write is attempted at all. */
+  noteProgress?: (note: ProgressNote) => void;
   /** Item 1 (2026-09-11): the PR's current check conclusion, re-read when deciding
    *  whether a park about checks has cleared. Undefined answers, and an absent
    *  dependency, both read as "not green" -- this never guesses a check passed. */
@@ -544,7 +559,45 @@ function writeTransition(
   const journalIds = written.id ? [...item.journalIds, written.id] : item.journalIds;
   const next: QueueItem = { ...item, ...patch, journalIds, updatedAt: now };
   deps.store.append({ id: item.id, at: now, ...patch, journalIds, updatedAt: now });
+  // 2026-09-18: the ticket learns what happened to it. Hung off the one function every hop
+  // already goes through, rather than the dozen park sites, so a park added later says so
+  // on the ticket without anybody remembering to wire it. Best effort by construction: the
+  // transition is already stored above, and a comment that cannot be posted must never
+  // unwind it.
+  notifyTicket(next, patch, item.state, deps);
   return next;
+}
+
+/** The stage a state change is worth telling the ticket about, or null for the ones that
+ *  are not: `planning` and `running` move constantly and the board already shows them, so
+ *  commenting on each would be the noise that makes people stop reading the ticket. */
+function progressStageFor(state: QueueItem['state'] | undefined): ProgressStage | null {
+  switch (state) {
+    case 'parked': return 'parked';
+    case 'review': return 'review';
+    case 'done': return 'merged';
+    default: return null;
+  }
+}
+
+function notifyTicket(next: QueueItem, patch: Partial<QueueItem>, previous: QueueItem['state'], deps: QueueRuntimeDeps): void {
+  if (!deps.noteProgress || !next.ticket) return;
+  // Only an actual state CHANGE is worth a comment. A hop that rewrites the reason on an
+  // already-parked item would otherwise comment on every tick, which is the noise that
+  // makes people stop reading the ticket.
+  if (patch.state === undefined || patch.state === previous) return;
+  const stage = progressStageFor(patch.state);
+  if (!stage) return;
+  try {
+    deps.noteProgress({
+      ticket: next.ticket,
+      stage,
+      ...(next.reason ? { reason: next.reason } : {}),
+      ...(next.pr?.url ? { prUrl: next.pr.url } : {}),
+    });
+  } catch {
+    // A note that cannot even be handed over is not worth losing the transition for.
+  }
 }
 
 /** B: the "finished but no PR anywhere" outcome parks an item on any ordinary first
@@ -791,6 +844,31 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
         item, { ticket: brief.ticket, briefPath: brief.briefPath, repo: brief.repo, state: 'parked', reason: 'unrouted' },
         deps, 'queue.parked', { hop: 'plan' },
       );
+    }
+    // 2026-09-18: the goal audit. The last gate before a worker exists, and the cheapest
+    // place to catch a misread ticket -- nothing has been built yet, so a failure here
+    // costs one planning pass instead of a whole run. A goal that cannot pass its critic
+    // parks with the critic's own sentence rather than launching a worker against it.
+    if (deps.goalAudit) {
+      let audit: GoalAuditOutcome;
+      try {
+        audit = await deps.goalAudit({ item, brief });
+      } catch (error) {
+        // The audit failing to RUN is not the goal failing. It parks either way -- an
+        // unaudited goal must not launch -- but the reason says which happened, because
+        // those need different fixes from whoever reads the ticket.
+        return writeTransition(
+          item, { ticket: brief.ticket, briefPath: brief.briefPath, repo: brief.repo, state: 'parked', reason: `the goal audit could not run: ${tailOf(messageOf(error))}` },
+          deps, 'queue.parked', { hop: 'goal-audit', audit: 'errored' },
+        );
+      }
+      if (!audit.ok) {
+        return writeTransition(
+          item, { ticket: brief.ticket, briefPath: brief.briefPath, repo: brief.repo, state: 'parked', reason: audit.reason },
+          deps, 'queue.parked', { hop: 'goal-audit', audit: 'failed', rounds: audit.rounds },
+        );
+      }
+      item = writeTransition(item, {}, deps, 'queue.goal-audited', { hop: 'goal-audit', rounds: audit.rounds });
     }
     // Planned, not yet launched: returned rather than falling through, so provisioning
     // and launch happen on the tick that follows, one hop per call the same way

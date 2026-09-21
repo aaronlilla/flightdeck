@@ -18,8 +18,19 @@ const RULE_NAME = 'humanizer';
 
 const EM_DASH = /[—–]| -- /;
 
-const AI_VOCABULARY =
-  /\b(actually|additionally|align with|crucial|delve|emphasizing|enduring|enhance|fostering|garner|highlight|interplay|intricate|intricacies|pivotal|showcase|tapestry|testament|underscore|underscores|valuable|vibrant)\b/i;
+/**
+ * The vocabulary half of rule 7, as a list rather than only a regex, so a caller that
+ * drafts text (the Jira feed's reasoner prompt) can be told the words up front instead
+ * of spending a rewording after this rule refuses one.
+ */
+export const AI_VOCABULARY_WORDS = [
+  'actually', 'additionally', 'align with', 'crucial', 'delve', 'emphasizing', 'enduring',
+  'enhance', 'fostering', 'garner', 'highlight', 'interplay', 'intricate', 'intricacies',
+  'pivotal', 'showcase', 'tapestry', 'testament', 'underscore', 'underscores', 'valuable',
+  'vibrant',
+] as const;
+
+const AI_VOCABULARY = new RegExp(`\\b(${AI_VOCABULARY_WORDS.join('|')})\\b`, 'i');
 
 const NEGATIVE_PARALLELISM = /\bit'?s not (just|merely) [^,.;]+,\s*it'?s\b/i;
 

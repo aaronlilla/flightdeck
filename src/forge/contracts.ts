@@ -306,6 +306,16 @@ export const FORGE_EVENT_NAMES = [
   // R-101: the Jira feed (`intake/jiraFeed.ts`, `sync/feed-wire.ts`).
   'feed.replied', 'feed.deferred', 'feed.sent', 'feed.ignored', 'feed.failed', 'feed.left',
   'feed.answer-posted', 'feed.answer-failed', 'feed.started', 'feed.tick-error',
+  // 2026-09-18: the claim half of the feed. `taken` is a ticket replied to, assigned to
+  // the operator and queued; `refused` names the stage that stopped a claim part-way;
+  // `capped` is a claim the per-pass or hourly limit stopped before the model was asked.
+  'claim.taken', 'claim.refused', 'claim.capped',
+  // 2026-09-18: the ticket learns what happened to it. A stage that parked used to say
+  // nothing on the board, so from Jira the ticket looked untouched.
+  'progress.posted', 'progress.refused',
+  // 2026-09-18: the two queue hops the wiring added. `goal-audited` is the pass; the
+  // failures are ordinary `queue.parked` rows carrying a `goal-audit` hop.
+  'queue.goal-audited',
   // 2026-09-08: the pre-gate rebase commits whatever a worker left uncommitted in its
   // worktree before replaying onto the base, rather than parking on "You have unstaged
   // changes" for a person to clean up by hand -- one row per item this happened to,
