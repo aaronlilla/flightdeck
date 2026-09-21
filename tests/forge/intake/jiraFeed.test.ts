@@ -466,6 +466,45 @@ describe('comments in one pass are handled together', () => {
   });
 });
 
+describe('the prompt gives the model what a name-matching rule cannot see', () => {
+  it('tells the model the operator is already in this thread, and that no name match decides nothing', async () => {
+    // A comment that says "you" or uses a nickname carries no @-mention and no name
+    // match, so the only evidence of who it is for is the thread itself.
+    const mine = { id: 'c0', authorAccountId: 'acc-me', authorName: 'Aaron Lilla', body: 'pushed a fix for this', created: LATER - 2000, mentions: [] };
+    const theirs = comment({ id: 'c1', body: 'did you get the keyboard case too?', created: LATER });
+    const h = harness({ board: [issue({ comments: [mine, theirs] })] });
+    const prompts: string[] = [];
+    h.deps.reasoner = { call: async ({ prompt }) => {
+      if (isCriticPrompt(prompt)) return { text: critique() };
+      prompts.push(prompt);
+      return { text: decision('defer', 'yep, both') };
+    } };
+
+    await runFeedActivity(h.deps);
+
+    expect(prompts[0]).toContain('yours was the last comment before this one');
+    expect(prompts[0]).toContain('can be aimed at you without naming you');
+    expect(prompts[0]).toContain('defer rather than ignore');
+    // The old wording told the model a rule had already looked and found nothing, which
+    // primed it to ignore.
+    expect(prompts[0]).not.toContain('nothing marks it as yours');
+  });
+
+  it('says plainly when the operator has never commented on the ticket', async () => {
+    const h = harness({ board: [issue({ comments: [comment()] })] });
+    const prompts: string[] = [];
+    h.deps.reasoner = { call: async ({ prompt }) => {
+      if (isCriticPrompt(prompt)) return { text: critique() };
+      prompts.push(prompt);
+      return { text: decision('ignore') };
+    } };
+
+    await runFeedActivity(h.deps);
+
+    expect(prompts[0]).toContain('You have not commented on this ticket before.');
+  });
+});
+
 // Measured live 2026-09-14: a correct reply ("just the app") was refused by the comment
 // readability check for a filler word and fell to the inbox, when one rewording would
 // have posted it.
