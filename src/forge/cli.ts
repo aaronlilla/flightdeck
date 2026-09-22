@@ -75,7 +75,7 @@ import {
   killSwitchPath, lanesDir, operatorConfigDir, queuePath, registryDir, runsDir, watcherStatePath,
 } from './paths.js';
 import { addTicketItem, runQueueTick } from './intake/queue.js';
-import { readAutonomy, runAutopilot } from './intake/autopilot.js';
+import { readAutonomy, runAutopilot, ticketAsText } from './intake/autopilot.js';
 import { acquireQueueLock } from './intake/queueLock.js';
 import { notTickingHere, QueueTickRunner } from './intake/queueTickRunner.js';
 import { QueueStore } from './intake/queueStore.js';
@@ -1104,6 +1104,12 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           reasoner: autopilotReasoner,
           checkouts: () => [...new Set(readChainEnv().checkouts.map((row) => row.value))],
           operatorName: () => process.env['FORGE_OPERATOR'] ?? 'Aaron Lilla',
+          ticketText: async (ticket) => {
+            const config = jiraConfigFromEnv();
+            if (!config) return null;
+            const read = await createJiraWriteClient(config).read(ticket);
+            return read ? ticketAsText(ticket, read) : null;
+          },
           answer: (key, text) => server.inbox.answer(key, text, 'autopilot'),
           deliver: async (entry, text) => {
             await deliverAnswer(entry, entry.key, text);

@@ -146,11 +146,21 @@ export function postRefusal(text: string, operatorNames: readonly string[]): str
   return verdict.verdict === 'DENY' ? `readability refused it: ${verdict.reason}` : null;
 }
 
+/** The ticket as prompt text: summary, description and the last comments, capped. */
+export function ticketAsText(key: string, read: { summary: string | null; status: string | null; assignee: string | null; description: string | null; comments?: Array<{ author: string; body: string }> }): string {
+  const lines = [
+    `${key}: ${read.summary ?? '(no summary)'} [${read.status ?? '?'}; assignee ${read.assignee ?? 'none'}]`,
+    `Description: ${read.description ?? '(empty)'}`,
+    ...(read.comments ?? []).map((c) => `Comment by ${c.author || 'someone'}: ${c.body}`),
+  ];
+  return lines.join('\n').slice(0, 6000);
+}
+
 export function isFeedAsk(entry: InboxEntry): boolean {
   return entry.runs.some((run) => FEED_RUNS.has(run));
 }
 
-export function autopilotPrompt(entry: InboxEntry, evidence: string, operatorName: string): string {
+export function autopilotPrompt(entry: InboxEntry, evidence: string, operatorName: string, ticketText = ''): string {
   const feed = isFeedAsk(entry);
   const drafted = entry.options.filter((o) => o !== LEAVE_OPTION);
   const recommended = typeof entry.recommended === 'number' ? entry.options[entry.recommended] : undefined;
@@ -165,6 +175,10 @@ export function autopilotPrompt(entry: InboxEntry, evidence: string, operatorNam
     ...(entry.ticket ? [`Ticket: ${entry.ticket}`] : []),
     ...(drafted.length ? ['', 'Options already drafted:', ...drafted.map((o, i) => `${i + 1}. ${o}`)] : []),
     ...(recommended ? [`Recommended: ${recommended}`] : []),
+    '',
+    ...(ticketText ? ['The ticket as it stands in Jira right now:', ticketText, ''] : []),
+    'Use only what the ticket and the code show. If the question asks what something says',
+    'and neither shows it, say so plainly; never invent it.',
     '',
     'What the checked-out code says (grep hits, may be empty):',
     evidence || '(nothing matched)',
@@ -228,6 +242,9 @@ export interface AutopilotDeps {
   journal: { append(row: Record<string, unknown>): void };
   execRun?: ExecRunFn;
   readFile?: (path: string) => string;
+  /** The live ticket as text (summary, description, recent comments), read before
+   *  deciding so an answer never guesses at what the ticket says. Optional. */
+  ticketText?: (ticket: string) => Promise<string | null>;
   /** Most questions settled per tick; the rest wait one tick. */
   perTick?: number;
   now?: () => number;
@@ -252,13 +269,14 @@ export async function runAutopilot(deps: AutopilotDeps): Promise<AutopilotResult
       continue;
     }
     try {
+      const ticket = entry.ticket && deps.ticketText ? (await deps.ticketText(entry.ticket).catch(() => null)) ?? '' : '';
       const evidence = await gatherEvidence(`${entry.question}\n${entry.options.join('\n')}`, deps.checkouts(), {
         owner: `autopilot-${entry.key}`,
         ...(deps.execRun ? { execRun: deps.execRun } : {}),
         ...(deps.readFile ? { readFile: deps.readFile } : {}),
       });
       const reply = await deps.reasoner.call({
-        className: 'research', replyShape: 'text', prompt: autopilotPrompt(entry, evidence, deps.operatorName()),
+        className: 'research', replyShape: 'text', prompt: autopilotPrompt(entry, evidence, deps.operatorName(), ticket),
       });
       let decision = parseAutoDecision(reply.text, feed);
       if (!decision) {
@@ -279,7 +297,7 @@ export async function runAutopilot(deps: AutopilotDeps): Promise<AutopilotResult
           if (!refusal) break;
           const again = await deps.reasoner.call({
             className: 'research', replyShape: 'text',
-            prompt: `${autopilotPrompt(entry, evidence, deps.operatorName())}\n\nYour last ANSWER was refused by the team's comment check: ${refusal}\nIt was:\n${decision.answer}\nRewrite it so it passes, same three lines.`,
+            prompt: `${autopilotPrompt(entry, evidence, deps.operatorName(), ticket)}\n\nYour last ANSWER was refused by the team's comment check: ${refusal}\nIt was:\n${decision.answer}\nRewrite it so it passes, same three lines.`,
           });
           const next = parseAutoDecision(again.text, feed);
           if (next && next.action !== 'silent') decision = { ...next, action: decision.action === 'work' ? 'work' : next.action };

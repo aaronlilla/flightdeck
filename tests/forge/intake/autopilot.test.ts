@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { InboxEntry } from '../../../src/forge/inbox.js';
 import {
+  ticketAsText,
   parseAutoDecision, readAutonomy, runAutopilot, writeAutonomy, type AutopilotDeps,
 } from '../../../src/forge/intake/autopilot.js';
 import { LEAVE_OPTION } from '../../../src/forge/intake/jiraFeed.js';
@@ -110,5 +111,15 @@ describe('autonomy settings', () => {
     expect(readAutonomy(path)).toEqual({ answerAsks: true, autoMerge: true });
     writeAutonomy(path, { autoMerge: false });
     expect(readAutonomy(path)).toEqual({ answerAsks: true, autoMerge: false });
+  });
+
+  it('reads the live ticket into the prompt before deciding', async () => {
+    const h = harness([entry({ ticket: 'FDTES-20' })], 'ACTION: silent\nWHY: fyi\nANSWER: -');
+    const seen: string[] = [];
+    h.deps.reasoner = { call: vi.fn(async (req: { prompt: string }) => { seen.push(req.prompt); return { text: 'ACTION: silent\nWHY: fyi\nANSWER: -' }; }) } as never;
+    h.deps.ticketText = async (key) => ticketAsText(key, { summary: 'sum', status: 'Backlog', assignee: null, description: 'desc',
+      comments: [{ author: 'Haiping Chen', body: 'the real comment text' }] });
+    await runAutopilot(h.deps);
+    expect(seen[0]).toContain('Comment by Haiping Chen: the real comment text');
   });
 });
