@@ -20,6 +20,7 @@ import {
 } from './chain-env.js';
 import type { CliResult, ForgeDeps } from './cli.js';
 import { autoMergeAllowed } from './council/risk.js';
+import { protectedBaseRefusal } from './council/gh.js';
 import { conclusionOf, countAddDel, guardedCommentPr, REAL_GH, type GhWriter } from './council/gh.js';
 import type { Packet, PollSourceName, Watermark } from './contracts.js';
 import { run as execRun } from './exec.js';
@@ -556,6 +557,8 @@ export function queueGitMerge(chainEnv: ChainEnv): NonNullable<QueueMergeDeps['g
   return async ({ repo, base, branch, subject, body }) => {
     const checkoutDir = checkoutFor(chainEnv, repo);
     if (!checkoutDir) return { ok: false, reason: `no checkout configured for ${repo}` };
+    const refusal = protectedBaseRefusal(base, repo);
+    if (refusal) return { ok: false, reason: refusal };
     return gitSquashMergeToBase({ checkoutDir, base, branch, subject, body }, runGit);
   };
 }
