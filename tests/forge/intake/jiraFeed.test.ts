@@ -419,6 +419,22 @@ describe('self-test: the operator commenting to themself', () => {
     expect(h.reasoner).toHaveBeenCalledTimes(1);
   });
 
+  it('lets only the sandbox project through when self-test is scoped', async () => {
+    const h = harness({
+      board: [
+        issue({ key: 'ABC-1', reporterAccountId: 'acc-me', comments: [selfComment({ id: 'real-1' })] }),
+        issue({ key: 'SBX-1', reporterAccountId: 'acc-me', comments: [selfComment({ id: 'sbx-1' })] }),
+      ],
+      reply: decision('defer', 'maybe'),
+    });
+    h.deps.selfTest = () => true;
+    h.deps.selfTestProjects = () => ['SBX'];
+    const result = await runFeedActivity(h.deps);
+    expect(result.considered).toBe(1);
+    expect(h.deps.ledger.read().handled['real-1']?.reason).toBe('written by the operator');
+    expect(h.deps.ledger.read().handled['sbx-1']?.selfTest).toBe(true);
+  });
+
   it('ignores the operator\'s own comments while the switch is off', async () => {
     const h = harness({ board: [issue({ reporterAccountId: 'acc-me', comments: [selfComment()] })], reply: decision('reply', 'x') });
     h.deps.selfTest = () => false;

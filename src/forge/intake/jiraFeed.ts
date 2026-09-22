@@ -550,6 +550,8 @@ export interface FeedActivityDeps {
   /** Whether the operator's own comments are let through, for a timed test of the
    *  pipeline. Absent reads as off. */
   selfTest?: () => boolean;
+  /** The projects the self-test may act on. Empty or absent means every project. */
+  selfTestProjects?: () => readonly string[];
   /** Words the team's comment check refuses, named in the prompt so a reply avoids them
    *  on the first try instead of spending a rewording. */
   avoidWords?: () => string[];
@@ -630,7 +632,12 @@ export async function runFeedActivity(deps: FeedActivityDeps): Promise<FeedActiv
       let relevance: FeedRelevance = comment.id.startsWith('desc:') ? 'named' : classifyComment(issue, comment, me);
       let fromSelfTest = false;
       if (relevance === 'self') {
-        if (!selfTest) {
+        // Self-test lets the operator's own comments through, but only on the projects it
+        // is scoped to (the FDTES sandbox): with it on, the feed may REPLY as the operator,
+        // which must never happen on a real board.
+        const allowed = deps.selfTestProjects?.() ?? [];
+        const projectOfIssue = issue.key.split('-')[0] ?? '';
+        if (!selfTest || (allowed.length > 0 && !allowed.includes(projectOfIssue))) {
           ledger.handled[comment.id] = { at: pollAt, ticket: issue.key, outcome: 'ignored', reason: 'written by the operator' };
           continue;
         }
