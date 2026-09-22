@@ -14,6 +14,9 @@ import {
 import type { QueueStore } from '../intake/queueStore.js';
 import { addTicketItem } from '../intake/queue.js';
 import { parseRepoMap } from '../intake/repoRoute.js';
+import { feedProjects } from '../intake/watcherWire.js';
+
+export { feedProjects };
 import type { Journal } from '../journal.js';
 import { jiraFeedLedgerPath } from '../paths.js';
 import { RunInbox } from '../runinbox.js';
@@ -98,7 +101,7 @@ export function buildJiraFeedActivity(options: JiraFeedWireOptions): JiraFeedAct
       if (!config) throw new Error('no Jira credentials');
       const write = createJiraWriteClient(config);
       const result = await runFeedActivity({
-        project,
+        project: feedProjects(project, options.env),
         me: readMe,
         operatorName: () => me?.displayName || 'the developer',
         fetchIssues: (jql) => fetchFeedIssues(config, jql),

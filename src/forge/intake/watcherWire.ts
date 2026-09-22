@@ -11,6 +11,7 @@
 import type { Journal } from '../journal.js';
 import type { JiraConfig } from './jira.js';
 import { createJiraFeed } from './jira.js';
+import { projectClause } from './jiraFeed.js';
 import type { FakePollFeed } from './poller.js';
 import type { WatermarkStore } from './once.js';
 import { runWatcherIntake, type WatcherIntakeResult } from './watcherIntake.js';
@@ -43,18 +44,25 @@ export function readHoldLabels(env: NodeJS.ProcessEnv = process.env): string[] {
  * a Done status: a status move into Done is what `runWatcherIntake` needs to see to
  * close an owned lane.
  */
-export function watcherJql(project: string, ownedKeys: readonly string[] = []): string {
+export function watcherJql(project: string | readonly string[], ownedKeys: readonly string[] = []): string {
   // Clause 1 is NEW work only: Aaron's decision (2026-09-11) that a full re-sync and the
   // watcher never queue a ticket that is already Done or already in review. The status
   // name was read live from BBZ on 2026-09-11 ("In Review/QA", category In Progress).
   // Clause 2 (owned keys) carries no status filter on purpose: an owned lane must stay
   // visible after the QA handoff reassigns it and after a Done move, or it never closes.
-  const mine = `project = ${project} AND assignee = currentUser() AND statusCategory != Done AND status != "In Review/QA"`;
+  const mine = `${projectClause(project)} AND assignee = currentUser() AND statusCategory != Done AND status != "In Review/QA"`;
   const clause = ownedKeys.length ? `((${mine}) OR key in (${ownedKeys.join(', ')}))` : mine;
   return `${clause} ORDER BY updated ASC`;
 }
 
-export function watcherFeed(project: string, config: JiraConfig, ownedKeys: readonly string[] = []): FakePollFeed {
+/** The watched project plus `FORGE_JIRA_EXTRA_PROJECTS` (comma-separated), e.g. the
+ *  FDTES sandbox the end-to-end tests drive, each once. */
+export function feedProjects(project: string, env: NodeJS.ProcessEnv = process.env): string[] {
+  const extra = (env['FORGE_JIRA_EXTRA_PROJECTS'] ?? '').split(',').map((p) => p.trim()).filter(Boolean);
+  return [...new Set([project, ...extra])];
+}
+
+export function watcherFeed(project: string | readonly string[], config: JiraConfig, ownedKeys: readonly string[] = []): FakePollFeed {
   return createJiraFeed({ ...config, jql: watcherJql(project, ownedKeys) });
 }
 

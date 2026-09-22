@@ -140,10 +140,16 @@ export function feedText(node: unknown): string {
   return children.join('');
 }
 
-/** Every ticket in `project` touched in the last `sinceMinutes`. Relative minutes rather
+/** `project = X` for one project, `project in (X, Y)` for several. */
+export function projectClause(projects: string | readonly string[]): string {
+  const list = typeof projects === 'string' ? [projects] : [...projects];
+  return list.length === 1 ? `project = ${list[0]}` : `project in (${list.join(', ')})`;
+}
+
+/** Every ticket in `projects` touched in the last `sinceMinutes`. Relative minutes rather
  *  than a timestamp, so the site's own timezone never shifts the window. */
-export function feedJql(project: string, sinceMinutes: number): string {
-  return `project = ${project} AND updated >= -${sinceMinutes}m ORDER BY updated ASC`;
+export function feedJql(projects: string | readonly string[], sinceMinutes: number): string {
+  return `${projectClause(projects)} AND updated >= -${sinceMinutes}m ORDER BY updated ASC`;
 }
 
 function basicAuth(email: string, token: string): string {
@@ -525,7 +531,8 @@ export function replyRefusal(reply: string, operatorNames: readonly string[]): s
 // Resolving
 
 export interface FeedActivityDeps {
-  project: string;
+  /** One project, or several (the watched project plus the e2e sandbox). */
+  project: string | readonly string[];
   me: () => Promise<FeedMe | null>;
   /** The operator's display name, as the reasoner is told to write. */
   operatorName: () => string;

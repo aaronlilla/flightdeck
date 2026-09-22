@@ -212,3 +212,10 @@ describe('R-101: hold labels', () => {
     expect(byTicket.get('ABC-2')?.noMerge).toBeUndefined();
   });
 });
+
+describe('watcherJql across projects', () => {
+  it('covers extra projects for assigned work', () => {
+    expect(watcherJql(['BBZ', 'FDTES'])).toBe(
+      'project in (BBZ, FDTES) AND assignee = currentUser() AND statusCategory != Done AND status != "In Review/QA" ORDER BY updated ASC');
+  });
+});

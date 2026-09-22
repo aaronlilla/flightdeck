@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { claimEnabled, claimRepos, feedNames } from '../../../src/forge/sync/feed-wire.ts';
+import { claimEnabled, claimRepos, feedNames, feedProjects } from '../../../src/forge/sync/feed-wire.ts';
 
 const MAP = 'label:fd-e2e=aaronlilla/flightdeck,component:backend=ACME/backend,default=ACME/app';
 
@@ -55,5 +55,12 @@ describe('feedNames', () => {
   it('falls back to the first word of the display name', () => {
     expect(feedNames('Aaron Lilla', {})).toEqual(['Aaron']);
     expect(feedNames('', {})).toEqual([]);
+  });
+});
+
+describe('feedProjects', () => {
+  it('adds FORGE_JIRA_EXTRA_PROJECTS to the watched project, once each', () => {
+    expect(feedProjects('BBZ', { FORGE_JIRA_EXTRA_PROJECTS: 'FDTES, BBZ ,' })).toEqual(['BBZ', 'FDTES']);
+    expect(feedProjects('BBZ', {})).toEqual(['BBZ']);
   });
 });

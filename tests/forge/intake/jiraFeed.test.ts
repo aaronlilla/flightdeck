@@ -709,3 +709,11 @@ describe('claiming a ticket from a comment', () => {
     expect(result.claimed).toEqual([]);
   });
 });
+
+describe('feedJql across projects', () => {
+  it('reads several projects in one search, and one project exactly as before', () => {
+    expect(feedJql(['BBZ', 'FDTES'], 5)).toBe('project in (BBZ, FDTES) AND updated >= -5m ORDER BY updated ASC');
+    expect(feedJql('BBZ', 5)).toBe('project = BBZ AND updated >= -5m ORDER BY updated ASC');
+    expect(feedJql(['BBZ'], 5)).toBe('project = BBZ AND updated >= -5m ORDER BY updated ASC');
+  });
+});

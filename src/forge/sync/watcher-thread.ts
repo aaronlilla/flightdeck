@@ -15,7 +15,7 @@ import { parentPort, workerData } from 'node:worker_threads';
 import type { JiraConfig } from '../intake/jira.js';
 import { QueueStore } from '../intake/queueStore.js';
 import { fileWatermarkStore } from '../intake/watermarkStore.js';
-import { watcherFeed, watcherTick } from '../intake/watcherWire.js';
+import { feedProjects, watcherFeed, watcherTick } from '../intake/watcherWire.js';
 import { queuePath } from '../paths.js';
 
 export interface WatcherThreadData {
@@ -58,7 +58,7 @@ if (parentPort) {
         return;
       }
       const result = await watcherTick({
-        feedFor: (ownedKeys) => watcherFeed(data.project, config, ownedKeys),
+        feedFor: (ownedKeys) => watcherFeed(feedProjects(data.project), config, ownedKeys),
         watermarks, store, journal, holdLabels: data.holdLabels,
       });
       post({

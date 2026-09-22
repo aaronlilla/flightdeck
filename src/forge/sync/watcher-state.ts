@@ -13,7 +13,7 @@ import type { FeedActivityResult } from '../intake/jiraFeed.js';
 import type { TicketPoller, TicketPollResult } from './watcher-thread-host.js';
 import type { WatermarkStore } from '../intake/once.js';
 import type { QueueStore } from '../intake/queueStore.js';
-import { readWatcherPollSeconds, watcherFeed, watcherJql, watcherTick } from '../intake/watcherWire.js';
+import { feedProjects, readWatcherPollSeconds, watcherFeed, watcherJql, watcherTick } from '../intake/watcherWire.js';
 import type { Journal } from '../journal.js';
 import { watcherStatePath } from '../paths.js';
 
@@ -149,7 +149,7 @@ export class JiraWatcher {
     }
     try {
       const result = await watcherTick({
-        feedFor: (ownedKeys) => watcherFeed(project, config, ownedKeys),
+        feedFor: (ownedKeys) => watcherFeed(feedProjects(project), config, ownedKeys),
         watermarks: this.deps.watermarks,
         store: this.deps.store,
         journal: this.deps.journal,
