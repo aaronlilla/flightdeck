@@ -435,6 +435,19 @@ describe('self-test: the operator commenting to themself', () => {
     expect(h.deps.ledger.read().handled['sbx-1']?.selfTest).toBe(true);
   });
 
+  it('reads the operator\'s own new-ticket description only under a sandbox-scoped self-test', async () => {
+    const own = (key: string) => issue({ key, created: LATER, reporterAccountId: 'acc-me', description: 'Robin can you look at this?' });
+    const off = harness({ board: [own('SBX-2')], reply: decision('defer', 'x') });
+    off.deps.selfTest = () => false;
+    expect((await runFeedActivity(off.deps)).considered).toBe(0);
+    const on = harness({ board: [own('ABC-2'), own('SBX-2')], reply: decision('defer', 'x') });
+    on.deps.selfTest = () => true;
+    on.deps.selfTestProjects = () => ['SBX'];
+    const result = await runFeedActivity(on.deps);
+    expect(result.deferred).toEqual(['SBX-2']);
+    expect(on.deps.ledger.read().handled['desc:SBX-2']?.selfTest).toBe(true);
+  });
+
   it('ignores the operator\'s own comments while the switch is off', async () => {
     const h = harness({ board: [issue({ reporterAccountId: 'acc-me', comments: [selfComment()] })], reply: decision('reply', 'x') });
     h.deps.selfTest = () => false;
