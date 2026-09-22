@@ -24,7 +24,8 @@ import { dirname, isAbsolute, join } from 'node:path';
 import type { Reasoner } from '../contracts.js';
 import { TAIL_BYTES, run as execRunDefault, type RunRequest, type RunResult } from '../exec.js';
 import { FEED_RUNS, type InboxEntry } from '../inbox.js';
-import { LEAVE_OPTION } from './jiraFeed.js';
+import { LEAVE_OPTION, replyRefusal } from './jiraFeed.js';
+import { readabilityVerdict } from './readability.js';
 import { termsFor } from './scout.js';
 
 // ---------------------------------------------------------------------------------------
@@ -122,6 +123,16 @@ export interface AutoDecision {
   action: AutoAction;
   answer: string;
   why: string;
+}
+
+/** Why the team's comment checks would refuse this reply, or null when it would post.
+ *  The same two checks the feed and the Jira write client run, applied BEFORE the answer
+ *  is recorded, so a refused reply is reworded instead of lost. */
+export function postRefusal(text: string, operatorNames: readonly string[]): string | null {
+  const local = replyRefusal(text, operatorNames);
+  if (local) return local;
+  const verdict = readabilityVerdict('jira-comment', null, '', text, undefined, new Date().toISOString().slice(0, 10));
+  return verdict.verdict === 'DENY' ? `readability refused it: ${verdict.reason}` : null;
 }
 
 export function isFeedAsk(entry: InboxEntry): boolean {
@@ -247,6 +258,25 @@ export async function runAutopilot(deps: AutopilotDeps): Promise<AutopilotResult
         decision = feed
           ? (drafted ? { action: 'answer', answer: drafted, why: 'took the drafted reply' } : { action: 'silent', answer: '', why: 'nothing drafted to send' })
           : { action: 'answer', answer: pick ?? 'Use your best judgement and keep going; note the assumption in the PR.', why: 'took the recommended option' };
+      }
+      // A feed reply must pass the team's comment checks, or the post fails later with
+      // nobody watching. Two rewordings, then silence rather than a refused post.
+      if (feed && decision.action !== 'silent') {
+        const names = [deps.operatorName().split(/\s+/)[0] ?? ''].filter(Boolean);
+        for (let round = 0; round < 2; round += 1) {
+          const refusal = postRefusal(decision.answer, names);
+          if (!refusal) break;
+          const again = await deps.reasoner.call({
+            className: 'research', replyShape: 'text',
+            prompt: `${autopilotPrompt(entry, evidence, deps.operatorName())}\n\nYour last ANSWER was refused by the team's comment check: ${refusal}\nIt was:\n${decision.answer}\nRewrite it so it passes, same three lines.`,
+          });
+          const next = parseAutoDecision(again.text, feed);
+          if (next && next.action !== 'silent') decision = { ...next, action: decision.action === 'work' ? 'work' : next.action };
+          else if (next) { decision = next; break; }
+        }
+        if (decision.action !== 'silent' && postRefusal(decision.answer, names)) {
+          decision = { action: decision.action === 'work' ? 'work' : 'silent', answer: decision.action === 'work' ? 'On it.' : '', why: `${decision.why} (reply kept failing the comment check)` };
+        }
       }
       if (decision.action === 'work' && entry.ticket) await deps.work(entry.ticket);
       const text = decision.action === 'silent' ? LEAVE_OPTION : decision.answer;

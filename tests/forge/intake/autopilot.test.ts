@@ -88,6 +88,17 @@ describe('autopilot', () => {
     expect(h.answered).toEqual([]);
   });
 
+  it('rewords a feed reply the comment check would refuse, before answering', async () => {
+    const h = harness([entry({ ticket: 'BBZ-385' })], '');
+    const call = vi.fn()
+      .mockResolvedValueOnce({ text: 'ACTION: answer\nWHY: x\nANSWER: I just think we let WorldPay decide.' })
+      .mockResolvedValueOnce({ text: 'ACTION: answer\nWHY: x\nANSWER: I think we let WorldPay decide.' });
+    h.deps.reasoner = { call };
+    await runAutopilot(h.deps);
+    expect(call).toHaveBeenCalledTimes(2);
+    expect(h.answered).toEqual([['k1', 'I think we let WorldPay decide.']]);
+  });
+
   it('never lets a worker question go silent', () => {
     expect(parseAutoDecision('ACTION: silent\nWHY: x\nANSWER:', false)).toBeNull();
   });
