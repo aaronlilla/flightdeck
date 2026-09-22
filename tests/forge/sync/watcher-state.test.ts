@@ -162,6 +162,26 @@ describe('JiraWatcher and the Jira feed (R-101)', () => {
     watcher.stop();
   });
 
+  it('reports the last comment pass on the status line, counts and time', async () => {
+    const run = vi.fn(async () => ({ ...empty, considered: 2, deferred: ['ABC-1'], ignored: ['ABC-2'] }));
+    const watcher = new JiraWatcher({ jiraConfig: config(), watermarks: memoryWatermarks(), store, journal, pollSeconds: 5, activity: { run, reset: vi.fn() } });
+    await watcher.start('ABC');
+    await watcher.settled();
+    expect(watcher.status().feed).toEqual({
+      lastPassAt: expect.any(Number), considered: 2, deferred: 1, ignored: 1, replied: 0, claimed: 0, sent: 0, failed: 0,
+    });
+    watcher.stop();
+  });
+
+  it('keeps the counts and adds the error when a comment pass fails', async () => {
+    const run = vi.fn(async () => { throw new Error('fetch failed'); });
+    const watcher = new JiraWatcher({ jiraConfig: config(), watermarks: memoryWatermarks(), store, journal, pollSeconds: 5, activity: { run, reset: vi.fn() } });
+    await watcher.start('ABC');
+    await watcher.settled();
+    expect(watcher.status().feed).toMatchObject({ lastError: 'fetch failed', considered: 0 });
+    watcher.stop();
+  });
+
   it('shows a feed failure on the status line', async () => {
     const run = vi.fn(async () => { throw new Error('Jira 401'); });
     const watcher = new JiraWatcher({ jiraConfig: config(), watermarks: memoryWatermarks(), store, journal, pollSeconds: 5, activity: { run, reset: vi.fn() } });
