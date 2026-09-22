@@ -17,7 +17,7 @@ import { join } from 'node:path';
 
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { Inbox, askKey, isAskStale, projectStaleness } from '../../src/forge/inbox.js';
+import { Inbox, askKey, isAskStale, projectStaleness, type InboxEntry } from '../../src/forge/inbox.js';
 
 let dir: string;
 let inbox: Inbox;
@@ -245,5 +245,20 @@ describe('F3: a stale ask has no live run left', () => {
 
   it('retire on a key nobody asked returns undefined and moves nothing', () => {
     expect(inbox.retire('nope')).toBeUndefined();
+  });
+});
+
+describe('feed asks and staleness', () => {
+  it('never calls a Jira-feed ask stale just because no run registry row exists', () => {
+    const entry = {
+      key: 'k', question: 'Haiping Chen on BBZ-168: "@Aaron Lilla where are we?"', options: [],
+      kind: 'question', runs: ['jira-feed'], goals: [], asked: 1, at: 0, disposition: 'park',
+    } as InboxEntry;
+    expect(isAskStale(entry, () => false, 10 ** 13)).toBe(false);
+  });
+  it('treats a Slack-relayed ask the same way', () => {
+    const entry = { key: 'k', question: 'q', options: [], kind: 'question', runs: ['slack'], goals: [],
+      asked: 1, at: 0, disposition: 'park' } as InboxEntry;
+    expect(isAskStale(entry, () => false)).toBe(false);
   });
 });

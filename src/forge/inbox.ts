@@ -138,10 +138,17 @@ const EMPTY_ASK_STALE_AGE_MS = 24 * 60 * 60_000;
  *  matters and importing intake from the inbox would invert the dependency. */
 export const ITEM_RUN_PREFIX = 'item:';
 
+/** Runs that are a feed, not a process: a question they raise belongs to a person on
+ *  the tracker and is live until answered, whatever the run registry says. Found live
+ *  2026-09-22: Haiping's @-mention on BBZ-168 was relayed correctly and then shown as
+ *  "stale, answering resumes nothing", because `jira-feed` never has a registry row. */
+export const FEED_RUNS: ReadonlySet<string> = new Set(['jira-feed', 'slack']);
+
 export function isAskStale(entry: InboxEntry, hasRegistryRow: (run: string) => boolean, now: number = Date.now()): boolean {
   if (entry.answer !== undefined) return false;
   if (entry.question.trim() === '' && now - entry.at > EMPTY_ASK_STALE_AGE_MS) return true;
   if (!entry.runs.length) return false;
+  if (entry.runs.every((run) => FEED_RUNS.has(run))) return false;
   // R-76: an interview ask names the queue item it belongs to, not a launched process,
   // and a queued item has no registry row until it launches two hops later. Without this,
   // every interview question read as stale the moment it was raised: `forge status` filed

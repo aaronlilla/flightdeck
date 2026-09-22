@@ -29,7 +29,7 @@
  *   `Inbox.retire` already does, so what was asked and why it was dropped stay on disk.
  */
 import type { Inbox, InboxEntry } from './inbox.js';
-import { isAskStale, ITEM_RUN_PREFIX } from './inbox.js';
+import { FEED_RUNS, isAskStale, ITEM_RUN_PREFIX } from './inbox.js';
 
 /** One `git` invocation, injected so specimens never shell out. Resolves with the
  *  command's own success flag and trimmed stdout; a throw is the caller's failure, not a
@@ -69,7 +69,6 @@ export interface ClonePass {
 /** The pseudo-run names a relayed ask carries instead of a real run id. An entry whose
  *  every run is one of these was raised by a poller, so no registry row will ever exist
  *  for it and "all its runs are gone" is meaningless. */
-const FEED_RUNS = new Set(['jira-feed', 'slack']);
 
 export interface RetiredAsk {
   key: string;
