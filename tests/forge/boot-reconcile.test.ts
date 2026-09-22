@@ -240,6 +240,16 @@ describe('retireAnsweredJiraAsks', () => {
     expect(retired).toEqual([{ key: 'hers', ticket: 'BBZ-138', why: 'the ticket is assigned to somebody else' }]);
   });
 
+  it('keeps an ask on an UNASSIGNED ticket: nobody owns it, so it is still the operator\'s question', () => {
+    // Live 2026-09-22: Haiping @-mentioned Aaron on unassigned backlog ticket BBZ-168
+    // and the next boot retired it as "assigned to somebody else".
+    const inbox = fakeInbox([entry({ key: 'bbz168', ticket: 'BBZ-168', at: 9_000, sourceCommentAt: 9_000 })]);
+    expect(retireAnsweredJiraAsks(inbox, 'aaron', new Map([['BBZ-168', []]]), new Map([
+      ['BBZ-168', { assigneeAccountId: null, statusIsDone: false }],
+    ]))).toEqual([]);
+    expect(inbox.open()).toHaveLength(1);
+  });
+
   it('retires an ask on a done ticket the operator still owns', () => {
     const inbox = fakeInbox([entry({ key: 'done', ticket: 'BBZ-311', at: 1_000 })]);
 

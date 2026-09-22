@@ -617,6 +617,14 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         for (const line of bootResult.lines) {
           reconcileBootJournal.append({ event: 'note', actor: 'console', message: line } as never);
         }
+        // One row per retired question, naming it: a retirement nobody can see is how
+        // Haiping's BBZ-168 question disappeared on 2026-09-22 with only a count logged.
+        for (const gone of bootResult.retired) {
+          reconcileBootJournal.append({
+            event: 'inbox.retired', actor: 'console', key: gone.key, why: gone.why,
+            ...(gone.ticket ? { ticket: gone.ticket } : {}),
+          } as never);
+        }
         for (const failure of bootResult.failures) {
           bootLines.push(`reconcile: ${failure}`);
           reconcileBootJournal.append({ event: 'note', actor: 'console', message: `reconcile failed: ${failure}` } as never);

@@ -260,11 +260,17 @@ export interface TicketState {
   statusIsDone: boolean;
 }
 
-/** Jira statuses aside, an ask on a ticket somebody else owns is not the operator's
+/** Jira statuses aside, an ask on a ticket somebody ELSE owns is not the operator's
  *  work. This is the rule that would have kept fourteen of Haiping's own In Review
- *  tickets off the board in the first place. */
+ *  tickets off the board in the first place.
+ *
+ *  An UNASSIGNED ticket is nobody's, which is not the same as somebody else's: a
+ *  teammate @-mentioning the operator on a backlog ticket with no assignee is exactly
+ *  the question this inbox exists for. Found live 2026-09-22: Haiping's "@Aaron where
+ *  are we with this?" on unassigned BBZ-168 was relayed correctly, then retired by this
+ *  rule at the next boot as "assigned to somebody else", unread. */
 function notTheOperators(state: TicketState | undefined, operatorAccountId: string): boolean {
-  if (!state) return false;
+  if (!state || state.assigneeAccountId === null) return false;
   return state.assigneeAccountId !== operatorAccountId;
 }
 
