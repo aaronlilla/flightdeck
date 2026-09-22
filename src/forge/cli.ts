@@ -74,7 +74,8 @@ import {
   ensureHome, fleetConfigDirChoice, forgeHome, gotchasDir, inboxDir, intakeBriefsDir, journalPath,
   killSwitchPath, lanesDir, operatorConfigDir, queuePath, registryDir, runsDir, watcherStatePath,
 } from './paths.js';
-import { runQueueTick } from './intake/queue.js';
+import { addTicketItem, runQueueTick } from './intake/queue.js';
+import { readAutonomy, runAutopilot } from './intake/autopilot.js';
 import { acquireQueueLock } from './intake/queueLock.js';
 import { notTickingHere, QueueTickRunner } from './intake/queueTickRunner.js';
 import { QueueStore } from './intake/queueStore.js';
@@ -1084,6 +1085,46 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         if (!watcherFileState.on) writeWatcherState({ on: true, project: watcherProject });
         watcherLine = `jira watcher on for ${watcherProject}, every ${server.watcher.status().pollSeconds}s`;
       }
+
+      // Autopilot (2026-09-22, Aaron: "no part of the system should need my approval
+      // other than merging PRs"). Every open question is researched against the checked-
+      // out code and resolved: a teammate's comment is answered, left silent when a reply
+      // would be noise, or turned into queued work; a worker's question is answered and
+      // delivered. Toggle: `~/.forge/console/autonomy.json` answerAsks, default ON.
+      const autopilotJournal = new Journal(journalPath());
+      const autopilotReasoner = reasonerFor('claude', { journal: autopilotJournal, cwd: process.cwd() });
+      const autonomyFile = join(forgeHome(), 'console', 'autonomy.json');
+      let autopilotBusy = false;
+      const autopilotTick = setInterval(() => {
+        if (autopilotBusy) return;
+        autopilotBusy = true;
+        void runAutopilot({
+          settings: () => readAutonomy(autonomyFile),
+          open: () => server.openAsks(),
+          reasoner: autopilotReasoner,
+          checkouts: () => [...new Set(readChainEnv().checkouts.map((row) => row.value))],
+          operatorName: () => process.env['FORGE_OPERATOR'] ?? 'Aaron Lilla',
+          answer: (key, text) => server.inbox.answer(key, text, 'autopilot'),
+          deliver: async (entry, text) => {
+            await deliverAnswer(entry, entry.key, text);
+            journalInterviewAnswer((row) => autopilotJournal.append(row as never), entry, 'autopilot', 'autopilot');
+          },
+          retire: (key) => { server.inbox.retire(key); },
+          work: async (ticket) => {
+            if (queueStore.all().some((item) => item.ticket === ticket)) return;
+            const config = jiraConfigFromEnv();
+            if (config) {
+              const me = await probeJira(config);
+              if (me.ok && me.accountId) await createJiraWriteClient(config).assign(ticket, me.accountId);
+            }
+            addTicketItem(queueStore, ticket);
+          },
+          journal: { append: (row) => { autopilotJournal.append(row as never); } },
+        }).catch((error: unknown) => {
+          autopilotJournal.append({ event: 'autopilot.failed', actor: 'autopilot', reason: error instanceof Error ? error.message : String(error) } as never);
+        }).finally(() => { autopilotBusy = false; });
+      }, 15_000);
+      autopilotTick.unref();
 
       // The self loop (`self-wire.ts`): findings about the fleet become queue items on
       // FORGE_SELF_REPO, a self item whose gate cleared merges, and once trunk has moved

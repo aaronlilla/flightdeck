@@ -50,7 +50,8 @@ import { runtimeVersion } from './launcher.js';
 import { readQueuePaused, writeQueuePaused } from './console/queue-pause.js';
 import { writeQueueWidth } from './console/queue-width.js';
 import type { Actuator, Reasoner } from './contracts.js';
-import { isAskStale, projectStaleness, type Inbox } from './inbox.js';
+import { isAskStale, projectStaleness, type Inbox, type InboxEntry } from './inbox.js';
+import { readAutonomy, writeAutonomy, type AutonomySettings } from './intake/autopilot.js';
 import { journalInterviewAnswer } from './intake/interviewPlanner.js';
 import { appendOnce, Journal, JournalCache, type RangeReader } from './journal.js';
 import type { StuckSignal } from './liveness.js';
@@ -1149,6 +1150,22 @@ export class ForgeServer {
     if (path.startsWith('/run/') && request.method === 'GET') {
       return this.runDetail(request, response, decodeURIComponent(path.slice('/run/'.length)));
     }
+    if (path === '/autonomy') {
+      // Aaron's order, 2026-09-22: nothing waits on him but merges, and merges run
+      // unattended once audited unless he turns this off. Both default ON.
+      const file = join(this.forgeHomeDir, 'console', 'autonomy.json');
+      if (request.method === 'GET') return json(response, 200, readAutonomy(file));
+      if (request.method !== 'POST') return json(response, 405, { error: 'GET or POST' });
+      if (!this.authorized(request, response)) return;
+      return this.readJson<Partial<AutonomySettings>>(request, response, (parsed) => {
+        const patch: Partial<AutonomySettings> = {};
+        if (typeof parsed?.answerAsks === 'boolean') patch.answerAsks = parsed.answerAsks;
+        if (typeof parsed?.autoMerge === 'boolean') patch.autoMerge = parsed.autoMerge;
+        const next = writeAutonomy(file, patch);
+        this.publish({ event: 'autonomy.changed', ...next });
+        json(response, 200, next);
+      });
+    }
     if (path === '/answer') {
       if (request.method !== 'POST') {
         return json(response, 405, { error: 'answering a question is not a safe method' });
@@ -1413,6 +1430,11 @@ export class ForgeServer {
       return;
     }
     void advisor.status(id).then((status) => json(response, 200, status));
+  }
+
+  /** Open questions with `stale` projected, as `GET /inbox` serves them. */
+  openAsks(): InboxEntry[] {
+    return projectStaleness(this.inbox.open(), (run: string) => Boolean(this.registry.get(run)));
   }
 
   private answer(request: IncomingMessage, response: ServerResponse): void {
