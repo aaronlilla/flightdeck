@@ -34,6 +34,7 @@ import { gitSquashMergeToBase, type GitRunFn } from './intake/gitMerge.js';
 import { developDeployVerifier } from './intake/otaVerify.js';
 import { briefWithRoutines, loadRoutines } from './self/routines.js';
 import { routinesDir } from './paths.js';
+import { autoMergeOn } from './intake/autopilot.js';
 import { createJiraFeed, createJiraWriteClient, type JiraConfig } from './intake/jira.js';
 import { fetchIssueComments, fetchIssueRemoteLinks, readTicketDetail } from './intake/jira.js';
 import { checkTicketInFlight } from './intake/inFlight.js';
@@ -760,7 +761,9 @@ export function buildQueueRuntimeDeps(
     // `FORGE_COUNCIL_AUTOMERGE` off `councilPolicy()` on each call), the same allow-list
     // `forge gate --merge` already refuses against for a person -- this is the queue's
     // own worker asking for the identical decision instead of waiting on a click.
-    mergeAllowed: (repo) => autoMergeAllowed(repo),
+    // 2026-09-22, Aaron: merges run unattended once the council passes, behind one
+    // Settings switch (`autonomy.json` autoMerge, default ON, read every tick).
+    mergeAllowed: (repo) => autoMergeOn() && autoMergeAllowed(repo),
     postMergeVerify: queuePostMergeVerify(chainEnv),
     prMerged: async (repo, pr) => {
       const result = await execRun({

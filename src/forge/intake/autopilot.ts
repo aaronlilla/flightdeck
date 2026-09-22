@@ -19,6 +19,7 @@
  * console's Settings toggle takes effect with no restart). Absent means ON.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 
 import type { Reasoner } from '../contracts.js';
@@ -52,6 +53,16 @@ export function readAutonomy(path: string): AutonomySettings {
   } catch {
     return { ...AUTONOMY_DEFAULTS };
   }
+}
+
+/** Where the console keeps these switches. */
+export function autonomyPath(): string {
+  return join(process.env['FORGE_HOME'] ?? join(homedir(), '.forge'), 'console', 'autonomy.json');
+}
+
+/** The Settings switch for unattended merges, read fresh on every call. */
+export function autoMergeOn(): boolean {
+  return readAutonomy(autonomyPath()).autoMerge;
 }
 
 export function writeAutonomy(path: string, patch: Partial<AutonomySettings>): AutonomySettings {

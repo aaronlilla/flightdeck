@@ -12,6 +12,8 @@ import {
   closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync, writeFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { autoMergeAllowed } from './council/risk.js';
+import { autoMergeOn } from './intake/autopilot.js';
 
 import type { CliResult, ForgeDeps } from './cli.js';
 import { forge } from './cli.js';
@@ -1093,7 +1095,9 @@ export function buildChainDeps(chainEnv: ChainEnv, configDirFor: () => string, d
     gate: chainGate(deps),
     clock: () => Date.now(),
     killSwitch: () => readKillSwitch(killSwitchPath()).engaged,
-    mergeAllowed: (repo) => mergeAllowedFor(chainEnv, repo),
+    // FORGE_CHAIN_MERGE still works as an explicit list; with the autoMerge switch on
+    // (default), the council's own autoMerge list is enough for the chain too.
+    mergeAllowed: (repo) => mergeAllowedFor(chainEnv, repo) || (autoMergeOn() && autoMergeAllowed(repo)),
     append: (event) => {
       const journal = new Journal(journalPath());
       try {
