@@ -39,7 +39,7 @@ import { runCutover } from './cutover.js';
 import { CredentialHorizon, readLoginLock } from './credential-horizon.js';
 import { accountFor, buildBurnLedger, checkBudget, WindowGate } from './governor.js';
 import {
-  accountsRegistryPath, addAccount, checkAddCandidate, configDirForSession, liveRunsByAccount, loadAccounts, pickAccount, removeAccount, seedConfigDir,
+  accountsRegistryPath, addAccount, checkAddCandidate, configDirForSession, defaultLoginOff, liveRunsByAccount, loadAccounts, pickAccount, removeAccount, seedConfigDir,
 } from './accounts.js';
 import { readAccountUsage } from './accounts-usage.js';
 import { AccountsService, diskWriters, fleetLoginDir, launchAccountDecision, realProbe } from './accounts-service.js';
@@ -1346,7 +1346,9 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       // to prevent (Aaron, 2026-09-10). An EMPTY registry still falls through, because
       // that is what makes a fresh install work.
       const accountDecision = launchAccountDecision(
-        picked, accountsForRun.exhaustion('claude'), Date.now(),
+        picked,
+        { ...accountsForRun.exhaustion('claude'), machineLoginOn: !defaultLoginOff(accountsRegistryPath()) },
+        Date.now(),
       );
       if (accountDecision.refused) {
         actuatorJournal.append({
