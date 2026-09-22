@@ -224,15 +224,23 @@ export type LaunchAccountDecision =
  * typing into is not spare capacity to borrow (Aaron, 2026-09-10).
  *
  * Held-back rows are already tried first by `pickAccount`'s ranking, so reaching the
- * third case means even those are limited. There is deliberately no second bypass here.
+ * third case means even those are limited.
+ *
+ * The one exception is the Settings switch for the machine's own login (Aaron,
+ * 2026-09-12, `setDefaultLoginOff`). While he leaves that login ON, it is in the
+ * rotation, so a spent fleet falls through to it here exactly as it already does for
+ * the planner and the reasoner (`spendConfigDir`). Before this, the launcher ignored the
+ * switch: planning ran on the machine login and the worker launch then refused, so every
+ * ticket stalled between the two. Absent `machineLoginOn` keeps the old refusal.
  */
 export function launchAccountDecision(
   picked: AccountRecord | undefined,
-  state: { registered: boolean; earliestReset: number | null },
+  state: { registered: boolean; earliestReset: number | null; machineLoginOn?: boolean },
   now: number,
 ): LaunchAccountDecision {
   if (picked) return { refused: false, account: picked };
   if (!state.registered) return { refused: false };
+  if (state.machineLoginOn === true) return { refused: false };
   const when = state.earliestReset !== null && state.earliestReset > now
     ? `the earliest window frees in ${untilWords(state.earliestReset - now)}`
     : 'no reset time is on record for any of them';

@@ -106,6 +106,21 @@ describe('launchAccountDecision()', () => {
     expect(decision.refused === true && decision.reason).toContain('3h');
   });
 
+  it('falls through to the machine login when every row is spent but the login is switched on', () => {
+    const decision = launchAccountDecision(
+      undefined, { registered: true, earliestReset: RESET_EARLY, machineLoginOn: true }, NOW,
+    );
+    expect(decision.refused).toBe(false);
+    expect(decision.refused === false && decision.account).toBeUndefined();
+  });
+
+  it('still refuses when every row is spent and the login is switched off', () => {
+    const decision = launchAccountDecision(
+      undefined, { registered: true, earliestReset: RESET_EARLY, machineLoginOn: false }, NOW,
+    );
+    expect(decision.refused).toBe(true);
+  });
+
   it('refuses without a reset time when the provider gave none', () => {
     const decision = launchAccountDecision(undefined, { registered: true, earliestReset: null }, NOW);
     expect(decision.refused).toBe(true);
