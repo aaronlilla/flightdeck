@@ -48,6 +48,8 @@ import { Journal } from './journal.js';
 import { loadPolicy } from './policy.js';
 import { inboxDir, interviewRecordsDir, queueBriefsDir, journalPath, killSwitchPath, registryDir } from './paths.js';
 import { liveRunPid, Registry } from './registry.js';
+import { accountsRegistryPath, defaultLoginOff, loadAccounts, pickAccount } from './accounts.js';
+import { readAccountUsage } from './accounts-usage.js';
 import { reasonerFor } from './reasoner-claude.js';
 import { readKillSwitch } from './supervisor.js';
 import { readQueuePaused } from './console/queue-pause.js';
@@ -825,6 +827,15 @@ export function buildQueueRuntimeDeps(
     // alive. `hasRunRegistered` is not this question -- it answers "did this run ever
     // start", which stays true for a run that died an hour ago.
     runPid: (runKey) => liveRunPid(new Registry(registryDir()), runKey),
+    // Plan item 2, 2026-09-23: the same reading `pickAccount` gives a fresh launch,
+    // asked here for a park that already happened. `pickAccount` with no `live` map
+    // (every account read as zero live runs) is deliberately optimistic about
+    // concurrency ceilings -- this only answers "is anything not rate-limited right
+    // now", which is exactly the fact `recoverParkedItems` needs and no more.
+    accountHasRoom: () => (
+      pickAccount(loadAccounts(accountsRegistryPath()), readAccountUsage(), {}, Date.now(), 'claude') !== undefined
+      || !defaultLoginOff(accountsRegistryPath())
+    ),
   };
 }
 

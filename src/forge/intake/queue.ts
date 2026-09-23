@@ -530,6 +530,13 @@ export interface QueueRuntimeDeps {
    *  fallback repo is known, the same "never resolves" answer as before this field
    *  existed. */
   mergeCheckRepos?: string[];
+  /** Plan item 2, 2026-09-23: whether any linked Claude account has room right now --
+   *  the same question `pickAccount`/`launchAccountDecision` already answer for a fresh
+   *  launch, asked here for a park that already happened. Absent means an
+   *  accounts-spent park is never re-read by this pass and waits on the Warden's own
+   *  reconcile cadence instead, the behaviour every environment had before this field
+   *  existed. */
+  accountHasRoom?: () => boolean;
   clock(): number;
   killSwitch(): boolean;
   paused(): boolean;
@@ -1416,10 +1423,11 @@ async function recoverParkedItems(deps: QueueRuntimeDeps, items: QueueItem[], sl
     // provision ten workers on one tick. Journalled once, like every other decision here:
     // an item held back by the width is a decision, and skipping it in silence is the
     // thing this function's own comment promises not to do.
-    // Only a `run` recovery ends in a relaunched worker; a `checks` recovery re-enters
-    // the gate hop and provisions nothing, so it neither needs a slot nor spends one.
-    // Charging it a slot starved the relaunches the width is actually there to bound.
-    const needsSlot = verdict.reRead === 'run';   // checks and overlap re-enter the gate hop and provision nothing
+    // Only a `run` or `accounts` recovery ends in a relaunched worker; a `checks`
+    // recovery re-enters the gate hop and provisions nothing, so it neither needs a slot
+    // nor spends one. Charging it a slot starved the relaunches the width is actually
+    // there to bound.
+    const needsSlot = verdict.reRead === 'run' || verdict.reRead === 'accounts';
     if (needsSlot && slots <= 0) {
       // Its own marker, not `recoveryHeldOn`: overwriting the real reading with the width
       // made a queue oscillating around its cap write a row on every flip, which is what
@@ -1461,6 +1469,20 @@ async function recoverParkedItems(deps: QueueRuntimeDeps, items: QueueItem[], sl
         // lowercase verdict (`council/gh.ts`), and comparing against 'SUCCESS' made this
         // whole branch dead in production while the specimen stayed green.
         clear = found.toLowerCase() === 'success';
+      }
+    } else if (verdict.reRead === 'accounts') {
+      // Plan item 2: the short check the plan asks for -- every 15s tick, since this
+      // module is never told the queue's own poll cadence, and a check this cheap (one
+      // in-memory read, no network) costs nothing to run every tick rather than on a
+      // window of its own the way `checks` and `run` recoveries are throttled. No cap
+      // to spend here either: unlike `checks` (a GitHub call) or `run` (a relaunch),
+      // a `false` reading changes nothing and writes no row (see the `!clear` branch
+      // below, which is silent for a `found` string that has not changed).
+      if (!deps.accountHasRoom) {
+        found = 'no account reader wired';
+      } else {
+        found = deps.accountHasRoom() ? 'an account has room again' : 'every account still reads as spent';
+        clear = deps.accountHasRoom();
       }
     } else if (!deps.runPid) {
       found = 'no liveness reader wired';
@@ -1505,9 +1527,10 @@ async function recoverParkedItems(deps: QueueRuntimeDeps, items: QueueItem[], sl
         checksReads: 0, checksReadAt: 0,
         // `retriedAt` means "a person asked for this run to be looked at again", and
         // `relaunchOnRetryOrPark` answers it by provisioning a NEW worker. That is right
-        // for a run that died and wrong for checks that went green: there the run
-        // finished correctly and the item only needs its gate hop read again.
-        ...(item.runKey && verdict.reRead === 'run' ? { retriedAt: deps.clock() } : {}),
+        // for a run that died, and for `accounts` (the whole reason the item parked was
+        // that nothing could launch), and wrong for checks that went green: there the
+        // run finished correctly and the item only needs its gate hop read again.
+        ...(item.runKey && (verdict.reRead === 'run' || verdict.reRead === 'accounts') ? { retriedAt: deps.clock() } : {}),
         ...(item.pendingGatePolls ? { pendingGatePolls: 0 } : {}),
       },
       deps, 'queue.recovered',
