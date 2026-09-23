@@ -1868,6 +1868,78 @@ describe('runQueueTick', () => {
 
     expect(calls).toBe(1);
   });
+
+  // Finding #1/#6: `advanceItem` for independent items used to run one after another
+  // inside a `for` loop with `await` in the body -- a council/gate round on item A held
+  // up item B's launch even though nothing connects them. Two items admitted into the
+  // same tick must overlap in flight, not queue behind each other.
+  it('advances independent in-flight items concurrently, not one after another', async () => {
+    const store = tempStore();
+    store.append({
+      id: 'q1', at: 1000, source: 'ticket', input: 'A-1', ticket: 'A-1', repo: 'owner/name',
+      briefPath: 'C:/briefs/a-1.md', branch: 'feature/a-1', worktreePath: 'C:/worktrees/repo--a-1', base: 'develop',
+      state: 'running', runKey: 'a-1', reason: null, pr: null, journalIds: [], createdAt: 1000, updatedAt: 1000,
+    });
+    store.append({
+      id: 'q2', at: 1000, source: 'ticket', input: 'A-2', ticket: 'A-2', repo: 'owner/name',
+      briefPath: 'C:/briefs/a-2.md', branch: 'feature/a-2', worktreePath: 'C:/worktrees/repo--a-2', base: 'develop',
+      state: 'running', runKey: 'a-2', reason: null, pr: null, journalIds: [], createdAt: 1000, updatedAt: 1000,
+    });
+    let inFlightAtOnce = 0;
+    let maxInFlightAtOnce = 0;
+    const releases: Array<() => void> = [];
+    const { deps } = buildDeps(store, {
+      maxInFlight: () => 2,
+      launcher: {
+        status: async () => {
+          inFlightAtOnce += 1;
+          maxInFlightAtOnce = Math.max(maxInFlightAtOnce, inFlightAtOnce);
+          await new Promise<void>((resolve) => releases.push(resolve));
+          inFlightAtOnce -= 1;
+          return { finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' };
+        },
+      },
+    });
+
+    const tick = runQueueTick(deps, store.all());
+    // Give both `status` calls a chance to have started before either resolves.
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(maxInFlightAtOnce).toBe(2);
+    releases.forEach((release) => release());
+    await tick;
+  });
+
+  // Finding #6/#9: the merged-elsewhere sweep walked every `review` item with
+  // `await deps.prMerged(...)` inside a `for` loop, so N review items meant N sequential
+  // GitHub round-trips every two minutes. Bounded concurrency should let independent
+  // `prMerged` checks overlap.
+  it('checks merged-review items with bounded concurrency, not one after another', async () => {
+    const { resetMergedSweep } = await import('../../../src/forge/intake/queue.js');
+    resetMergedSweep();
+    const store = tempStore();
+    const item1 = addTicketItem(store, 'ABC-1', 1000);
+    store.append({ id: item1.id, at: 2000, state: 'review', repo: 'owner/name', pr: { no: 201, url: 'u', files: 1, add: 1, del: 0, draft: true }, updatedAt: 2000 } as never);
+    const item2 = addTicketItem(store, 'ABC-2', 1000);
+    store.append({ id: item2.id, at: 2000, state: 'review', repo: 'owner/name', pr: { no: 202, url: 'u', files: 1, add: 1, del: 0, draft: true }, updatedAt: 2000 } as never);
+
+    let inFlightAtOnce = 0;
+    let maxInFlightAtOnce = 0;
+    const { deps } = buildDeps(store, {});
+    deps.prMerged = async (_repo, pr) => {
+      inFlightAtOnce += 1;
+      maxInFlightAtOnce = Math.max(maxInFlightAtOnce, inFlightAtOnce);
+      await new Promise((resolve) => setImmediate(resolve));
+      inFlightAtOnce -= 1;
+      return pr === 201 || pr === 202;
+    };
+
+    await runQueueTick(deps, store.all());
+
+    expect(maxInFlightAtOnce).toBeGreaterThan(1);
+    expect(store.get(item1.id)?.state).toBe('done');
+    expect(store.get(item2.id)?.state).toBe('done');
+  });
 });
 describe('a branch must sit on the latest base before anyone reviews it', () => {
   // Aaron, 2026-09-07. A queue that runs for hours branches off a base that keeps moving,
