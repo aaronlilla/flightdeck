@@ -26,7 +26,7 @@ import {
   WindowGate,
   type Account,
 } from '../../src/forge/governor.js';
-import { classFor, providerFor } from '../../src/forge/policy.js';
+import { classFor, modelFor, providerFor } from '../../src/forge/policy.js';
 
 let dir: string;
 let path: string;
@@ -42,15 +42,22 @@ function writeEvents(...rows: Partial<ForgeEvent>[]): ForgeEvent[] {
 }
 
 describe('classes assigned with a provider at planning time', () => {
-  it('reads an audit-judge ticket as codex and an implement-class ticket as claude', () => {
-    expect(providerFor('audit-judge')).toBe('codex');
+  // Aaron's 2026-09-23 standing order (full autonomous mode): every class in the
+  // checked-in policy reasons on claude now -- there is no Codex lane left anywhere,
+  // including the council's own audit-judge (`council/orchestrate.ts`). `providerFor`
+  // still exists so a policy file COULD name a different provider per class; the
+  // checked-in one simply doesn't any more.
+  it('reads audit-judge as claude, same as an implement-class ticket', () => {
+    expect(providerFor('audit-judge')).toBe('claude');
     expect(providerFor('implement')).toBe('claude');
   });
 
-  it('is not a constant: two different classes really do read two different providers', () => {
-    // The falsifier this specimen exists to catch: a provider field hardcoded to one
-    // value would pass every other specimen in this file and only fail here.
-    expect(providerFor('audit-judge')).not.toBe(providerFor('implement'));
+  it('is not a constant: two different classes really do read two different models', () => {
+    // The falsifier this specimen exists to catch: a model field hardcoded to one
+    // value would pass every other specimen in this file and only fail here. Provider
+    // itself is a real constant now that Codex is gone from the checked-in policy, so
+    // this checks the field that still varies by class.
+    expect(modelFor('audit-judge')).not.toBe(modelFor('implement'));
   });
 });
 

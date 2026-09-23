@@ -41,7 +41,9 @@ describe('the policy file', () => {
   it('declares every class the Spine names', () => {
     const wanted = [
       'triage', 'plan', 'master', 'implement', 'implement-hard', 'verify',
-      'audit-lens', 'audit-judge', 'research', 'evaluate', 'sweep', 'narrate',
+      // Aaron's 2026-09-23 standing order (full autonomous mode): a dedicated
+      // opus-5-5 bug-hunt class runs after a clean audit and before merge.
+      'audit-lens', 'audit-judge', 'bug-hunt', 'research', 'evaluate', 'sweep', 'narrate',
       // always-on-warden R-54: the drift judge's two classes.
       'drift-judge', 'drift-confirm',
       // R-68: the queue's own ticket planner, sonnet/medium, distinct from `plan`.
@@ -328,17 +330,20 @@ describe('maxDiffLinesFor: the per-hunk cap a lens\'s diff is read at', () => {
   });
 });
 
-// accounts-connect-routing, Contract gap 3: the two audit classes reason on Codex, never
-// Claude, so a claude-account rate limit never stalls a review. Every key matching
-// `/^audit-/` is checked, not a hand-typed pair, so a third audit class added later is
-// covered automatically rather than silently defaulting to `claude`.
-describe('every audit-* class reasons on codex', () => {
-  it('checked-in model-policy.json names codex for every audit-* class', () => {
+// Aaron's 2026-09-23 standing order (full autonomous mode): every audit/review class --
+// audit-lens, audit-judge, and bug-hunt -- reasons on claude/opus-5-5, never Codex.
+// There is no Codex lane left in the council at all (`council/orchestrate.ts`). Every key
+// matching `/^audit-/` (plus `bug-hunt`) is checked, not a hand-typed pair, so a third
+// review class added later is covered automatically rather than silently defaulting away
+// from opus-5-5.
+describe('every audit/review class reasons on claude/opus-5-5', () => {
+  it('checked-in model-policy.json names claude/opus-5-5 for every audit-*/bug-hunt class', () => {
     const policy = loadPolicy();
-    const auditClassNames = Object.keys(policy.classes).filter((name) => /^audit-/.test(name));
-    expect(auditClassNames.length).toBeGreaterThan(0);
-    for (const name of auditClassNames) {
-      expect(providerFor(name)).toBe('codex');
+    const reviewClassNames = Object.keys(policy.classes).filter((name) => /^audit-/.test(name) || name === 'bug-hunt');
+    expect(reviewClassNames.length).toBeGreaterThan(0);
+    for (const name of reviewClassNames) {
+      expect(providerFor(name)).toBe('claude');
+      expect(modelFor(name)).toBe('opus-5-5');
     }
   });
 });
