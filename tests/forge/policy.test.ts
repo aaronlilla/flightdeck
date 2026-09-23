@@ -40,7 +40,7 @@ import { join } from 'node:path';
 describe('the policy file', () => {
   it('declares every class the Spine names', () => {
     const wanted = [
-      'triage', 'plan', 'master', 'implement', 'implement-hard', 'verify',
+      'triage', 'plan', 'master', 'implement', 'implement-light', 'implement-hard', 'verify',
       'audit-lens', 'audit-judge', 'research', 'evaluate', 'sweep', 'narrate',
       // always-on-warden R-54: the drift judge's two classes.
       'drift-judge', 'drift-confirm',
@@ -52,7 +52,7 @@ describe('the policy file', () => {
 
   it('gives every class maxTurns x 90,000ms rounded up to the nearest 60,000ms', () => {
     const cases: Array<[string, number]> = [
-      ['implement', 10_800_000], ['implement-hard', 10_800_000], ['verify', 3_600_000],
+      ['implement', 10_800_000], ['implement-light', 5_400_000], ['implement-hard', 10_800_000], ['verify', 3_600_000],
       ['evaluate', 540_000], ['triage', 1_800_000], ['plan', 5_400_000], ['master', 3_600_000],
       ['audit-lens', 3_600_000], ['audit-judge', 2_700_000], ['research', 3_600_000],
       ['sweep', 1_800_000], ['narrate', 120_000], ['drift-judge', 120_000], ['drift-confirm', 120_000],
@@ -76,9 +76,10 @@ describe('the policy file', () => {
     }
   });
 
-  it('runs implementation on sonnet and only implement-hard on opus', () => {
+  it('runs implementation on sonnet, light on haiku, hard on opus-5-5', () => {
     expect(modelFor('implement')).toBe('sonnet');
-    expect(modelFor('implement-hard')).toBe('opus');
+    expect(modelFor('implement-light')).toBe('haiku');
+    expect(modelFor('implement-hard')).toBe('opus-5-5');
     expect(modelFor('plan')).toBe('opus-5-5');
   });
 
@@ -114,6 +115,18 @@ describe('the policy file', () => {
 describe('the tier a brief asks for', () => {
   it('reads an explicit tier line as implement-hard', () => {
     expect(tierOfBrief('# Goal\n\ntier: opus\n\nbody\n')).toBe('implement-hard');
+  });
+
+  it('maps the rubric tier "hard" to implement-hard', () => {
+    expect(tierOfBrief('# Goal\n\ntier: hard\n\nbody\n')).toBe('implement-hard');
+  });
+
+  it('maps the rubric tier "light" to implement-light', () => {
+    expect(tierOfBrief('# Goal\n\ntier: light\n\nbody\n')).toBe('implement-light');
+  });
+
+  it('maps the rubric tier "standard" to implement', () => {
+    expect(tierOfBrief('# Goal\n\ntier: standard\n\nbody\n')).toBe('implement');
   });
 
   it('reads the same line inside front matter', () => {

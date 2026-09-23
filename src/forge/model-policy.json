@@ -118,7 +118,8 @@
     "plan": {"model": "opus-5-5", "effort": "medium", "maxContext": 200000, "maxTurns": 60, "provider": "claude", "maxWallMs": 5400000},
     "master": {"model": "opus-5-5", "effort": "medium", "maxContext": 30000, "maxTurns": 40, "provider": "claude", "maxWallMs": 3600000},
     "implement": {"model": "sonnet", "effort": "medium", "maxContext": 150000, "maxTurns": 120, "provider": "claude", "maxWallMs": 10800000},
-    "implement-hard": {"model": "opus", "effort": "high", "maxContext": 150000, "maxTurns": 120, "provider": "claude", "maxWallMs": 10800000},
+    "implement-light": {"model": "haiku", "effort": "low", "maxContext": 75000, "maxTurns": 60, "provider": "claude", "maxWallMs": 5400000},
+    "implement-hard": {"model": "opus-5-5", "effort": "high", "maxContext": 150000, "maxTurns": 120, "provider": "claude", "maxWallMs": 10800000},
     "verify": {"model": "sonnet", "effort": "medium", "maxContext": 120000, "maxTurns": 40, "provider": "claude", "maxWallMs": 3600000},
     "audit-lens": {"model": "opus-5-5", "effort": "medium", "maxContext": 120000, "maxTurns": 40, "provider": "claude", "timeoutMs": 480000, "maxWallMs": 3600000},
     "audit-judge": {"model": "opus-5-5", "effort": "high", "maxContext": 150000, "maxTurns": 30, "provider": "claude", "maxWallMs": 2700000},
@@ -144,6 +145,7 @@
       "plan": 20,
       "master": 10,
       "implement": 30,
+      "implement-light": 10,
       "implement-hard": 75,
       "verify": 15,
       "audit-lens": 15,
@@ -161,6 +163,8 @@
     "opus": "implement-hard",
     "hard": "implement-hard",
     "sonnet": "implement",
+    "standard": "implement",
+    "light": "implement-light",
     "default": "implement"
   },
   "subagents": {
