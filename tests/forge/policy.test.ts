@@ -79,7 +79,7 @@ describe('the policy file', () => {
   it('runs implementation on sonnet and only implement-hard on opus', () => {
     expect(modelFor('implement')).toBe('sonnet');
     expect(modelFor('implement-hard')).toBe('opus');
-    expect(modelFor('plan')).toBe('fable');
+    expect(modelFor('plan')).toBe('opus-5-5');
   });
 
   it('caps an implement session at 150000 tokens', () => {
@@ -89,7 +89,7 @@ describe('the policy file', () => {
   });
 
   it('keeps the master cheap enough to stay a master', () => {
-    expect(modelFor('master')).toBe('fable');
+    expect(modelFor('master')).toBe('opus-5-5');
     expect(contextFor('master')).toBeLessThanOrEqual(30_000);
   });
 

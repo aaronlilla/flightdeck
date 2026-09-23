@@ -16,6 +16,10 @@
       "sonnet",
       "haiku"
     ],
+    "opus-5-5": [
+      "sonnet",
+      "haiku"
+    ],
     "opus": [
       "sonnet",
       "haiku"
@@ -27,6 +31,7 @@
   },
   "aliases": {
     "fable": "claude-fable-5",
+    "opus-5-5": "claude-opus-5-5",
     "opus": "claude-opus-5",
     "sonnet": "claude-sonnet-5",
     "haiku": "claude-haiku-4-5-20251001"
@@ -45,6 +50,12 @@
   ],
   "prices": {
     "fable": {
+      "input": 15.0,
+      "cacheRead": 1.5,
+      "cacheWrite": 18.75,
+      "output": 75.0
+    },
+    "opus-5-5": {
       "input": 15.0,
       "cacheRead": 1.5,
       "cacheWrite": 18.75,
@@ -104,8 +115,8 @@
   ],
   "classes": {
     "triage": {"model": "sonnet", "effort": "low", "maxContext": 60000, "maxTurns": 20, "provider": "claude", "maxWallMs": 1800000},
-    "plan": {"model": "fable", "effort": "high", "maxContext": 200000, "maxTurns": 60, "provider": "codex", "maxWallMs": 5400000},
-    "master": {"model": "fable", "effort": "medium", "maxContext": 30000, "maxTurns": 40, "provider": "codex", "maxWallMs": 3600000},
+    "plan": {"model": "opus-5-5", "effort": "medium", "maxContext": 200000, "maxTurns": 60, "provider": "codex", "maxWallMs": 5400000},
+    "master": {"model": "opus-5-5", "effort": "medium", "maxContext": 30000, "maxTurns": 40, "provider": "codex", "maxWallMs": 3600000},
     "implement": {"model": "sonnet", "effort": "medium", "maxContext": 150000, "maxTurns": 120, "provider": "claude", "maxWallMs": 10800000},
     "implement-hard": {"model": "opus", "effort": "high", "maxContext": 150000, "maxTurns": 120, "provider": "claude", "maxWallMs": 10800000},
     "verify": {"model": "sonnet", "effort": "medium", "maxContext": 120000, "maxTurns": 40, "provider": "claude", "maxWallMs": 3600000},

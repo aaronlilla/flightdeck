@@ -13,14 +13,14 @@ export type Phase = 'conversation' | 'planning' | 'implementation';
 export type Tier = 'plan' | 'implementation' | 'research';
 
 export const MODEL_BY_TIER: Record<Tier, string> = {
-  plan: 'claude-fable-5',
+  plan: 'claude-opus-5-5',
   implementation: 'claude-opus-5',
   research: 'claude-sonnet-5',
 };
 
 /** Short names accepted by the model picker, kept for messages and commands. */
 export const ALIAS_BY_TIER: Record<Tier, string> = {
-  plan: 'fable',
+  plan: 'opus-5-5',
   implementation: 'opus',
   research: 'sonnet',
 };
