@@ -1121,6 +1121,11 @@ export function chainGh(): ChainGh {
 export function chainShipUnfinishedWork(): NonNullable<QueueRuntimeDeps['shipUnfinishedWork']> {
   return async ({ item, lastText }) => {
     const { worktreePath, branch, repo, base } = item;
+    // Never push a protected branch, whatever the item says (GITFLOW: develop and main
+    // move only by reviewed merge).
+    if (!branch || /^(develop|main|master)$/i.test(branch) || branch === base) {
+      return { ok: false, reason: `refusing to ship: ${branch || 'no branch'} is not a feature branch` };
+    }
     const git = async (argv: string[], raw = false): Promise<RunResult> => execRun({
       argv: [
         'git', '-C', worktreePath,
@@ -1143,9 +1148,11 @@ export function chainShipUnfinishedWork(): NonNullable<QueueRuntimeDeps['shipUnf
     const aheadOfBase = fetched.ok
       ? Number.parseInt((await git(['rev-list', '--count', `origin/${base}..HEAD`], true)).tail.trim(), 10) || 0
       : 0;
-    const upstreamAhead = Number.parseInt(
-      (await git(['rev-list', '--count', `origin/${branch}..HEAD`], true)).tail.trim(), 10,
-    ) || 0;
+    const upstreamCount = await git(['rev-list', '--count', `origin/${branch}..HEAD`], true);
+    // A branch never pushed has no origin/<branch>; everything ahead of base is unpushed.
+    const upstreamAhead = upstreamCount.ok
+      ? Number.parseInt(upstreamCount.tail.trim(), 10) || 0
+      : aheadOfBase;
     const hasUnpushedWork = aheadOfBase > 0 && upstreamAhead > 0;
     if (!committedLeftover.length && !hasUnpushedWork) return { ok: false };
 
