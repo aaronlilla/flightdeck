@@ -14,6 +14,7 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import type { BlockerBoard } from './blockers.js';
 import { chainCouncil, chainGate, chainGh, chainRebase, chainLauncher, chainLaunchGoal } from './chain-wire.js';
 import {
   checkoutFor, declaredRepoKind, repoKindFor as repoKindForEnv, verifyCommandFor, type ChainEnv,
@@ -544,6 +545,28 @@ export function queueBranchMerged(chainEnv: ChainEnv): NonNullable<QueueRuntimeD
   };
 }
 
+/** Plan item 5, 2026-09-23: raises a board blocker keyed to the ticket and PR when
+ *  `postMergeVerify` gives up after its 30-minute wait -- the fix for the 391.8-hour
+ *  `deploy-run-missing` sink (`Q-7409e170`/BBZ-72 and three other tickets, 04-failures.md
+ *  rank 1). Shares the same `BlockerBoard` shape (`raise(key, what, run)`) every other
+ *  wall on a run already goes through (`drift-blockers.ts`), so it shows up on the
+ *  Blockers view the same way a credential lapse or a billing refusal would, rather than
+ *  living only in the queue item's own reason string nobody but that card's own reader
+ *  ever sees. Keyed by the item id, not the run key: a merged item has usually already
+ *  finished its worker run, so a run-scoped key would name a process that no longer
+ *  exists to unblock. */
+export function queueRaiseDeployBlocker(
+  blockers: BlockerBoard,
+): NonNullable<QueueRuntimeDeps['raiseDeployBlocker']> {
+  return async ({ item, pr }) => {
+    const ticket = item.ticket ?? item.id;
+    const key = `deploy-run-missing:${item.id}`;
+    const what = `ticket ${ticket}'s PR #${pr.no} (${pr.url}) merged, but its deploy run was `
+      + 'not found after 30 minutes -- check the workflow run list by hand';
+    await blockers.raise(key, what, item.id);
+  };
+}
+
 /** R-22: routes the Merge click's actual merge through git instead of `gh pr merge`,
  *  against the repo's own `FORGE_REPO_CHECKOUTS` entry on the base branch. A repo with no
  *  checkout configured refuses rather than guessing at a path. Wraps `execRun` as a
@@ -571,7 +594,9 @@ export function queueGitMerge(chainEnv: ChainEnv): NonNullable<QueueMergeDeps['g
  * wiring this into a live route is the next hop for whichever stream builds that
  * construction call.
  */
-export function queueMergeDeps(deps: ForgeDeps, store: QueueRuntimeDeps['store'], chainEnv?: ChainEnv): QueueMergeDeps {
+export function queueMergeDeps(
+  deps: ForgeDeps, store: QueueRuntimeDeps['store'], chainEnv?: ChainEnv, blockers?: BlockerBoard,
+): QueueMergeDeps {
   return {
     mergeAllowed: queueMergeAllowed(),
     gate: chainGate(deps),
@@ -599,6 +624,7 @@ export function queueMergeDeps(deps: ForgeDeps, store: QueueRuntimeDeps['store']
         : { ok: false, reason: result.stderr.slice(0, 300) };
     },
     ...(chainEnv ? { postMergeVerify: queuePostMergeVerify(chainEnv), gitMerge: queueGitMerge(chainEnv) } : {}),
+    ...(blockers ? { raiseDeployBlocker: queueRaiseDeployBlocker(blockers) } : {}),
   };
 }
 
@@ -699,7 +725,7 @@ export function queuePromoteDeps(chainEnv: ChainEnv): QueuePromoteDeps {
 
 export function buildQueueRuntimeDeps(
   chainEnv: ChainEnv, configDirFor: () => string, deps: ForgeDeps, store: QueueRuntimeDeps['store'],
-  maxInFlight: () => number = readQueueWidth,
+  maxInFlight: () => number = readQueueWidth, blockers?: BlockerBoard,
 ): QueueRuntimeDeps {
   return {
     // The tick's retry for a pull request the merge could not close at the time --
@@ -768,6 +794,7 @@ export function buildQueueRuntimeDeps(
     // Settings switch (`autonomy.json` autoMerge, default ON, read every tick).
     mergeAllowed: (repo) => autoMergeOn() && autoMergeAllowed(repo),
     postMergeVerify: queuePostMergeVerify(chainEnv),
+    ...(blockers ? { raiseDeployBlocker: queueRaiseDeployBlocker(blockers) } : {}),
     prMerged: async (repo, pr) => {
       const result = await execRun({
         argv: ['gh', 'pr', 'view', String(pr), '--repo', repo, '--json', 'mergedAt'],

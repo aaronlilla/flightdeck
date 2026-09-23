@@ -1913,6 +1913,38 @@ describe('mergeItem: A.7', () => {
     expect(rows[1]).toMatchObject({ id: item.id, reason: 'merged; deploy run not found after 30 minutes' });
   });
 
+  it('plan item 5: raises a board blocker naming the ticket and PR when the deploy run never turns up', async () => {
+    const item = reviewItem();
+    const raised: Array<{ item: { id: string }; pr: { no: number; url: string } }> = [];
+    await mergeItem(item, {
+      mergeAllowed: () => true,
+      gate: async () => ({ merged: true }),
+      postMergeVerify: async () => undefined,
+      raiseDeployBlocker: async (input) => { raised.push(input); },
+      clock: () => 3000,
+      store: { append: () => {} } as never,
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(raised).toHaveLength(1);
+    expect(raised[0]?.item.id).toBe(item.id);
+    expect(raised[0]?.pr).toEqual({ no: 9, url: 'https://github.com/owner/name/pull/9' });
+  });
+
+  it('plan item 5: never raises the deploy blocker once the deploy run is found', async () => {
+    const item = reviewItem();
+    const raised: unknown[] = [];
+    await mergeItem(item, {
+      mergeAllowed: () => true,
+      gate: async () => ({ merged: true }),
+      postMergeVerify: async () => ({ android: 'update abc', ios: 'update def' }),
+      raiseDeployBlocker: async (input) => { raised.push(input); },
+      clock: () => 3000,
+      store: { append: () => {} } as never,
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(raised).toHaveLength(0);
+  });
+
   it('marks the item mergedBy: queue at once so the merged-elsewhere sweep never relabels it (BBZ-178)', async () => {
     const item = reviewItem();
     const rows: Array<Record<string, unknown>> = [];

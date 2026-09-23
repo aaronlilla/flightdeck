@@ -478,6 +478,16 @@ export interface QueueRuntimeDeps {
    *  already gets. Absent means an auto-merged item lands on `done` with no OTA line,
    *  the same fallback `mergeItem` already has. */
   postMergeVerify?: (input: { repo: string; branch: string; mergeSha?: string }) => Promise<{ android: string; ios: string } | undefined>;
+  /** Plan item 5, 2026-09-23: when `postMergeVerify` gives up after its 30-minute wait
+   *  and answers `undefined`, this raises a board blocker naming the ticket and the PR
+   *  instead of the item's reason line being the only place that 30-minute silence is
+   *  ever recorded. `BBZ-72`/`Q-7409e170` and three other tickets sat 391.8 hours total
+   *  with nobody told beyond that one queue-item reason string -- a person reading the
+   *  board never saw it unless they opened that specific card. Best effort: called from
+   *  inside `postMergeVerify`'s own `.then`, after the item's `done` transition has
+   *  already landed, so a failure here can never unwind or delay the merge itself.
+   *  Absent means this environment never wires it, and the old silent behaviour stands. */
+  raiseDeployBlocker?: (input: { item: QueueItem; pr: { no: number; url: string } }) => Promise<void>;
   /** 2026-09-08: launches a `goal` item -- its own worktree, its own gates, no brief
    *  file to plan or amend. Absent means a goal item always fails at the launch hop;
    *  every other source ignores this. */
@@ -1281,6 +1291,12 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
         .then((reason) => {
           const at = deps.clock();
           deps.store.append({ id: item.id, at, reason, updatedAt: at });
+          // Plan item 5: the reason line above is not enough on its own -- it only
+          // reaches a person who opens this exact card. A board blocker names the
+          // ticket and the PR so the 30-minute silence stops being silent.
+          if (reason.startsWith('merged; deploy run not found') && deps.raiseDeployBlocker) {
+            void deps.raiseDeployBlocker({ item, pr: { no: pr.number, url: pr.url } }).catch(() => undefined);
+          }
         });
     }
     return merged;
@@ -1618,6 +1634,11 @@ export interface QueueMergeDeps {
    *  landed. Absent means this environment never wires it, and the item still lands on
    *  `done`, just without an OTA line in its reason. */
   postMergeVerify?: (input: { repo: string; branch: string; mergeSha?: string }) => Promise<{ android: string; ios: string } | undefined>;
+  /** Plan item 5, 2026-09-23: same shape and same best-effort contract as
+   *  `QueueRuntimeDeps.raiseDeployBlocker`, wired here so a person's own Merge click
+   *  raises the same board blocker an auto-merge would when the deploy run never turns
+   *  up. Absent means this click's own 30-minute timeout stays silent, the old behaviour. */
+  raiseDeployBlocker?: (input: { item: QueueItem; pr: { no: number; url: string } }) => Promise<void>;
   /** R-22: when present, the Merge click lands the PR with git itself: fetch, squash onto
    *  a local checkout of the base, commit, push, instead of `gh pr merge`. That way a
    *  GitHub rate limit on mutations never blocks something already reviewed. The one API
@@ -1743,6 +1764,11 @@ export async function mergeItem(item: QueueItem, deps: QueueMergeDeps): Promise<
       .then((reason) => {
         const at = deps.clock();
         deps.store.append({ id: item.id, at, reason, updatedAt: at });
+        // Plan item 5: same board blocker the queue's own auto-merge raises -- a
+        // person's Merge click must not go quiet after 30 minutes either.
+        if (reason.startsWith('merged; deploy run not found') && deps.raiseDeployBlocker) {
+          void deps.raiseDeployBlocker({ item, pr: { no: item.pr!.no, url: item.pr!.url } }).catch(() => undefined);
+        }
       });
   }
   return { ok: true, message: patch.reason ?? 'merged', item: { ...item, ...patch } };

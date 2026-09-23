@@ -652,6 +652,18 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       const whatIsJira = jiraConfigFromEnv();
       const whatIsReader = whatIsJira ? createJiraWriteClient(whatIsJira) : null;
 
+      // Plan item 5, 2026-09-23: the queue's own blocker board for a deploy run that
+      // never turns up -- shares the Blockers view's own journal/actuator shape
+      // (`drift-blockers.ts`), built here rather than reused from the Warden's own
+      // `wardenBlockers` below since this board has to exist before either `queueMergeDeps`
+      // or `buildQueueRuntimeDeps` are called, both of which run ahead of the Warden's own
+      // wiring in this function.
+      const queueBlockersJournal = new Journal(journalPath());
+      const queueBlockersActuator = new WardenActuator({
+        journal: queueBlockersJournal, journalPath: journalPath(), registry, lanes,
+      });
+      const queueBlockers = new BlockerBoard({ journal: queueBlockersJournal, actuator: queueBlockersActuator });
+
       const server = new ForgeServer({
         lanes, inbox, journalPath: journalPath(), journalCache: sharedJournalCache, registry,
         // R-101: the Jira ticket poll runs on its own thread, so a new ticket reaches the
@@ -701,7 +713,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         // repos on FORGE_QUEUE_MERGE_REPOS and then reads the develop deploy's outcome per
         // platform; Promote reports whether the production workflow exists and refuses
         // the dispatch until that decision is wired.
-        queueMergeDeps: queueMergeDeps(deps, queueStore, readChainEnv()),
+        queueMergeDeps: queueMergeDeps(deps, queueStore, readChainEnv(), queueBlockers),
         queuePromoteDeps: queuePromoteDeps(readChainEnv()),
       });
       const livenessJournal = new Journal(journalPath());
@@ -984,7 +996,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         process.once('exit', () => queueLock.release());
         const queueJournal = new Journal(journalPath());
         const queueDeps = {
-          ...buildQueueRuntimeDeps(chainEnv, configDirForLaunch, deps, queueStore),
+          ...buildQueueRuntimeDeps(chainEnv, configDirForLaunch, deps, queueStore, undefined, queueBlockers),
           // What `forge clear` resets, minus the zero-turn-start count: a retry relaunching
           // the same run key must not be refused on the first park's stored reason, but the
           // breaker still stops a run that keeps dying on start.
@@ -1139,7 +1151,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       let selfLine = '';
       const selfLoop = buildSelfLoop({
         chainEnv: readChainEnv(), store: queueStore,
-        mergeDeps: queueMergeDeps(deps, queueStore, readChainEnv()), runningHead: runtimeHead(),
+        mergeDeps: queueMergeDeps(deps, queueStore, readChainEnv(), queueBlockers), runningHead: runtimeHead(),
       });
       if (selfLoop.enabled && queueLock?.ok) {
         const selfSeconds = Number(process.env['FORGE_SELF_POLL_S']) || 300;
