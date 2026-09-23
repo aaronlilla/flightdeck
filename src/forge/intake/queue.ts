@@ -1548,6 +1548,13 @@ export async function runQueueTick(deps: QueueRuntimeDeps, items: QueueItem[]): 
   void retryOpenPrCloses(items, {
     ...(deps.closePr ? { closePr: deps.closePr } : {}),
     ...(deps.append ? { append: deps.append } : {}),
+  }).then((closedIds) => {
+    // Record the close on the item, or the next tick asks GitHub again for ever (#188/#189
+    // were asked ~41,600 times on 2026-09-23 and tripped the GraphQL rate limit).
+    for (const id of closedIds) {
+      const item = items.find((candidate) => candidate.id === id);
+      if (item?.pr) deps.store.append({ id, at: Date.now(), pr: { ...item.pr, closed: true } } as never);
+    }
   }).catch(() => undefined);
 
   const inFlight = items.filter((item) => QUEUE_IN_FLIGHT_STATES.includes(item.state));
@@ -1880,6 +1887,13 @@ export async function retryOpenPrCloses(items: QueueItem[], deps: RetryCloseDeps
         comment: `Merged into ${base}${where}. Closing this, since the squash lands a new commit and GitHub cannot see the branch in it.`,
       });
       if (result && result.ok === false) {
+        // "already merged"/"already closed" is the goal state, not a failure. Treating it
+        // as a retry hammered GitHub ~41,600 times for PRs #188/#189 and tripped the
+        // account's GraphQL rate limit (2026-09-23).
+        if (/already (merged|closed)/i.test(result.reason ?? '')) {
+          closed.push(item.id);
+          continue;
+        }
         deps.append?.({
           event: 'queue.pr-close-failed', actor: 'queue', itemId: item.id,
           pr: pr.no, error: result.reason ?? 'no reason given', retry: true,

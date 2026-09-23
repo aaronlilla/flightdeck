@@ -85,4 +85,15 @@ describe('closing a pull request the queue already merged', () => {
   it('does nothing at all with no closer wired, rather than throwing', async () => {
     await expect(retryOpenPrCloses([merged('Q-1')], {})).resolves.toEqual([]);
   });
+
+  // 2026-09-23: GitHub answered "can't be closed because it was already merged" for #188
+  // and #189 and the sweep retried every tick, ~41,600 times, until the account hit its
+  // GraphQL rate limit. Already merged or closed is the goal state: record it as closed.
+  it('counts an "already merged" refusal as closed, so it is never retried', async () => {
+    const append = vi.fn();
+    const closePr = vi.fn(async () => ({ ok: false, reason: "X Pull request o/n#188 can't be closed because it was already merged\n" }));
+    const closed = await retryOpenPrCloses([merged('Q-1')], { closePr, append } as never);
+    expect(closed).toEqual(['Q-1']);
+    expect(append).not.toHaveBeenCalled();
+  });
 });
