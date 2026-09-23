@@ -366,6 +366,61 @@ describe('the hourly cap', () => {
   }, 60_000);
 });
 
+/** A fake `query` that always throws the accounts-spent error `console/agent.ts` and
+ *  `reasoner-claude.ts` throw when every linked account is over quota. */
+function accountsSpentQuery() {
+  let opened = 0;
+  const fn = ((params: { prompt: string | AsyncIterable<unknown>; options?: Options }) => {
+    opened += 1;
+    async function* generate() {
+      yield {
+        type: 'system', subtype: 'init', session_id: 'narrate-spent',
+        model: params.options?.model ?? '', cwd: params.options?.cwd ?? '',
+        tools: [], slash_commands: [],
+      };
+      throw new Error('every linked account is spent, and this machine\'s own login is switched off in Settings');
+    }
+    return generate() as unknown as ReturnType<QueryFn>;
+  }) as QueryFn;
+  return { fn, opened: () => opened };
+}
+
+describe('Plan item 2: every account spent', () => {
+  it('parks once per window: no second call, no second journal row, until the window clears', async () => {
+    const spent = accountsSpentQuery();
+    let clock = 1_000_000;
+    const journalPath = join(home, 'fleet.jsonl');
+    const journal = new Journal(journalPath);
+    const reasoner = reasonerFor('claude', { journal, queryFn: spent.fn, cwd: home, policyPath });
+    const narrator = new Narrator({
+      reasoner, journal, home, policyPath, now: () => clock,
+    });
+
+    // First read opens a call, which fails on the accounts-spent error.
+    const first = narrator.get({ ...merged, facts: { ...merged.facts, pr: 1 } });
+    expect(first.glance).toBe(merged.template);
+    await narrator.idle();
+    expect(spent.opened()).toBe(1);
+    expect(rows(journalPath).filter((row) => row['event'] === 'narration.failed')).toHaveLength(1);
+
+    // A second, distinct key polled inside the backoff window costs no call and no row:
+    // the reading is refused before it is even enqueued.
+    const second = narrator.get({ ...merged, facts: { ...merged.facts, pr: 2 } });
+    expect(second.glance).toBe(merged.template);
+    await narrator.idle();
+    expect(spent.opened()).toBe(1);
+    expect(rows(journalPath).filter((row) => row['event'] === 'narration.failed')).toHaveLength(1);
+
+    // Once the window has passed, a fresh key is tried again, and opens its own window.
+    clock += 60_000;
+    const third = narrator.get({ ...merged, facts: { ...merged.facts, pr: 3 } });
+    expect(third.glance).toBe(merged.template);
+    await narrator.idle();
+    expect(spent.opened()).toBe(2);
+    expect(rows(journalPath).filter((row) => row['event'] === 'narration.failed')).toHaveLength(2);
+  });
+});
+
 describe('FORGE_NARRATE=off', () => {
   it('serves templates and makes no call at all', async () => {
     process.env['FORGE_NARRATE'] = 'off';
