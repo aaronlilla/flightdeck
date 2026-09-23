@@ -16,7 +16,7 @@ import { describe, expect, it } from 'vitest';
 import type { ChainCouncilFn, ChainGateFn, ChainGh, ChainLauncher, ChainRunStatus } from '../../../src/forge/chain.js';
 import {
   addBacklogItems, addBriefItem, addGoalItem, addHotfixItem, addQueryItems, addTicketItem, advanceItem, mergeItem, promoteItem,
-  PENDING_CHECKS_POLL_CAP, QUEUE_IN_FLIGHT_STATES, removeItem, retryItem, runQueueTick,
+  PENDING_CHECKS_POLL_CAP, QUEUE_IN_FLIGHT_STATES, removeItem, requeueStuckItem, retryItem, runQueueTick,
   type QueuePlanner, type QueueRuntimeDeps, type QueueTicketSearch,
 } from '../../../src/forge/intake/queue.js';
 import { QueueStore } from '../../../src/forge/intake/queueStore.js';
@@ -428,6 +428,38 @@ describe('removeItem / retryItem', () => {
     const retried = retryItem(store, 'q1', 2000);
     expect(retried?.state).toBe('running');
     expect(QUEUE_IN_FLIGHT_STATES).toContain(retried?.state);
+  });
+});
+
+describe('Plan item 4: requeueStuckItem', () => {
+  it('parks a running item under the killed runKey, then relaunches it like a machine retry', () => {
+    const store = tempStore();
+    store.append({
+      id: 'q1', at: 1000, source: 'ticket', input: 'ABC-1', ticket: 'ABC-1', repo: 'owner/name',
+      briefPath: 'C:/briefs/abc-1.md', branch: 'feature/abc-1', worktreePath: '/wt/abc-1', base: 'main',
+      state: 'running', reason: null, runKey: 'run-stuck-1', pr: null,
+      journalIds: [], createdAt: 1000, updatedAt: 1000,
+    });
+
+    const requeued = requeueStuckItem(store, 'run-stuck-1', 5000);
+
+    expect(requeued?.state).toBe('running');
+    expect(requeued?.runKey).toBe('run-stuck-1');
+    // A machine-driven requeue, not a person's retry: retryItem's `askedByAPerson: false`
+    // path never resets recoveryAttempts/checksReads/pendingGatePolls to zero.
+    expect(requeued).not.toHaveProperty('recoveryAttempts', 0);
+  });
+
+  it('returns undefined and touches nothing when no item is running under that runKey', () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const before = store.all();
+
+    const requeued = requeueStuckItem(store, 'a-run-key-nothing-owns', 5000);
+
+    expect(requeued).toBeUndefined();
+    expect(store.all()).toEqual(before);
+    expect(item.state).toBe('queued');
   });
 });
 

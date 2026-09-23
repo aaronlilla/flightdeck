@@ -98,6 +98,23 @@ export interface WardenTickDeps {
    *  its own roadmap id (or null/undefined if it has none). Absent means this tick never
    *  checks for an off-roadmap lane, the same opt-in default every other dep here uses. */
   selfRepoBriefLanes?: () => Array<{ run: string; roadmap?: string | null }>;
+
+  /** Plan item 4, 2026-09-23: the registry pid backing `run`, when the tick has one to
+   *  kill. Absent means the tick has no way to signal the process, so a `stuck-silent`
+   *  trip is only ever journaled, never acted on -- the same opt-in shape every other
+   *  actuation dep on this tick uses. */
+  registryPidFor?: (run: string) => number | undefined;
+  /** Kills exactly one pid. Defaults to a no-op so a specimen with nothing wired never
+   *  signals a real process; `cli.ts` wires the same targeted `killPid` the orphan sweep
+   *  uses -- never `taskkill /T`, which takes the whole tree from wherever it is pointed
+   *  (2026-09-08, 161 processes lost to one tree-kill under the console). */
+  killProcess?: (pid: number) => void;
+  /** Requeues the queue item behind `run`, once, after a stuck-silent kill. Returns
+   *  whether an item was actually found and requeued -- a run launched outside the
+   *  queue (a bare `forge run`, a goal loop) names no item, and the kill still happens
+   *  with nothing here to say a requeue followed it. Absent means the tick kills but
+   *  never requeues, the same opt-in default as everything else here. */
+  requeueStuckRun?: (run: string) => boolean;
 }
 
 /** Signals `assess()` can raise that name a run and are safe for a generic actuator park.
@@ -153,6 +170,11 @@ export class WardenTick {
    *  cadence rather than every 30 seconds this tick runs. */
   private lastKillSwitchNoticeAt: number | undefined;
 
+  /** Plan item 4: goals already killed for a `stuck-silent` trip, so a run whose process
+   *  the kill signal has not yet stopped (or whose requeue relaunched it under the same
+   *  name before the trip cleared) is killed once, not once per tick. */
+  private readonly stuckKilled = new Set<string>();
+
   constructor(private readonly deps: WardenTickDeps) {
     if (deps.reasoner) {
       const driftDeps: ConformanceDriftDeps = {
@@ -171,6 +193,7 @@ export class WardenTick {
     }, onError);
 
     await this.parkGenericTrips(onError);
+    await this.killStuckSilent(onError);
     await this.handleAbandoned(onError);
     await this.reapDead(onError);
     await this.assessCostShapes(onError);
@@ -335,6 +358,45 @@ export class WardenTick {
 
     for (const id of [...this.parkedTrips]) {
       if (!openIds.has(id)) this.parkedTrips.delete(id);
+    }
+  }
+
+  /**
+   * Plan item 4: a run whose process the registry confirms is alive but that has
+   * produced no tool/progress event for 15 minutes (`stuck-silent`, `liveness.ts`) is
+   * killed and its queue item requeued, once. Distinct from every other actuation on
+   * this tick: `parkGenericTrips` only ever parks, and a park leaves the process running
+   * -- exactly the failure this item exists to fix (BBZ-343/BBZ-225 sat parked for hours
+   * with the process itself still alive and doing nothing). This is the one path besides
+   * a person's own `forge decide ... kill` that ends a live process, so it never asks the
+   * generic actuator (which refuses without a `decision.made` row) -- it signals the
+   * process directly, the same targeted, one-pid-at-a-time kill the orphan sweep uses,
+   * never a tree-kill.
+   */
+  private async killStuckSilent(onError?: (label: string, error: unknown) => void): Promise<void> {
+    const trips = this.deps.stuck().filter((trip) => trip.signal === 'stuck-silent');
+    const openKeys = new Set(trips.map((trip) => trip.key));
+    for (const key of [...this.stuckKilled]) {
+      if (!openKeys.has(key)) this.stuckKilled.delete(key);
+    }
+    if (!this.deps.registryPidFor || !this.deps.killProcess) return;
+    for (const trip of trips) {
+      if (this.stuckKilled.has(trip.key)) continue;
+      await guarded(`stuckSilent:${trip.key}`, () => {
+        const pid = this.deps.registryPidFor!(trip.key);
+        if (pid === undefined) return; // already gone; nothing left here to kill
+        this.stuckKilled.add(trip.key);
+        this.deps.killProcess!(pid);
+        this.deps.journal.append({
+          event: 'run.stuck-killed', run: trip.key, actor: 'warden', evidence: trip, pid,
+        });
+        const requeued = this.deps.requeueStuckRun?.(trip.key) ?? false;
+        if (requeued) {
+          this.deps.journal.append({
+            event: 'queue.stuck-requeued', run: trip.key, actor: 'warden',
+          });
+        }
+      }, onError);
     }
   }
 

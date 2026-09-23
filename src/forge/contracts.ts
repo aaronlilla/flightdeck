@@ -335,6 +335,18 @@ export const FORGE_EVENT_NAMES = [
   // registry row behind it removes that worktree and retries the add once, instead
   // of blocking the whole packet forever (B.4).
   'queue.paused', 'run.relaunched', 'registry.reaped', 'chain.worktree.reclaimed',
+  // Plan item 4, 2026-09-23: a `started` run whose process is confirmed alive, is not
+  // parked waiting on a person's answer, and has produced no `run.started`/`tool.start`/
+  // `tool.end`/`turn.end` row for 15 minutes -- distinct from `run.killed` (a person's
+  // decision) and `registry.abandoned` (the process already died): this one is a live
+  // process the tick itself decided to kill. Carries the same evidence a `liveness.stuck`
+  // idle trip would, plus the fresh `runKey` the requeue launched under.
+  'run.stuck-killed',
+  // Plan item 4: the requeue that follows a `run.stuck-killed`, naming the queue item
+  // relaunched and its fresh `runKey`. Absent when the stuck run named no queue item
+  // (never launched through the queue) -- the kill still happens, but nothing here says
+  // a requeue followed it, since there was no item to requeue.
+  'queue.stuck-requeued',
   // C.1: `POST /amend` correcting a running item's brief mid-flight (adding only this one
   // name here -- this file is shared across streams).
   'brief.amended',

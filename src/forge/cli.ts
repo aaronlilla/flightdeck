@@ -74,7 +74,7 @@ import {
   ensureHome, fleetConfigDirChoice, forgeHome, gotchasDir, inboxDir, intakeBriefsDir, journalPath,
   killSwitchPath, lanesDir, operatorConfigDir, queuePath, registryDir, runsDir, watcherStatePath,
 } from './paths.js';
-import { addTicketItem, runQueueTick } from './intake/queue.js';
+import { addTicketItem, requeueStuckItem, runQueueTick } from './intake/queue.js';
 import { readAutonomy, runAutopilot, ticketAsText } from './intake/autopilot.js';
 import { acquireQueueLock } from './intake/queueLock.js';
 import { notTickingHere, QueueTickRunner } from './intake/queueTickRunner.js';
@@ -285,7 +285,7 @@ function snapshotRuns(
 ): Array<{
   run: string; className: string; lastEventAt: number; context: number;
   currentTool?: { name: string; startedAt: number };
-  registryLive?: boolean; registryRowRemains?: boolean;
+  registryLive?: boolean; registryRowRemains?: boolean; lastProgressAt?: number;
 }> {
   // A finished, handed-off or parked run's lastEventAt is frozen at whatever it was when
   // it stopped, while `now` keeps moving; fed to assess() unfiltered, every one of them
@@ -297,6 +297,12 @@ function snapshotRuns(
       const base = {
         run: run.run, className: run.className ?? 'implement', lastEventAt: run.lastEventAt,
         context: run.context, ...(run.currentTool ? { currentTool: run.currentTool } : {}),
+        // Plan item 4: `lastProgressAt` folded by journal.ts from the four real progress
+        // events, falling back to `lastEventAt` in the snapshot itself when the fold
+        // never saw one -- a run whose journal predates this field, or whose fold has
+        // not yet reached its first `run.started`/`tool.*`/`turn.end` row, still reads
+        // as freshly active rather than as silent since the epoch.
+        lastProgressAt: run.lastProgressAt ?? run.lastEventAt,
       };
       // I15: a run whose process died mid-tool-call leaves the fold above exactly as it
       // was at the moment of death -- a `tool.start` with no `tool.end` reads as a tool
@@ -797,6 +803,22 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
                 },
               };
             });
+        },
+        // Plan item 4: the registry pid backing this run, when the tick decides to kill
+        // it for producing no progress event in 15 minutes -- undefined once the row is
+        // already gone (the process died on its own between the trip and this tick).
+        registryPidFor: (run: string) => registry.get(run)?.pid,
+        // Never /T: one targeted pid, the same shape the orphan sweep's own killPid uses
+        // below -- a tree-kill from here is exactly what ended 161 processes under the
+        // console on 2026-09-08.
+        killProcess: (pid: number) => {
+          try { spawn('taskkill', ['/F', '/PID', String(pid)], { stdio: 'ignore' }); } catch {
+            // Already gone.
+          }
+        },
+        requeueStuckRun: (run: string) => {
+          const requeued = requeueStuckItem(queueStore, run);
+          return requeued !== undefined;
         },
       });
 

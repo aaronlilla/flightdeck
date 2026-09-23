@@ -16,7 +16,7 @@ import { contextFor } from './policy.js';
 
 export type LivenessSignal =
   | 'idle' | 'tool-budget' | 'context' | 'stale-session' | 'login-stuck' | 'fleet-unknown'
-  | 'registry-abandoned';
+  | 'registry-abandoned' | 'stuck-silent';
 
 export interface StuckSignal {
   /** The run name, or `pid:N` for a fleet-process signal. */
@@ -28,6 +28,13 @@ export interface StuckSignal {
   since: number;
   /** One line saying where to look. */
   hint: string;
+  /** Plan item 4, 2026-09-23: mirrors the run's own `registryLive` for an `idle` trip --
+   *  `true` only when the registry has confirmed a live pid backs this run. Absent for
+   *  every other signal, and for an `idle` trip built before this field existed. The
+   *  stuck-run killer (`warden-tick.ts`) reads this rather than re-deriving liveness
+   *  itself, so "process alive" is answered by the one registry read `assess()` already
+   *  did, not a second one that can disagree with the first between two calls. */
+  registryLive?: boolean;
 }
 
 export interface RunSnapshot {
@@ -62,6 +69,13 @@ export interface RunSnapshot {
    * all (already cleaned up, or never registered) and there is nothing left to record.
    */
   registryRowRemains?: boolean;
+  /** Plan item 4, 2026-09-23: when this run last produced a real progress event
+   *  (`run.started`, `tool.start`, `tool.end`, `turn.end`) -- `journal.ts`'s
+   *  `RunState.lastProgressAt`. Falls back to `lastEventAt` when absent (a snapshot
+   *  built before this field existed, or a torn journal), which keeps every existing
+   *  caller's behavior unchanged: only a caller that actually supplies this field gets
+   *  the stricter stuck-silent read that ignores the tick's own bookkeeping rows. */
+  lastProgressAt?: number;
 }
 
 export interface FleetProcess {
@@ -120,6 +134,15 @@ export interface LivenessThresholds {
   staleSessionMs: number;
   /** A login process still alive after its credentials were written. */
   loginGraceMs: number;
+  /** Plan item 4: a run whose registry pid is confirmed alive but has produced no real
+   *  progress event (`lastProgressAt`) for this long is `stuck-silent` -- distinct from
+   *  `idle`, which reads `lastEventAt` and so can be fooled by the tick's own bookkeeping
+   *  rows (`drift.skipped`, `burn.mismatch`, `note`) landing against the run's name on
+   *  every 30s tick whether or not the run itself did anything (BBZ-343/BBZ-225,
+   *  01-timeline.md: 600+ silent gaps each, read as freshly active by `lastEventAt`
+   *  alone). Only ever checked for `registryLive === true`: a run whose liveness is
+   *  unknown or false already has its own signal above. */
+  stuckSilentMs: number;
 }
 
 export const DEFAULT_THRESHOLDS: LivenessThresholds = {
@@ -127,6 +150,7 @@ export const DEFAULT_THRESHOLDS: LivenessThresholds = {
   liveIdleMs: 600_000,
   staleSessionMs: 5 * 60_000,
   loginGraceMs: 10 * 60_000,
+  stuckSilentMs: 15 * 60_000,
 };
 
 /**
@@ -170,7 +194,30 @@ export function assess(input: LivenessInput, thresholds: LivenessThresholds = DE
         since: run.lastEventAt,
         hint: `run ${run.run} has produced no event for ${Math.round(idleFor / 1000)}s; `
           + 'check its lane log for what it is doing',
+        ...(run.registryLive !== undefined ? { registryLive: run.registryLive } : {}),
       });
+    }
+
+    // Plan item 4: a run the registry confirms is alive, not waiting on a tool call and
+    // not parked on an open ask, but with no REAL progress event in `stuckSilentMs` --
+    // distinct from `idle` above, which reads `lastEventAt` and so can be fooled by the
+    // tick's own bookkeeping rows landing against the run's name every 30s whether or
+    // not the run itself did anything. `lastProgressAt` falls back to `lastEventAt` for
+    // a snapshot built before this field existed, which keeps this signal silent for
+    // every caller that has not opted into it (the same absent-by-default shape every
+    // other opt-in field on this snapshot uses).
+    if (run.registryLive === true && !run.currentTool) {
+      const progressAt = run.lastProgressAt ?? run.lastEventAt;
+      const silentFor = input.now - progressAt;
+      if (silentFor >= thresholds.stuckSilentMs) {
+        trips.push({
+          key: run.run, signal: 'stuck-silent', threshold: thresholds.stuckSilentMs,
+          observed: silentFor, since: progressAt,
+          hint: `run ${run.run}'s process is alive but it has made no progress for `
+            + `${Math.round(silentFor / 60_000)} minutes`,
+          registryLive: true,
+        });
+      }
     }
 
     if (run.currentTool) {

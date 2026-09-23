@@ -335,6 +335,29 @@ export function retryItem(
 // The worker: advancing what is already in the queue
 // ---------------------------------------------------------------------------------------
 
+/**
+ * Plan item 4: after the Warden kills a run's process for producing no progress event
+ * for 15 minutes, this finds the one queue item that was running under that `runKey`
+ * (a run launched outside the queue -- a bare `forge run`, a goal loop -- names none,
+ * and this returns `undefined`) and requeues it exactly like a person clicking Retry:
+ * parked first, so `retryItem`'s own state guard (`parked` or `failed` only) accepts
+ * it, then retried with `askedByAPerson: false` -- a machine's retry, not a person's,
+ * so the recovery budgets a chronically-stuck item has already spent stay spent instead
+ * of resetting to fresh on every kill.
+ */
+export function requeueStuckItem(
+  store: QueueStore, runKey: string, now: number = Date.now(),
+): QueueItem | undefined {
+  const item = store.all().find((row) => row.runKey === runKey);
+  if (!item) return undefined;
+  store.append({
+    id: item.id, at: now, state: 'parked',
+    reason: 'killed: no progress for 15 minutes with the process still alive',
+    updatedAt: now,
+  });
+  return retryItem(store, item.id, now, { askedByAPerson: false });
+}
+
 /** A minimal journal event handed back to `advanceItem` -- everything this module needs
  *  from `Journal.append`/`appendOnce`'s real `ForgeEvent`. */
 export interface QueueJournalWrite {
