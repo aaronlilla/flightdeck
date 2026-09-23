@@ -25,6 +25,8 @@ import {
   completeBriefWithVerification, runKeyForBrief,
   type ChainCouncilFn, type ChainDeps, type ChainGateFn, type ChainGh, type ChainLauncher, type ChainPlannedPacket, type ChainRunStatus,
 } from './chain.js';
+import { REAL_GH } from './council/gh.js';
+import { reasonerBugHunter } from './council/bugHunt.js';
 import {
   baseFor, checkoutFor, mergeAllowedFor, runClonePathFor, verifyCommandFor, worktreePathFor,
   worktreeSetupFor,
@@ -1067,6 +1069,60 @@ export function chainCouncil(deps: ForgeDeps): ChainCouncilFn {
       // through unchanged, so the queue's `advanceItem` can retry instead of parking.
       ...(result.data?.['pending'] ? { pending: true } : {}),
     };
+  };
+}
+
+/**
+ * Aaron's 2026-09-23 standing order (full autonomous mode): once the council itself
+ * clears, a dedicated opus-5-5 bug-hunt pass (`council/bugHunt.ts`) reads the diff plus
+ * every changed file's full contents (not just the hunks) before the item is ever
+ * allowed to merge. Built directly on `reasonerBugHunter` rather than round-tripping
+ * through `forge`'s own CLI (`chainCouncil`'s own pattern) because there is no
+ * `forge bug-hunt` subcommand to shell out to -- this IS the one live caller of that
+ * role, so there is nothing a CLI wrapper would add here.
+ */
+export function chainBugHunt(deps: ForgeDeps): NonNullable<QueueRuntimeDeps['bugHunt']> {
+  return async ({ repo, pr, cwd, baseRef }) => {
+    const gh = deps.councilGh ?? REAL_GH;
+    const snapshot = await gh.viewPr(repo, pr);
+    const journal = new Journal(journalPath());
+    try {
+      const reasoner = reasonerFor('claude', { journal, queryFn: deps.reasonerQueryFn });
+      const hunter = reasonerBugHunter(reasoner, `${repo}#${pr}`);
+      // Surrounding code, not only the diff hunks: the full contents of every changed
+      // file the diff touches, read straight off the worktree the queue provisioned
+      // (`cwd`), so a callee's real behaviour is visible, not just the lines a hunk
+      // happened to touch. Absent `cwd` (no worktree wired) means the hunt reads the
+      // diff alone, same as an ordinary lens with no extra budget.
+      let surroundingCode: string | undefined;
+      if (cwd) {
+        const files = [...new Set(snapshot.files)].slice(0, 20);
+        const contents = files.map((file) => {
+          try {
+            return `--- ${file} ---\n${readFileSync(join(cwd, file), 'utf8')}`;
+          } catch {
+            return `--- ${file} --- (could not be read; likely deleted or renamed)`;
+          }
+        });
+        surroundingCode = contents.join('\n\n');
+      }
+      const result = await hunter.run({
+        brief: snapshot.body, diffSummary: snapshot.diffText,
+        ...(surroundingCode ? { surroundingCode } : {}),
+      });
+      journal.append({
+        event: 'bug-hunt.run', actor: 'council', repo, pr, clean: result.clean,
+        findings: result.findings.length, ...(result.failed ? { failed: true } : {}),
+        ...(baseRef ? { baseRef } : {}),
+      });
+      if (result.clean) return { clean: true };
+      const findingsText = result.findings
+        .map((f) => `[${f.severity}/${f.confidence}] ${f.file}:${f.line} -- ${f.claim}`)
+        .join('\n');
+      return { clean: false, findingsText };
+    } finally {
+      journal.close();
+    }
   };
 }
 
