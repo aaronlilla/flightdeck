@@ -485,6 +485,20 @@ describe('item 1: a parked item recovers on its own when the park reason was tra
     expect(row.recoveryDeclinedFor ?? null).toBeNull();
   });
 
+  it('gives the fix-round budget back when a person retries the item', async () => {
+    // BBZ-386, 2026-09-23: an item that hit the fix-round cap could never be reviewed again.
+    const store = tempStore();
+    const item = parkedItem(store, 'FIX FIRST after 6 fix round(s) (cap 6)');
+    store.append({ id: item.id, at: 1_000, fixRoundsUsed: 6, lastCouncilHead: 'abc', bugHuntClearedAt: 900 } as never);
+
+    retryItem(store, item.id, 2_000, { askedByAPerson: true });
+
+    const row = store.get(item.id)!;
+    expect(row.fixRoundsUsed ?? 0).toBe(0);
+    expect(row.lastCouncilHead ?? null).toBeNull();
+    expect(row.bugHuntClearedAt ?? null).toBeNull();
+  });
+
   it('clears the last read time on disk, not only in memory', async () => {
     // `QueueStore.append` serialises with `JSON.stringify`, which drops undefined-valued
     // keys, and the fold is a spread -- so writing `checksReadAt: undefined` left the old

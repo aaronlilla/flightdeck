@@ -325,7 +325,13 @@ export function retryItem(
     // sweep's path as well as a button: handing them back on every automatic retry makes
     // every cap here unreachable. `pendingGatePolls` belongs with them -- left at its cap,
     // the retry re-enters the gate, spends a real review round, and parks on the first pass.
-    ...(opts.askedByAPerson ? { recoveryAttempts: 0, checksReads: 0, checksReadAt: 0, pendingGatePolls: 0 } : {}),
+    ...(opts.askedByAPerson ? {
+      recoveryAttempts: 0, checksReads: 0, checksReadAt: 0, pendingGatePolls: 0,
+      // A person's retry also hands back the fix-round budget, or an item that hit the cap
+      // can never be reviewed again (BBZ-386, 2026-09-23: 6 rounds burned on one unchanged
+      // head by a since-fixed loop, then parked for good).
+      fixRoundsUsed: 0, lastCouncilHead: null, fixRoundAt: null, bugHuntClearedAt: null,
+    } : {}),
     ...(item.runKey ? { retriedAt: now } : {}),
   };
   store.append({ id, at: now, ...patch });
