@@ -85,7 +85,7 @@ const ROWS: Row[] = [
   { stream: 'warden', requirement: 'fleet-unknown reported, never acted on', specimen: 'takes no actuator parameter at all: the falsifier this closes is a caller wiring a park into it' },
 
   // ---- Governor (brief Requirements, 7 bullets) ----
-  { stream: 'governor', requirement: 'Provider at planning time', specimen: 'reads an audit-judge ticket as claude and an implement-class ticket as claude' },
+  { stream: 'governor', requirement: 'Provider at planning time', specimen: 'reads audit-judge as claude, same as an implement-class ticket' },
   { stream: 'governor', requirement: 'Burn ledger from modelUsage', specimen: 'sums a result.usage row per run, per class and per model id' },
   { stream: 'governor', requirement: 'Window pause with reset time', specimen: 'pauses every queued run of that tier and never admits one before the reset time' },
   { stream: 'governor', requirement: 'Conformance per turn', specimen: 'parks the run in the very turn a mismatch is seen, never after N turns' },
@@ -118,7 +118,7 @@ const ROWS: Row[] = [
   { stream: 'council', requirement: 'Three lenses scaled to diff risk', specimen: 'a medium diff gets three lenses' },
   { stream: 'council', requirement: 'Codex lane, read-only, contested not dropped', specimen: 'a Codex-only finding with no matching Sonnet finding is carried as contested' },
   { stream: 'council', requirement: 'Judge reads packets only', specimen: 'never carries the raw diff text' },
-  { stream: 'council', requirement: 'Three fix rounds then park', specimen: 'three consecutive FIX FIRST verdicts produce exactly one park event with the packet attached' },
+  { stream: 'council', requirement: 'Six fix rounds then park', specimen: 'six consecutive FIX FIRST verdicts produce exactly one park event with the full findings history attached' },
   { stream: 'council', requirement: 'Judge/Codex disagreement resolves without Fable', specimen: 'judge PASS, Codex FIX FIRST: disagreement, FIX FIRST wins' },
   { stream: 'council', requirement: 'RN merge gate refuses a stale check run', specimen: 'blocks merge when the check-run head sha does not match the current head, even though conclusion is success' },
   { stream: 'council', requirement: 'Backend gate never merges', specimen: 'every gate condition green still ends at draft-PR-plus-ping, never a merge call' },

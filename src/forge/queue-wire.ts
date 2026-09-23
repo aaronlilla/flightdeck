@@ -14,7 +14,7 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { chainCouncil, chainGate, chainGh, chainRebase, chainLauncher, chainLaunchGoal } from './chain-wire.js';
+import { chainCouncil, chainGate, chainGh, chainRebase, chainLauncher, chainLaunchGoal, chainBugHunt } from './chain-wire.js';
 import {
   checkoutFor, declaredRepoKind, repoKindFor as repoKindForEnv, verifyCommandFor, type ChainEnv,
 } from './chain-env.js';
@@ -354,7 +354,13 @@ export function queueJiraDone(
       await runQueueDone(
         createJiraWriteClient(config),
         { ticket: item.ticket, prUrl: pr.url, prNumber: pr.no, mergedAt },
-        { doneTransitionId: process.env['FORGE_JIRA_DONE_TRANSITION'] },
+        {
+          doneTransitionId: process.env['FORGE_JIRA_DONE_TRANSITION'],
+          // Aaron's 2026-09-23 standing order (full autonomous mode): the ticket goes
+          // to Haiping and In Review once the queue itself merges the PR unattended.
+          haipingAccountId: process.env['FORGE_JIRA_HAIPING_ACCOUNT'],
+          inReviewTransitionId: process.env['FORGE_JIRA_IN_REVIEW_TRANSITION'],
+        },
         (doneEvent) => journal.append({ actor: 'queue', ...doneEvent }),
       );
     } finally {
@@ -726,6 +732,9 @@ export function buildQueueRuntimeDeps(
     gh: chainGh(),
     rebaseOnBase: chainRebase(),
     council: chainCouncil(deps),
+    // Aaron's 2026-09-23 standing order (full autonomous mode): a dedicated opus-5-5
+    // bug-hunt pass runs after the council itself clears and before merge.
+    bugHunt: chainBugHunt(deps),
     gate: chainGate(deps),
     // A repository whose Actions are off never leaves a pending check rollup, so the gate
     // asks whether it runs any, and stands its own verify in their place when it does not

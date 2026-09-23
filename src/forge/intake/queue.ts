@@ -36,6 +36,7 @@ import { renderShipPrediction, shipPredictionFor } from './shipPrediction.js';
 import { parkReasonFor } from './parkReason.js';
 import type { GoalAuditOutcome, ProgressNote, ProgressStage } from './ticketProgress.js';
 import { parkRecoverability, PARK_RECOVERY_CAP, type ParkRecoverability, type ParkRecheck } from '../../shared/parkRecoverability.js';
+import { MAX_FIX_ROUNDS } from '../council/rounds.js';
 export { parkRecoverability, PARK_RECOVERY_CAP };
 export type { ParkRecoverability, ParkRecheck };
 
@@ -385,6 +386,15 @@ export interface QueueRuntimeDeps {
    *  environment never wires a fix round; a FIX FIRST then always parks, the behaviour
    *  every specimen before this stream already proved. */
   relaunchForFixRound?: (input: { item: QueueItem; findings: string }) => Promise<{ runKey: string }>;
+  /** Aaron's 2026-09-23 standing order (full autonomous mode): once the council itself
+   *  clears (PASS/PASS WITH NOTES), a dedicated bug-hunt pass (opus-5-5,
+   *  `council/bugHunt.ts`) reads the diff plus surrounding code for real defects before
+   *  the item is ever allowed to merge. Same shape as `council` deliberately -- the
+   *  queue stays diff-blind, and the actual read happens in whatever wires this dep
+   *  (mirroring `chainCouncil`). Absent means this environment never runs a bug hunt,
+   *  and a cleared council goes straight to merge, the behaviour every specimen before
+   *  this stream already proved. */
+  bugHunt?: (input: { repo: string; pr: number; cwd?: string; baseRef?: string }) => Promise<{ clean: boolean; findingsText?: string }>;
   /** A.2: posts the council's own notes on the PR before the item reaches `review`.
    *  Best effort -- a comment failing never blocks the item; absent means this
    *  environment never wires the write, and no comment is attempted. */
@@ -1077,18 +1087,23 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
 
   const councilCleared = council.verdict === 'PASS' || council.verdict === 'PASS WITH NOTES';
   if (!councilCleared) {
-    // A.1: a FIX FIRST on an item that has not already used its one fix round relaunches
-    // the worker on the same worktree instead of parking outright -- the findings are a
-    // fixable problem, not a question for a person, and asking a person for every one of
-    // those defeats the point of the queue. Coverage-missing never gets a fix round: a
-    // member that did not answer says nothing about whether the code has a problem, so
-    // relaunching against it would be guessing at a "fix" for no claim at all.
-    if (council.verdict === 'FIX FIRST' && !council.coverageNote && !item.fixRoundsUsed && deps.relaunchForFixRound) {
+    // A.1, raised 3->6 by Aaron's 2026-09-23 standing order (full autonomous mode --
+    // iterate until clean): a FIX FIRST on an item that has not yet used its
+    // `MAX_FIX_ROUNDS` relaunches (`council/rounds.ts`) relaunches the worker on the
+    // same worktree instead of parking outright -- the findings are a fixable problem,
+    // not a question for a person, and asking a person for every one of those defeats
+    // the point of the queue. Coverage-missing never gets a fix round: a member that did
+    // not answer says nothing about whether the code has a problem, so relaunching
+    // against it would be guessing at a "fix" for no claim at all.
+    if (
+      council.verdict === 'FIX FIRST' && !council.coverageNote
+      && (item.fixRoundsUsed ?? 0) < MAX_FIX_ROUNDS && deps.relaunchForFixRound
+    ) {
       const findings = council.findingsText
         ?? 'the council returned FIX FIRST with no findings text carried on this result';
       const relaunched = await deps.relaunchForFixRound({ item, findings });
       return writeTransition(
-        item, { runKey: relaunched.runKey, fixRoundsUsed: 1 }, deps, 'queue.fix-round',
+        item, { runKey: relaunched.runKey, fixRoundsUsed: (item.fixRoundsUsed ?? 0) + 1 }, deps, 'queue.fix-round',
         { previousRunKey: item.runKey, findings },
       );
     }
@@ -1098,9 +1113,42 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
     const reason = council.coverageNote
       ? `${council.verdict}: ${council.coverageNote}`
       : item.fixRoundsUsed
-        ? `${council.verdict} after ${item.fixRoundsUsed} fix round(s), parking rather than relaunching again`
+        ? `${council.verdict} after ${item.fixRoundsUsed} fix round(s) (cap ${MAX_FIX_ROUNDS}), parking with the full findings history rather than relaunching again`
         : council.verdict;
     return writeTransition(item, { state: 'parked', reason }, deps, 'queue.parked', { hop: 'gate' });
+  }
+
+  // Aaron's 2026-09-23 standing order (full autonomous mode): the council clearing is
+  // not the last read before merge -- a dedicated opus-5-5 bug-hunt pass
+  // (`council/bugHunt.ts`) reads the diff plus surrounding code for real defects the
+  // audit lenses were not specifically looking for. Run once per head: `bugHuntClearedAt`
+  // is only ever set once this pass has come back clean, so a re-tick after it already
+  // cleared never re-runs it (it costs a real model call, same as the council itself).
+  // A bug the hunt does find re-enters the SAME fix-round loop the council's own FIX
+  // FIRST uses above, capped by the same `MAX_FIX_ROUNDS` -- one loop, one cap, whichever
+  // reviewer raised the finding.
+  if (deps.bugHunt && !item.bugHuntClearedAt) {
+    const hunt = await deps.bugHunt({
+      repo: item.repo!, pr: pr.number,
+      ...(item.worktreePath ? { cwd: item.worktreePath } : {}),
+      ...(item.base ? { baseRef: `origin/${item.base}` } : {}),
+    });
+    if (!hunt.clean) {
+      if ((item.fixRoundsUsed ?? 0) < MAX_FIX_ROUNDS && deps.relaunchForFixRound) {
+        const findings = hunt.findingsText
+          ?? 'the bug hunt found a defect with no findings text carried on this result';
+        const relaunched = await deps.relaunchForFixRound({ item, findings });
+        return writeTransition(
+          item, { runKey: relaunched.runKey, fixRoundsUsed: (item.fixRoundsUsed ?? 0) + 1 }, deps, 'queue.fix-round',
+          { previousRunKey: item.runKey, findings, hop: 'bug-hunt' },
+        );
+      }
+      const reason = item.fixRoundsUsed
+        ? `bug hunt found a defect after ${item.fixRoundsUsed} fix round(s) (cap ${MAX_FIX_ROUNDS}), parking rather than relaunching again`
+        : 'bug hunt found a defect';
+      return writeTransition(item, { state: 'parked', reason }, deps, 'queue.parked', { hop: 'bug-hunt' });
+    }
+    item = { ...item, bugHuntClearedAt: deps.clock() };
   }
 
   // Merge only when this item's repo is on the operator's own autoMerge allow-list --

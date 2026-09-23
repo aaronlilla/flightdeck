@@ -43,6 +43,8 @@ interface FixtureOverrides {
   postMergeVerify?: QueueRuntimeDeps['postMergeVerify'];
   repoRunsChecks?: QueueRuntimeDeps['repoRunsChecks'];
   runRepoVerify?: QueueRuntimeDeps['runRepoVerify'];
+  bugHunt?: QueueRuntimeDeps['bugHunt'];
+  relaunchForFixRound?: QueueRuntimeDeps['relaunchForFixRound'];
 }
 
 function buildDeps(store: QueueStore, overrides: FixtureOverrides = {}): { deps: QueueRuntimeDeps; events: Record<string, unknown>[] } {
@@ -87,6 +89,8 @@ function buildDeps(store: QueueStore, overrides: FixtureOverrides = {}): { deps:
     ...(overrides.postMergeVerify ? { postMergeVerify: overrides.postMergeVerify } : {}),
     ...(overrides.repoRunsChecks ? { repoRunsChecks: overrides.repoRunsChecks } : {}),
     ...(overrides.runRepoVerify ? { runRepoVerify: overrides.runRepoVerify } : {}),
+    ...(overrides.bugHunt ? { bugHunt: overrides.bugHunt } : {}),
+    ...(overrides.relaunchForFixRound ? { relaunchForFixRound: overrides.relaunchForFixRound } : {}),
   };
   return { deps, events };
 }
@@ -1136,7 +1140,7 @@ describe('advanceItem', () => {
   });
 });
 
-describe('fix round: FIX FIRST relaunches once, a second parks', () => {
+describe('fix round: FIX FIRST relaunches up to the cap, then parks (2026-09-23: cap 6, was 1)', () => {
   it('relaunches the worker on the first FIX FIRST, carrying the findings as its brief', async () => {
     const store = tempStore();
     const item = addTicketItem(store, 'ABC-1', 1000);
@@ -1159,7 +1163,7 @@ describe('fix round: FIX FIRST relaunches once, a second parks', () => {
     expect(relaunchInput?.item.id).toBe(item.id);
   });
 
-  it('parks on a second consecutive FIX FIRST rather than relaunching a second time', async () => {
+  it('relaunches through the cap (6) and parks only on the 7th consecutive FIX FIRST', async () => {
     const store = tempStore();
     const item = addTicketItem(store, 'ABC-1', 1000);
     const { deps } = buildDeps(store, {
@@ -1170,15 +1174,20 @@ describe('fix round: FIX FIRST relaunches once, a second parks', () => {
     deps.relaunchForFixRound = async () => { relaunchCalls += 1; return { runKey: `fix-${relaunchCalls}` }; };
 
     let current = item;
-    current = await advanceItem(current, deps);
-    current = await advanceItem(current, deps);
-    current = await advanceItem(current, deps); // first FIX FIRST -> fix round
-    current = await advanceItem(current, deps); // second FIX FIRST -> park
+    current = await advanceItem(current, deps); // plan
+    current = await advanceItem(current, deps); // launch
+    for (let round = 1; round <= 6; round += 1) {
+      current = await advanceItem(current, deps); // FIX FIRST -> fix round
+      expect(current.state).toBe('running');
+      expect(current.fixRoundsUsed).toBe(round);
+    }
+    current = await advanceItem(current, deps); // 7th consecutive FIX FIRST -> park
 
     expect(current.state).toBe('parked');
-    expect(current.fixRoundsUsed).toBe(1);
-    expect(relaunchCalls).toBe(1);
+    expect(current.fixRoundsUsed).toBe(6);
+    expect(relaunchCalls).toBe(6);
     expect(current.reason).toContain('FIX FIRST');
+    expect(current.reason).toContain('cap 6');
   });
 
   it('coverage-missing always parks, never spawns a fix round', async () => {
@@ -1215,6 +1224,104 @@ describe('fix round: FIX FIRST relaunches once, a second parks', () => {
     current = await advanceItem(current, deps);
 
     expect(current.state).toBe('parked');
+  });
+});
+
+describe('bug hunt: runs after a clean council, before merge (2026-09-23 standing order)', () => {
+  it('a clean bug hunt lets a cleared item reach review/merge as before', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    let bugHuntCalls = 0;
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'PASS' }),
+      bugHunt: async () => { bugHuntCalls += 1; return { clean: true }; },
+    });
+
+    let current = item;
+    current = await advanceItem(current, deps); // plan
+    current = await advanceItem(current, deps); // launch
+    current = await advanceItem(current, deps); // gate -> bug hunt -> review
+
+    expect(bugHuntCalls).toBe(1);
+    expect(current.state).not.toBe('parked');
+    expect(current.bugHuntClearedAt).toBe(1_000);
+  });
+
+  it('a dirty bug hunt relaunches the worker exactly like a council FIX FIRST does', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    let relaunchInput: { item: { id: string }; findings: string } | undefined;
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'PASS' }),
+      bugHunt: async () => ({ clean: false, findingsText: '[high/high] src/x.ts:1 -- unbounded retry loop' }),
+      relaunchForFixRound: async (input) => { relaunchInput = input; return { runKey: 'abc-1-bughunt-1' }; },
+    });
+
+    let current = item;
+    current = await advanceItem(current, deps); // plan
+    current = await advanceItem(current, deps); // launch
+    const result = await advanceItem(current, deps); // gate -> council PASS -> bug hunt dirty -> fix round
+
+    expect(result.state).toBe('running');
+    expect(result.fixRoundsUsed).toBe(1);
+    expect(result.runKey).toBe('abc-1-bughunt-1');
+    expect(relaunchInput?.findings).toContain('unbounded retry loop');
+    expect(result.bugHuntClearedAt).toBeUndefined();
+  });
+
+  it('a dirty bug hunt with the fix-round cap already used parks instead of relaunching again', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'PASS' }),
+      bugHunt: async () => ({ clean: false, findingsText: 'still broken' }),
+    });
+
+    let current: typeof item = { ...item, fixRoundsUsed: 6 };
+    current = await advanceItem(current, deps); // plan
+    current = await advanceItem(current, deps); // launch
+    current = await advanceItem(current, deps); // gate -> council PASS -> bug hunt dirty -> cap reached -> park
+
+    expect(current.state).toBe('parked');
+    expect(current.reason).toContain('bug hunt found a defect');
+  });
+
+  it('a bug hunt that already cleared this head is never run twice', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    let bugHuntCalls = 0;
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'PASS' }),
+      bugHunt: async () => { bugHuntCalls += 1; return { clean: true }; },
+    });
+
+    let current: typeof item = { ...item, bugHuntClearedAt: 999 };
+    current = await advanceItem(current, deps); // plan
+    current = await advanceItem(current, deps); // launch
+    await advanceItem(current, deps); // gate -> bug hunt already cleared, skipped
+
+    expect(bugHuntCalls).toBe(0);
+  });
+
+  it('no bugHunt dep wired: a cleared council goes straight through, the pre-standing-order behaviour', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'PASS' }),
+    });
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.state).not.toBe('parked');
+    expect(current.bugHuntClearedAt).toBeUndefined();
   });
 });
 

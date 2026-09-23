@@ -80,6 +80,19 @@
       "output": 5.0
     }
   },
+  "_standing_order_comment": [
+    "Aaron, 2026-09-23: full autonomous mode is the permanent default. Every audit/",
+    "review class (audit-lens, audit-judge, bug-hunt, and any council member added",
+    "later) runs on provider claude, model opus-5-5, and nothing else -- no codex",
+    "lane, no sonnet fallback for an audit. A clean audit plus a clean bug hunt plus",
+    "green CI merges the PR with no human input on every repo named in",
+    "FORGE_COUNCIL_AUTOMERGE / FORGE_QUEUE_MERGE_REPOS, except BBManagementSystemV2,",
+    "which always stops at a draft PR for Joe because merging the controlled .NET",
+    "backend needs another person. Jira updates (In Review, assign Haiping, a",
+    "comment in Aaron's voice) run right after the merge, unattended.",
+    "console.env.cmd's FORGE_COUNCIL_CODEX=always line should be removed: the",
+    "council no longer reads it (see council/orchestrate.ts) so it is dead config."
+  ],
   "_provider_comment": [
     "P3.2: which side reasons a class, added 2026-09-04 for the Governor stream. The",
     "runtime master and planner run on Claude Opus 5.5 at medium effort (Aaron,",
@@ -123,6 +136,7 @@
     "verify": {"model": "sonnet", "effort": "medium", "maxContext": 120000, "maxTurns": 40, "provider": "claude", "maxWallMs": 3600000},
     "audit-lens": {"model": "opus-5-5", "effort": "medium", "maxContext": 120000, "maxTurns": 40, "provider": "claude", "timeoutMs": 480000, "maxWallMs": 3600000},
     "audit-judge": {"model": "opus-5-5", "effort": "high", "maxContext": 150000, "maxTurns": 30, "provider": "claude", "maxWallMs": 2700000},
+    "bug-hunt": {"model": "opus-5-5", "effort": "high", "maxContext": 150000, "maxTurns": 40, "provider": "claude", "maxWallMs": 3600000},
     "research": {"model": "sonnet", "effort": "medium", "maxContext": 150000, "maxTurns": 40, "provider": "claude", "maxWallMs": 3600000},
     "evaluate": {"model": "haiku", "effort": "low", "maxContext": 30000, "maxTurns": 6, "provider": "claude", "maxWallMs": 540000},
     "narrate": {"model": "haiku", "effort": "low", "maxContext": 20000, "maxTurns": 1, "provider": "claude", "timeoutMs": 180000, "maxCallsPerHour": 300, "maxWallMs": 120000},
@@ -150,6 +164,7 @@
       "verify": 15,
       "audit-lens": 15,
       "audit-judge": 25,
+      "bug-hunt": 20,
       "research": 15,
       "evaluate": 3,
       "narrate": 2,

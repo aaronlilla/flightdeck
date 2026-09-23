@@ -829,8 +829,18 @@ export interface QueueItem {
   createdAt: number;
   updatedAt: number;
   /** A.1: how many times this item has been relaunched on a FIX FIRST round -- 0 or
-   *  absent means the fix round hasn't been used yet, and it's capped at one. */
+   *  absent means the fix round hasn't been used yet. Capped at
+   *  `council/rounds.ts`'s `MAX_FIX_ROUNDS` (6, raised from 1 by Aaron's 2026-09-23
+   *  standing order: full autonomous mode iterates FIX FIRST -> relaunch -> re-audit
+   *  until clean, up to the cap, rather than parking after the very first fix round). */
   fixRoundsUsed?: number;
+  /** Aaron's 2026-09-23 standing order: once the council itself is clean (PASS/PASS WITH
+   *  NOTES), a dedicated bug-hunt pass (opus-5-5, `council/bugHunt.ts`) reads the diff
+   *  plus surrounding code hunting for real defects before merge. `true` once that pass
+   *  has come back clean for the item's current head -- checked so a re-tick after the
+   *  bug hunt already cleared never re-runs it. Any bug the hunt does find re-enters the
+   *  ordinary fix-round loop above (this stays unset/false until the re-audit clears). */
+  bugHuntClearedAt?: number | null;
   /** B (2026-09-08): set by `retryItem` alongside `state: 'running'`, when the retried
    *  item already carries a `runKey` -- marks that this pass through `advanceItem` is a
    *  retry of an in-flight run, not the tick that first launched it. `advanceItem` reads

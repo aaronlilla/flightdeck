@@ -1,15 +1,25 @@
 /**
- * Composes the lens/Codex/judge roles into one council round: scale to diff risk, run the
- * lenses, run Codex only when the risk demands it, synthesize, hand the judge the
- * packets-only input, and decide. No fix-round looping here -- `rounds.ts`'s
- * `evaluateFixRounds` is the pure state machine for that, driven by whatever calls this
- * function once per round.
+ * Composes the lens/judge roles into one council round: scale to diff risk, run the
+ * lenses, synthesize, hand the judge the packets-only input, and decide. No fix-round
+ * looping here -- `rounds.ts`'s `evaluateFixRounds` is the pure state machine for that
+ * (superseded in practice by `queue.ts`'s iterate-until-clean loop), driven by whatever
+ * calls this function once per round.
+ *
+ * Aaron, 2026-09-23 (standing order, full autonomous mode): every review member this
+ * round runs is `claude`/`opus-5-5` (`model-policy.json`'s `audit-lens`/`audit-judge`
+ * classes) -- there is no Codex lane here any more, and `FORGE_COUNCIL_CODEX` is read
+ * nowhere in this file. A round never asks Codex to run, never requires it for coverage,
+ * and never blocks on it being missing. `CouncilRoundInput.forceCodex` is accepted and
+ * silently ignored for backward compatibility with existing callers (`chain.ts`,
+ * `queue.ts`) that still pass it -- those call sites can drop the field once they are
+ * next touched, but leaving it here costs nothing and keeps this a data-only change for
+ * them.
  */
 import { LENS_NAMES } from './lenses.ts';
 import { diffRisk, lensCountFor } from './risk.ts';
 import { synthesizeFindings } from './synthesis.ts';
 import { buildJudgeInput, verdictForRound } from './gate.ts';
-import type { CodexLane, Judge, LensRunner } from './roles.ts';
+import type { Judge, LensRunner } from './roles.ts';
 import type { CouncilLensReport, CouncilVerdict, CouncilFinding } from '../contracts.ts';
 
 export interface CouncilRoundInput {
@@ -18,20 +28,17 @@ export interface CouncilRoundInput {
   changedLines: number;
   paths: string[];
   ci: { runId: string; headSha: string };
-  /** P5.7: the chain's `FORGE_COUNCIL_CODEX=always` forces the Codex lane for this round
-   *  regardless of what `diffRisk` would have decided on size and path alone. The lane
-   *  itself still runs (or no-ops) per `codexLaneFor`'s own policy check -- this only
-   *  overrides whether the round asks it to run at all. */
+  /** Ignored (2026-09-23): the council no longer has a Codex lane. Accepted only so a
+   *  caller still passing it (`FORGE_COUNCIL_CODEX=always`) does not need editing. */
   forceCodex?: boolean;
-  /** Forwarded to the Codex lane verbatim (`roles.ts`'s `CodexLaneInput`). Omitted for a
-   *  round that never supplies them, which the lane itself reads as `ran: false`. */
+  /** No longer read by this file -- kept on the input shape for the same reason as
+   *  `forceCodex`, since some callers still pass them through from a Codex-era call. */
   cwd?: string;
   baseRef?: string;
 }
 
 export interface CouncilRoles {
   lensRunner: LensRunner;
-  codexLane: CodexLane;
   judge: Judge;
 }
 
@@ -39,18 +46,21 @@ export interface CouncilRoundResult {
   /** Every lens's final report, after its one retry -- `failed`/`rawReply`/`retried`
    *  intact, recorded honestly the same as before this round could ever act on it. */
   lensReports: CouncilLensReport[];
+  /** Always `false` (2026-09-23): kept on the result shape so `cli.ts`'s existing
+   *  `CouncilAttestation.codex` write stays a no-op instead of needing its own edit. */
   codexRan: boolean;
   decidingFindings: CouncilFinding[];
+  /** Always empty (2026-09-23), for the same reason as `codexRan`. */
   codexOnly: CouncilFinding[];
   verdict: CouncilVerdict;
-  /** GATE.md items 1 and 4: names of every lens (plus `'codex'`, when the round required
-   *  it) that never returned a usable reply after its one retry. Empty means full
-   *  coverage. This is what `verdictForRound` (`gate.ts`) actually decides on -- never a
-   *  finding handed to the judge, because a missing reviewer is not a quality signal. */
+  /** GATE.md items 1 and 4: names of every lens that never returned a usable reply after
+   *  its one retry. Empty means full coverage. This is what `verdictForRound` (`gate.ts`)
+   *  actually decides on -- never a finding handed to the judge, because a missing
+   *  reviewer is not a quality signal. */
   missingMembers: string[];
-  /** How many members this round required in total (lenses run, plus the Codex lane
-   *  when the diff's risk or the caller required it) -- `membersTotal - missingMembers.length`
-   *  is how many actually answered, the "reviewed by N of M" a board can show. */
+  /** How many members this round required in total (the lenses run) --
+   *  `membersTotal - missingMembers.length` is how many actually answered, the
+   *  "reviewed by N of M" a board can show. */
   membersTotal: number;
 }
 
@@ -90,80 +100,41 @@ export async function runCouncilRound(input: CouncilRoundInput, roles: CouncilRo
     return { ...retry, retried: true };
   }));
 
-  const codexRequired = Boolean(input.forceCodex) || risk.needsCodex;
-  let codexResult = codexRequired
-    ? await roles.codexLane.run({
-        brief: input.brief, diffSummary: input.diffSummary, cwd: input.cwd, baseRef: input.baseRef,
-      })
-    : { ran: false, findings: [] };
-  if (codexRequired && !codexResult.ran) {
-    codexResult = await roles.codexLane.run({
-      brief: input.brief, diffSummary: input.diffSummary, cwd: input.cwd, baseRef: input.baseRef,
-    });
-  }
-
-  // A round the chain forced Codex onto (`FORGE_COUNCIL_CODEX=always`) where the lane
-  // never actually ran is a silent gap, not a clean pass: three Sonnet lenses agreeing
-  // proves nothing about the read-only rubric Codex was supposed to add. One uncovered
-  // finding goes into the packet the judge reads, and the verdict is forced regardless
-  // of what comes back, so a forced round can never clear on a lane that stayed silent.
-  const codexRequiredButMissing = Boolean(input.forceCodex) && !('ran' in codexResult && codexResult.ran);
-  const gapFinding: CouncilFinding | undefined = codexRequiredButMissing
-    ? {
-        member: 'codex',
-        file: '(codex)',
-        line: 0,
-        claim: `Codex lane did not run: ${(codexResult as { reason?: string }).reason ?? 'no reason given'}`,
-        failureScenario: 'the round required the Codex lane but it never ran, so this diff has no Codex '
-          + 'coverage at all',
-        severity: 'critical',
-        confidence: 'high',
-      }
-    : undefined;
-
   // GATE.md item 1: a failed lens is coverage, not a code-quality claim -- it is excluded
   // from what the judge reads entirely, never handed over dressed up as a finding for it
-  // to weigh. The Codex gap packet above is the one pre-existing exception to that rule
-  // (forced rounds only) and is left as-is; `verdictForRound` still overrides its verdict.
+  // to weigh.
   const usableLensReports = lensReports.filter((report) => !report.failed);
-  const judgeLensReports = gapFinding
-    ? [...usableLensReports, { lens: 'codex', findings: [gapFinding] }]
-    : usableLensReports;
 
-  const synthesis = synthesizeFindings(usableLensReports, codexResult.findings);
+  const synthesis = synthesizeFindings(usableLensReports, []);
 
   // C.2: an Opus judge call is the round's single most expensive step. A round with no
   // finding anywhere in what the judge would read has nothing to weigh -- `PASS` here
   // costs no call, and `verdictForRound` below still tightens it to `FIX FIRST` on its
   // own if coverage is short, exactly as it would have if the judge had said `PASS` too.
-  const hasJudgeableFinding = judgeLensReports.some((report) => report.findings.length > 0);
+  const hasJudgeableFinding = usableLensReports.some((report) => report.findings.length > 0);
   const judgment = hasJudgeableFinding
     ? await roles.judge.decide(buildJudgeInput({
-        lenses: judgeLensReports,
+        lenses: usableLensReports,
         brief: input.brief,
         ci: input.ci,
         diff: input.diffSummary,
       }))
     : { verdict: 'PASS' as CouncilVerdict, decidingFindings: [] as CouncilFinding[] };
 
-  const missingMembers = [
-    ...lensReports.filter((report) => report.failed).map((report) => report.lens),
-    ...(codexRequired && !codexResult.ran ? ['codex'] : []),
-  ];
-  const membersTotal = lensNames.length + (codexRequired ? 1 : 0);
+  const missingMembers = lensReports.filter((report) => report.failed).map((report) => report.lens);
+  const membersTotal = lensNames.length;
   const verdict = verdictForRound(judgment.verdict, { missingMembers });
 
   let decidingFindings = judgment.decidingFindings.length ? judgment.decidingFindings : synthesis.decidingFindings;
-  if (gapFinding) decidingFindings = [...decidingFindings, gapFinding];
   if (missingMembers.length > 0) {
     decidingFindings = [...decidingFindings, coverageFinding(missingMembers, membersTotal - missingMembers.length, membersTotal)];
   }
 
   return {
     lensReports,
-    codexRan: codexResult.ran,
+    codexRan: false,
     decidingFindings,
-    codexOnly: synthesis.codexOnly,
+    codexOnly: [],
     verdict,
     missingMembers,
     membersTotal,
