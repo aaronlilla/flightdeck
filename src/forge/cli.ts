@@ -574,6 +574,9 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       )
         .then((reconciled) => {
           for (const outcome of reconciled) {
+            // Plan item 3, 2026-09-23: an already-noted open-ask park has nothing new to
+            // say -- skip it rather than re-appending the identical note on every pass.
+            if (outcome.alreadyNoted) continue;
             reconcileJournal.append({
               event: 'note', actor: 'runner', run: outcome.goal,
               message: outcome.ok ? 'reconciled: resumed by session id' : `could not reconcile: ${outcome.reason}`,
@@ -1597,6 +1600,14 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       // has already ended.
       const { delivered } = await deliverAnswer(
         answered, key, answerText, deps.engine instanceof SdkEngine ? deps.engine : undefined,
+        // Plan item 3, 2026-09-23: a run parked on an open ask exited its process on
+        // purpose, so the inbox message above has nobody to poll it. Resume it here, by
+        // its own last session id, the way a crash would be resumed on the next `forge
+        // up` -- except `forge up`'s reconcile deliberately never touches an open-ask
+        // row, so without this the answer only ever reached a run already dead.
+        (goal) => relaunchAbandonedGoal(new Registry(registryDir()), deps.engine ?? new SdkEngine({
+          journalPath: journalPath(), inboxDir: inboxDir(), gotchasDir: gotchasDir(),
+        }), goal),
       );
       return {
         code: 0,

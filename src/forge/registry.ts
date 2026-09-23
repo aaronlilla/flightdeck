@@ -32,6 +32,13 @@ export interface RegistryRecord {
   startedAt: number;
   sessionId?: string;
   model?: string;
+  /** Plan item 3, 2026-09-23: set once `reconcileRegistry` has already journaled the
+   *  "parked on an open ask" note for this row. Without it every `forge up` restart
+   *  (or any other caller) re-walked the same still-open-ask registry rows and re-noted
+   *  them -- 2,156 duplicate journal rows across 7 days for asks nobody had touched.
+   *  The row's life IS the park's life: it clears itself the moment the row is removed
+   *  (answered, killed, or abandoned) and a fresh admit starts the next park unmarked. */
+  askNotedAt?: number;
 }
 
 export interface AdmissionVerdict {
@@ -138,6 +145,20 @@ export class Registry {
     }
   }
 
+  /** Plan item 3, 2026-09-23: mark this row's open-ask park already journaled, so the
+   *  next reconcile pass over the same still-open ask finds nothing new to say. */
+  markAskNoted(goal: string): void {
+    const existing = this.get(goal);
+    if (!existing || existing.askNotedAt) return;
+    const path = this.pathFor(goal);
+    const fd = openSync(path, 'w');
+    try {
+      writeSync(fd, JSON.stringify({ ...existing, askNotedAt: Date.now() }, null, 2));
+    } finally {
+      closeSync(fd);
+    }
+  }
+
   /** A run that finished, one way or another, is no longer this registry's business. */
   remove(goal: string): void {
     const path = this.pathFor(goal);
@@ -149,6 +170,11 @@ export interface ReconcileOutcome {
   goal: string;
   ok: boolean;
   reason?: string;
+  /** Plan item 3, 2026-09-23: true when this park's "could not reconcile" note has
+   *  already been journaled once, on an earlier reconcile pass over the same still-open
+   *  ask. The caller (`cli.ts`) skips the journal row for these -- the note belongs to
+   *  the park, once, not to every tick that happens to re-read it. */
+  alreadyNoted?: boolean;
 }
 
 export type RelaunchOutcome = 'relaunched' | 'skipped';
@@ -300,7 +326,15 @@ export async function reconcileRegistry(
     }
 
     if (openAsk(record.goal)) {
-      outcomes.push({ goal: record.goal, ok: false, reason: 'parked on an open ask; the answer resumes it' });
+      // Plan item 3, 2026-09-23: journal the note once per park, not once per reconcile
+      // pass. `forge up` restarting, or anything else calling this repeatedly while the
+      // same ask sits open, previously re-appended the identical "could not reconcile"
+      // note every time -- 2,156 duplicates in 7 days for asks nobody had touched.
+      const alreadyNoted = Boolean(record.askNotedAt);
+      if (!alreadyNoted) registry.markAskNoted(record.goal);
+      outcomes.push({
+        goal: record.goal, ok: false, reason: 'parked on an open ask; the answer resumes it', alreadyNoted,
+      });
       continue;
     }
 
