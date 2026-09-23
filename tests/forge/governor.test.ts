@@ -482,3 +482,10 @@ describe('reconcileBurn does not double-count the SDK\'s per-block usage repeat'
     expect(reconcileBurn(state, ledger)).toHaveLength(0);
   });
 });
+
+describe('a refused turn is not a model mismatch', () => {
+  it('does not park a run whose turn reports the SDK <synthetic> placeholder', () => {
+    expect(checkConformance('r1', 'implement', '<synthetic>').conforms).toBe(true);
+    expect(checkConformance('r1', 'implement', 'claude-haiku-4-5-20251001').conforms).toBe(false);
+  });
+});

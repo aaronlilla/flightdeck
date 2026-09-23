@@ -318,10 +318,19 @@ export interface ConformanceResult {
  * A subagent definition is checked the same way: pass its own declared class rather than
  * the parent run's, and the same function applies.
  */
+/** Model id the SDK reports on a turn the API refused before any model answered. */
+export const SYNTHETIC_MODEL = '<synthetic>';
+
 export function checkConformance(run: string, className: string, servingModel: string): ConformanceResult {
   const spec = classFor(className);
   const expected = modelIdFor(spec.model);
   if (servingModel === expected || aliasOf(servingModel) === aliasOf(expected)) {
+    return { conforms: true };
+  }
+  // `<synthetic>` is the SDK's placeholder on a turn the API refused (rate or session
+  // limit, outage), not a different model serving the run. Parking it as a mismatch
+  // stranded BBZ-386/387/388 on 2026-09-23; the account-limit path owns that case.
+  if (servingModel === SYNTHETIC_MODEL) {
     return { conforms: true };
   }
   return {
