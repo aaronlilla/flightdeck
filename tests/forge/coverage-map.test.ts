@@ -85,7 +85,7 @@ const ROWS: Row[] = [
   { stream: 'warden', requirement: 'fleet-unknown reported, never acted on', specimen: 'takes no actuator parameter at all: the falsifier this closes is a caller wiring a park into it' },
 
   // ---- Governor (brief Requirements, 7 bullets) ----
-  { stream: 'governor', requirement: 'Provider at planning time', specimen: 'reads an audit-judge ticket as codex and an implement-class ticket as claude' },
+  { stream: 'governor', requirement: 'Provider at planning time', specimen: 'reads an audit-judge ticket as claude and an implement-class ticket as claude' },
   { stream: 'governor', requirement: 'Burn ledger from modelUsage', specimen: 'sums a result.usage row per run, per class and per model id' },
   { stream: 'governor', requirement: 'Window pause with reset time', specimen: 'pauses every queued run of that tier and never admits one before the reset time' },
   { stream: 'governor', requirement: 'Conformance per turn', specimen: 'parks the run in the very turn a mismatch is seen, never after N turns' },

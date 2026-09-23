@@ -6,7 +6,7 @@
  * specimen never opens a live session, never calls a real model, and never touches a real
  * EAS build. That is what "zero-spend specimens" means for this stream.
  */
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -42,15 +42,27 @@ function writeEvents(...rows: Partial<ForgeEvent>[]): ForgeEvent[] {
 }
 
 describe('classes assigned with a provider at planning time', () => {
-  it('reads an audit-judge ticket as codex and an implement-class ticket as claude', () => {
-    expect(providerFor('audit-judge')).toBe('codex');
+  /** A copy of the real policy with audit-judge moved to `provider`, written to a temp
+   *  file, so the not-a-constant specimen still has two providers to tell apart now that
+   *  the checked-in policy runs every class on claude. */
+  function fixturePolicy(provider: 'codex' | 'claude'): string {
+    const dir = mkdtempSync(join(tmpdir(), 'governor-provider-'));
+    const path = join(dir, 'model-policy.json');
+    const base = JSON.parse(readFileSync(new URL('../../src/forge/model-policy.json', import.meta.url), 'utf8'));
+    base.classes['audit-judge'].provider = provider;
+    writeFileSync(path, JSON.stringify(base), 'utf8');
+    return path;
+  }
+
+  it('reads an audit-judge ticket as claude and an implement-class ticket as claude', () => {
+    expect(providerFor('audit-judge')).toBe('claude');
     expect(providerFor('implement')).toBe('claude');
   });
 
   it('is not a constant: two different classes really do read two different providers', () => {
     // The falsifier this specimen exists to catch: a provider field hardcoded to one
     // value would pass every other specimen in this file and only fail here.
-    expect(providerFor('audit-judge')).not.toBe(providerFor('implement'));
+    expect(providerFor('audit-judge', fixturePolicy('codex'))).not.toBe(providerFor('implement', fixturePolicy('codex')));
   });
 });
 

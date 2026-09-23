@@ -328,17 +328,17 @@ describe('maxDiffLinesFor: the per-hunk cap a lens\'s diff is read at', () => {
   });
 });
 
-// accounts-connect-routing, Contract gap 3: the two audit classes reason on Codex, never
-// Claude, so a claude-account rate limit never stalls a review. Every key matching
+// Aaron, 2026-09-23: every PR audit runs on Opus 5.5 only, on Claude. Every key matching
 // `/^audit-/` is checked, not a hand-typed pair, so a third audit class added later is
-// covered automatically rather than silently defaulting to `claude`.
-describe('every audit-* class reasons on codex', () => {
-  it('checked-in model-policy.json names codex for every audit-* class', () => {
+// covered automatically.
+describe('every audit-* class reasons on Opus 5.5', () => {
+  it('checked-in model-policy.json names claude and opus-5-5 for every audit-* class', () => {
     const policy = loadPolicy();
     const auditClassNames = Object.keys(policy.classes).filter((name) => /^audit-/.test(name));
     expect(auditClassNames.length).toBeGreaterThan(0);
     for (const name of auditClassNames) {
-      expect(providerFor(name)).toBe('codex');
+      expect(providerFor(name)).toBe('claude');
+      expect(policy.classes[name]!.model).toBe('opus-5-5');
     }
   });
 });
