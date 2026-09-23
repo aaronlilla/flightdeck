@@ -1327,6 +1327,30 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
 const advancing = new Set<string>();
 const MERGED_SWEEP_MS = 120_000;
 let lastMergedSweepAt = 0;
+/** Finding #6/#9: how many `prMerged` GitHub calls the merged-elsewhere sweep may have
+ *  in flight at once. Independent of `maxInFlight` -- that width governs worker
+ *  concurrency, this one only bounds a read-only status check -- and kept modest so a
+ *  board with many open reviews does not open a burst of simultaneous GitHub calls. */
+const MERGED_SWEEP_CONCURRENCY = 4;
+
+/** Runs `fn` over `items` with at most `limit` calls in flight at once, preserving each
+ *  item's own result but not the order calls settle in. A `limit` at or above the item
+ *  count is exactly `Promise.all`; this exists so a large `items` array never opens more
+ *  concurrent network calls than the caller intends. */
+async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  async function worker(): Promise<void> {
+    for (;;) {
+      const index = next;
+      next += 1;
+      if (index >= items.length) return;
+      results[index] = await fn(items[index]!);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker));
+  return results;
+}
 /** Test seam: make the next tick sweep merged PRs regardless of the last sweep time. */
 export function resetMergedSweep(): void { lastMergedSweepAt = 0; }
 
@@ -1538,61 +1562,77 @@ export async function runQueueTick(deps: QueueRuntimeDeps, items: QueueItem[]): 
   // `mergedBy: 'queue'` mark -- that mark is never true unless `mergeItem` wrote it.
   if (deps.prMerged && Date.now() - lastMergedSweepAt >= MERGED_SWEEP_MS) {
     lastMergedSweepAt = Date.now();
-    for (const item of items.filter((row) => row.state === 'review' && row.pr && row.repo)) {
-      try {
-        if (await deps.prMerged(item.repo!, item.pr!.no)) {
-          const current = deps.store.get(item.id) ?? item;
-          if (current.mergedBy === 'queue') continue;
-          // The ticket does not care which route merged its pull request. Workers run
-          // with no push credentials, so in practice the operator merges from the host
-          // and every one of those merges lands here rather than on the gate hop above
-          // -- and until this ran, the queue item closed while Jira kept the ticket
-          // assigned to the operator in its old status forever. Seven shipped tickets
-          // were found stranded that way on 2026-09-21. Same two writes the gate hop
-          // makes, in the same order, under the same best-effort contract: a Jira
-          // outage must never stop the item closing, or the next sweep re-merges it.
-          const mergedAt = deps.clock();
-          if (deps.jiraHandoff && !current.handoffAt && current.ticket && !current.noMerge) {
-            try {
-              await deps.jiraHandoff({ item: current, pr: { no: current.pr!.no, url: current.pr!.url } });
-            } catch {
-              // Best effort, exactly as on the gate hop.
+    // Finding #6/#9: each item's own PR is independent of every other item's, so the
+    // GitHub check for one is never blocked behind another's -- bounded, not unbounded,
+    // so a board with many open reviews does not open one call per item at once.
+    await mapWithConcurrency(
+      items.filter((row) => row.state === 'review' && row.pr && row.repo),
+      MERGED_SWEEP_CONCURRENCY,
+      async (item) => {
+        try {
+          if (await deps.prMerged!(item.repo!, item.pr!.no)) {
+            const current = deps.store.get(item.id) ?? item;
+            if (current.mergedBy === 'queue') return;
+            // The ticket does not care which route merged its pull request. Workers run
+            // with no push credentials, so in practice the operator merges from the host
+            // and every one of those merges lands here rather than on the gate hop above
+            // -- and until this ran, the queue item closed while Jira kept the ticket
+            // assigned to the operator in its old status forever. Seven shipped tickets
+            // were found stranded that way on 2026-09-21. Same two writes the gate hop
+            // makes, in the same order, under the same best-effort contract: a Jira
+            // outage must never stop the item closing, or the next sweep re-merges it.
+            const mergedAt = deps.clock();
+            if (deps.jiraHandoff && !current.handoffAt && current.ticket && !current.noMerge) {
+              try {
+                await deps.jiraHandoff({ item: current, pr: { no: current.pr!.no, url: current.pr!.url } });
+              } catch {
+                // Best effort, exactly as on the gate hop.
+              }
             }
-          }
-          if (deps.jiraDone && current.ticket) {
-            try {
-              await deps.jiraDone({ item: current, pr: { no: current.pr!.no, url: current.pr!.url }, mergedAt });
-            } catch {
-              // Best effort, exactly as on the gate hop.
+            if (deps.jiraDone && current.ticket) {
+              try {
+                await deps.jiraDone({ item: current, pr: { no: current.pr!.no, url: current.pr!.url }, mergedAt });
+              } catch {
+                // Best effort, exactly as on the gate hop.
+              }
             }
+            writeTransition(
+              item,
+              {
+                state: 'done',
+                reason: `PR #${item.pr!.no} merged outside the queue`,
+                ...(current.handoffAt ? {} : { handoffAt: mergedAt }),
+              },
+              deps, 'queue.done', { hop: 'merged-elsewhere' },
+            );
           }
-          writeTransition(
-            item,
-            {
-              state: 'done',
-              reason: `PR #${item.pr!.no} merged outside the queue`,
-              ...(current.handoffAt ? {} : { handoffAt: mergedAt }),
-            },
-            deps, 'queue.done', { hop: 'merged-elsewhere' },
-          );
+        } catch {
+          // an unreadable PR is not evidence of a merge; the next sweep asks again
         }
-      } catch {
-        // an unreadable PR is not evidence of a merge; the next sweep asks again
-      }
-    }
+      },
+    );
   }
 
-  let advanced = 0;
-  for (const item of toAdvance) {
+  // Finding #1/#6: these items are independent of each other -- nothing here shares a
+  // worktree, a branch or a run key -- so nothing requires them to advance one after
+  // another. `toAdvance` is already bounded by `maxInFlight` (the in-flight items plus
+  // however many `queued` items fit the remaining slots), so running every entry through
+  // `Promise.all` never admits more concurrent work than the width the operator set; it
+  // only stops queueing item B's network round-trip behind item A's. Ordering among
+  // `toAdvance` itself is irrelevant: each entry's own `advancing` guard (added/removed
+  // right around its own `advanceItem` call) is what actually protects re-entrancy, not
+  // the order the array is walked in.
+  const advancedFlags = await Promise.all(toAdvance.map(async (item) => {
     advancing.add(item.id);
     const before = JSON.stringify(item);
     try {
       const next = await advanceItem(item, deps);
-      if (JSON.stringify(next) !== before) advanced += 1;
+      return JSON.stringify(next) !== before;
     } finally {
       advancing.delete(item.id);
     }
-  }
+  }));
+  const advanced = advancedFlags.filter(Boolean).length;
   return { started, advanced, killSwitchEngaged: false, paused: false };
 }
 
