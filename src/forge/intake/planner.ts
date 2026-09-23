@@ -6,11 +6,13 @@
  * (decision 6): always `claude`.
  */
 import type { Packet, Reasoner } from '../contracts.ts';
+import { ensureTierLine, type TierDecision } from './tier.ts';
 
 export interface PlannedBrief {
   packetId: string;
   ticket: string;
   text: string;
+  tier: TierDecision;
 }
 
 export function buildPlannerPrompt(packet: Packet, verifyCommand?: string): string {
@@ -69,6 +71,18 @@ export function buildPlannerPrompt(packet: Packet, verifyCommand?: string): stri
     '',
     'Set your `text` field to the full brief as Markdown, starting with a "# Goal:"',
     'heading.',
+    '',
+    'Immediately under that heading, decide this ticket\'s complexity tier -- the',
+    'pipeline runs the worker on a cheaper or pricier model depending on what you say',
+    'here, so read the rubric and commit to one:',
+    '  "light"    -- a copy, text, config, or single-file change with an obvious test,',
+    '                 touching no money, auth, payments, wallet, ledger, or migration.',
+    '  "hard"     -- spans multiple repos; touches money, a ledger, a wallet, a payment',
+    '                 or auth/security surface; involves concurrency; needs a migration;',
+    '                 or the root cause is not yet clear.',
+    '  "standard" -- everything else. When in doubt, say standard.',
+    'Write `tier: light`, `tier: standard` or `tier: hard` on its own line, then',
+    '`tier-reason: ` and one short sentence for why, on the next line.',
   ].join('\n');
 }
 
@@ -86,5 +100,10 @@ export async function planFromPacket(
 ): Promise<PlannedBrief> {
   const prompt = buildPlannerPrompt(packet, verifyCommand);
   const result = await reasoner.call({ className, prompt, replyShape: 'text' });
-  return { packetId: packet.id, ticket: packet.ticket, text: result.text };
+  // Complexity routing is on by default -- no env flag, no config switch. Every brief
+  // this function hands back already carries a `tier:` line, whatever the model said
+  // (or didn't say): `ensureTierLine` defaults a missing or invalid tier to `standard`
+  // and never lets a money/auth ticket ride on `light`.
+  const { text, decision } = ensureTierLine(result.text);
+  return { packetId: packet.id, ticket: packet.ticket, text, tier: decision };
 }

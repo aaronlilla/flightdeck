@@ -29,6 +29,7 @@ import type {
 } from './intake/queue.js';
 import { asksForItem, planTicketWithInterview } from './intake/interviewPlanner.js';
 import { InterviewStore } from './intake/interviewStore.js';
+import { ensureTierLine } from './intake/tier.js';
 import { scoutAnswer } from './intake/scout.js';
 import { Inbox } from './inbox.js';
 import { gitSquashMergeToBase, type GitRunFn } from './intake/gitMerge.js';
@@ -167,7 +168,15 @@ export function queuePlanner(
   const routines = loadRoutines(routinesDir());
   async function writeBrief(id: string, text: string, repoKind?: string): Promise<string> {
     const path = join(briefsDir, `${id.replace(/[^A-Za-z0-9._-]/g, '_')}.md`);
-    writeFileSync(path, briefWithRoutines(text, routines, repoKind), 'utf8');
+    // Complexity routing applies to every brief this queue writes, ticket-planned or
+    // hand-typed alike -- on by default, no env flag or setting to turn it off. A
+    // ticket-planned brief already carries its own `tier:` line (written by
+    // `writeBrief`/`planFromPacket` in `intake/interview.ts`/`intake/planner.ts`) and
+    // `ensureTierLine` leaves an already-valid one untouched; a pasted brief or a typed
+    // hotfix, which never went through the reasoner's rubric prompt at all, gets one
+    // here for the first time -- `standard`, never skipped for want of a signal.
+    const { text: tiered } = ensureTierLine(text);
+    writeFileSync(path, briefWithRoutines(tiered, routines, repoKind), 'utf8');
     return path;
   }
 

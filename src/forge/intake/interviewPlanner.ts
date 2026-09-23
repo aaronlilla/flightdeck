@@ -260,6 +260,14 @@ async function finishBrief(
   packet: Packet, answers: InterviewAnswer[], ticket: string, itemId: string, deps: InterviewPlannerDeps,
 ): Promise<QueuePlanOutcome> {
   const brief = await writeBrief(packet, answers, deps.reasoner);
+  // The planner predicted this ticket's complexity once, right here, at planning time.
+  // Journaled unconditionally -- on by default, no config to skip it -- so the tier a
+  // worker actually launched on is always in the fleet journal, not only in the brief
+  // file on disk.
+  deps.append?.({
+    event: 'plan.tier', itemId, ticket, packetId: packet.id,
+    tier: brief.tier.tier, reason: brief.tier.reason,
+  });
 
   // The planner read every settled decision against every other one and refused to write
   // a brief over a conflict. Judgement lives there because that call already carries all
