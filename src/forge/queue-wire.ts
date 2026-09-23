@@ -16,7 +16,7 @@ import type { QueueItem } from '../shared/console-model.js';
 import { join } from 'node:path';
 
 import type { BlockerBoard } from './blockers.js';
-import { chainCouncil, chainGate, chainGh, chainRebase, chainLauncher, chainLaunchGoal, chainBugHunt } from './chain-wire.js';
+import { chainCouncil, chainGate, chainGh, chainRebase, chainLauncher, chainLaunchGoal, chainBugHunt, chainShipUnfinishedWork } from './chain-wire.js';
 import {
   checkoutFor, declaredRepoKind, repoKindFor as repoKindForEnv, verifyCommandFor, type ChainEnv,
 } from './chain-env.js';
@@ -768,6 +768,10 @@ export function buildQueueRuntimeDeps(
     // worker on its own worktree with the findings appended to its brief. This was never
     // wired, so every FIX FIRST parked outright (BBZ-386 / PR #219, 2026-09-23).
     relaunchForFixRound: fixRoundRelauncher(chainLauncher(chainEnv, configDirFor)),
+    // BUG B (BBZ-386/BBZ-388, 2026-09-23): the sandbox a worker runs in cannot commit,
+    // push or open its own PR. The queue does it on the host once a run finishes with
+    // real changes and no PR anywhere.
+    shipUnfinishedWork: chainShipUnfinishedWork(),
     gate: chainGate(deps),
     // A repository whose Actions are off never leaves a pending check rollup, so the gate
     // asks whether it runs any, and stands its own verify in their place when it does not
@@ -890,8 +894,9 @@ export function fixRoundRelauncher(launcher: FixRoundLauncher) {
       `## Fix round ${round}: review findings to resolve`,
       '',
       'The review of your pull request returned FIX FIRST. Fix every real finding below on',
-      `this same branch (${item.branch}), run the affected tests, commit and push. The pull`,
-      'request updates itself. Do not open a new one. Call forge_done with the PR URL when done.',
+      `this same branch (${item.branch}) and run the affected tests. You do not need to`,
+      'commit, push or open the PR yourself; call forge_done with a summary when done and',
+      'the queue commits, pushes and updates the pull request.',
       '',
       findings.trim(),
       '',

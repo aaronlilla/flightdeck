@@ -824,7 +824,112 @@ describe('advanceItem', () => {
     expect(result.reason).toMatch(/nothing proving the work is good/);
     expect(result.state).toBe('parked');
   });
+});
 
+describe('BUG B: the queue ships a worker\'s unfinished commit/push/PR on the host', () => {
+  it('ships a worktree with real changes and no PR: commits, pushes, opens a draft PR', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    let shipInput: { item: { id: string; worktreePath: string; branch: string; repo: string; base: string } } | undefined;
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', lastText: 'finished the change' }) },
+      gh: { findPrByHead: async () => undefined },
+    });
+    deps.shipUnfinishedWork = async (input) => {
+      shipInput = input as typeof shipInput extends undefined ? never : NonNullable<typeof shipInput>;
+      return { ok: true, pr: { number: 42, url: 'https://github.com/owner/name/pull/42' } };
+    };
+
+    let current = item;
+    current = await advanceItem(current, deps); // plan
+    current = await advanceItem(current, deps); // launch
+    const result = await advanceItem(current, deps); // gate -> no PR found -> ship -> review
+
+    expect(shipInput?.item.id).toBe(item.id);
+    expect(shipInput?.item.worktreePath).toBeTruthy();
+    expect(shipInput?.item.branch).toBeTruthy();
+    expect(result.state).not.toBe('parked');
+    expect(result.pr?.no).toBe(42);
+  });
+
+  it('journals queue.shipped when the ship succeeds', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const events: string[] = [];
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done' }) },
+      gh: { findPrByHead: async () => undefined },
+    });
+    const base = deps.append;
+    deps.append = (event) => { events.push(String(event['event'])); return base(event); };
+    deps.shipUnfinishedWork = async () => ({ ok: true, pr: { number: 7, url: 'https://github.com/owner/name/pull/7' } });
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    await advanceItem(current, deps);
+
+    expect(events).toContain('queue.shipped');
+  });
+
+  it('still parks, unchanged, when the worktree has nothing to ship', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done' }) },
+      gh: { findPrByHead: async () => undefined },
+    });
+    deps.shipUnfinishedWork = async () => ({ ok: false });
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    const result = await advanceItem(current, deps);
+
+    expect(result.state).toBe('parked');
+    expect(result.reason).toMatch(/no PR was found/);
+  });
+
+  it('journals queue.ship-failed and still parks when a real ship attempt fails', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const events: { event: string; reason?: unknown }[] = [];
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done' }) },
+      gh: { findPrByHead: async () => undefined },
+    });
+    const base = deps.append;
+    deps.append = (event) => { events.push({ event: String(event['event']), reason: event['reason'] }); return base(event); };
+    deps.shipUnfinishedWork = async () => ({ ok: false, reason: 'could not push feature/abc-1: refused' });
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    const result = await advanceItem(current, deps);
+
+    expect(result.state).toBe('parked');
+    expect(events.some((e) => e.event === 'queue.ship-failed' && String(e.reason).includes('refused'))).toBe(true);
+  });
+
+  it('no shipUnfinishedWork dep wired: behaves exactly as before (parks)', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done' }) },
+      gh: { findPrByHead: async () => undefined },
+    });
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    const result = await advanceItem(current, deps);
+
+    expect(result.state).toBe('parked');
+    expect(result.reason).toMatch(/no PR was found/);
+  });
+});
+
+describe('gate: pending checks and no-CI repos', () => {
   // BBZ-60/62/74/202, 2026-09-08: four items reached the gate hop while their PR checks
   // were still queued and parked with the council's raw "checks are pending" refusal --
   // every one of them went green minutes later, but a parked item never retries and
@@ -1256,6 +1361,103 @@ describe('fix round: FIX FIRST relaunches up to the cap, then parks (2026-09-23:
     current = await advanceItem(current, deps);
 
     expect(current.state).toBe('parked');
+  });
+});
+
+describe('BBZ-386/PR #219: a fix round never re-reviews an unchanged PR head', () => {
+  it('parks a fix round whose head never moved, instead of calling the council again', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    let councilCalls = 0;
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1', startedAt: 1500 }) },
+      council: async () => { councilCalls += 1; return { verdict: 'FIX FIRST', findingsText: 'bad thing' }; },
+      gh: { headSha: async () => 'sha-unchanged' },
+    });
+    deps.relaunchForFixRound = async () => ({ runKey: 'abc-1' });
+
+    let current = item;
+    current = await advanceItem(current, deps); // plan
+    current = await advanceItem(current, deps); // launch
+    current = await advanceItem(current, deps); // gate -> council FIX FIRST -> fix round (stamps lastCouncilHead)
+    expect(current.state).toBe('running');
+    expect(current.lastCouncilHead).toBe('sha-unchanged');
+    expect(councilCalls).toBe(1);
+
+    // The worker could not push -- the same head comes back. The next tick must park
+    // without calling the council a second time on the identical diff.
+    const result = await advanceItem(current, deps);
+    expect(result.state).toBe('parked');
+    expect(result.reason).toMatch(/made no change to the pull request/);
+    expect(result.reason).toContain('sha-unchanged');
+    expect(councilCalls).toBe(1);
+  });
+
+  it('a fix round whose head DID move goes on to a real re-review', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    let councilCalls = 0;
+    let headShaCalls = 0;
+    const heads = ['sha-1', 'sha-2'];
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1', startedAt: 1500 }) },
+      council: async () => {
+        councilCalls += 1;
+        return councilCalls === 1 ? { verdict: 'FIX FIRST', findingsText: 'bad thing' } : { verdict: 'PASS' };
+      },
+      gh: { headSha: async () => { const head = heads[headShaCalls] ?? heads[heads.length - 1]; headShaCalls += 1; return head; } },
+    });
+    deps.relaunchForFixRound = async () => ({ runKey: 'abc-1' });
+
+    let current = item;
+    current = await advanceItem(current, deps); // plan
+    current = await advanceItem(current, deps); // launch
+    current = await advanceItem(current, deps); // gate -> FIX FIRST -> fix round, lastCouncilHead = sha-1
+    expect(current.lastCouncilHead).toBe('sha-1');
+
+    const result = await advanceItem(current, deps); // head moved to sha-2 -> real re-review -> PASS
+    expect(councilCalls).toBe(2);
+    expect(result.state).not.toBe('parked');
+  });
+
+  it('does not treat the run as finished until a run.started newer than the fix round exists', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    let councilCalls = 0;
+    let freshRunStarted = false;
+    const { deps } = buildDeps(store, {
+      launcher: {
+        status: async () => (
+          // The first post-relaunch poll still reads the OLD run's stale startedAt
+          // (500, before the fix round fired at clock=1000); the queue must not act on
+          // it. The next poll shows a fresh run.started (1500) and is honoured.
+          freshRunStarted
+            ? { finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1', startedAt: 1500 }
+            : { finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1', startedAt: 500 }
+        ),
+      },
+      council: async () => { councilCalls += 1; return councilCalls === 1 ? { verdict: 'FIX FIRST', findingsText: 'x' } : { verdict: 'PASS' }; },
+      gh: { headSha: async () => (freshRunStarted ? 'sha-after-fix' : 'sha-before-fix') },
+    });
+    deps.relaunchForFixRound = async () => ({ runKey: 'abc-1' });
+
+    let current = item;
+    current = await advanceItem(current, deps); // plan
+    current = await advanceItem(current, deps); // launch (freshRunStarted false, startedAt 500 < no fixRoundAt yet -> proceeds)
+    freshRunStarted = false;
+    current = await advanceItem(current, deps); // gate -> FIX FIRST -> fix round (clock 1000)
+    expect(current.fixRoundAt).toBe(1_000);
+
+    // Stale status (startedAt 500 < fixRoundAt 1000): the item must not advance.
+    const stillWaiting = await advanceItem(current, deps);
+    expect(stillWaiting.runKey).toBe(current.runKey);
+    expect(councilCalls).toBe(1);
+
+    // Simulate the fresh run.started landing.
+    freshRunStarted = true;
+    const advanced = await advanceItem(current, deps);
+    expect(councilCalls).toBe(2);
+    expect(advanced.state).not.toBe('parked');
   });
 });
 

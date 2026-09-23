@@ -391,6 +391,18 @@ export interface QueueRuntimeDeps {
    *  Unset in a specimen with nothing on disk to clear. */
   clearRunBlock?: (runKey: string) => void;
   gh: ChainGh;
+  /** BUG B (BBZ-386/BBZ-388, 2026-09-23): commits, pushes and opens a draft PR on the
+   *  host for an item whose worker finished with real changes but no PR -- the fix for
+   *  the sandbox carve-out that refuses a worker's own `git commit`/`gh`. Answers
+   *  `{ ok: false }` with no `reason` when the worktree carries nothing to ship (no
+   *  park-worthy failure, just nothing to do); `{ ok: false, reason }` for a real
+   *  attempt that failed (push refused, `gh pr create` failed); `{ ok: true, pr }` once
+   *  the PR is open. Absent means this environment never wires the write, and the item
+   *  parks exactly as it did before this fix. */
+  shipUnfinishedWork?: (input: {
+    item: QueueItem & { worktreePath: string; branch: string; repo: string; base: string };
+    lastText?: string;
+  }) => Promise<{ ok: true; pr: { number: number; url: string } } | { ok: false; reason?: string }>;
   /** Brings the branch up to date with its base before the gate reads it, and answers
    *  whether that succeeded. A branch that has fallen behind while the work ran is the
    *  ordinary case on a busy repository; one that cannot be replayed cleanly is a real
@@ -972,6 +984,19 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
 
   const status = await deps.launcher.status(item.runKey);
   if (!status.finished) return item;
+  // BBZ-386/PR #219, 2026-09-23: a fix round relaunches the worker under the SAME run
+  // key (`runKeyForBrief` is deterministic on the brief path), and the launcher's own
+  // registration wait can resolve on the registry row alone, before the new run's own
+  // `run.started` has been journaled. Reading `status` right after that relaunch can
+  // therefore still fold the OLD (already-finished) run under this key -- the exact
+  // race that let one council FIX FIRST burn six review rounds in five minutes on an
+  // unchanged head. An item with a pending fix round waits for a `run.started` newer
+  // than the relaunch itself before it will call this run finished at all. Absent
+  // `status.startedAt` (an environment that never wires it) skips the wait rather than
+  // blocking forever on evidence that will never arrive.
+  if (item.fixRoundAt && status.startedAt !== undefined && status.startedAt < item.fixRoundAt) {
+    return item;
+  }
   // A park already held on a live worker (`relaunchOnRetryOrPark`) waits on that process.
   // Reading the PR again on every tick until it exits is a GitHub call per tick per item.
   const heldPid = deps.runPid?.(item.runKey);
@@ -996,9 +1021,62 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
     }
   }
   if (!pr) {
+    // BUG B (BBZ-386/BBZ-388, 2026-09-23): a worker running inside the Docker sandbox
+    // (`shell-containment.ts`/`sandbox-exec.ts`) cannot commit, push or open a PR itself
+    // -- no working `gh`, and `.git` inside the container cannot resolve the host's
+    // alternate object path. A worker that finished real code with nothing to show for
+    // it is not a failure to park; it is a queue-side chore the queue itself can do,
+    // on the host, where git and gh both work. `deps.shipUnfinishedWork` commits
+    // whatever is left in the worktree, pushes the branch and opens a draft PR; only a
+    // worktree with real changes vs its base ever attempts this, so an item that
+    // genuinely produced nothing still parks exactly as before.
+    if (deps.shipUnfinishedWork && item.worktreePath && item.branch && item.repo && item.base) {
+      const shipped = await deps.shipUnfinishedWork({
+        item: item as QueueItem & { worktreePath: string; branch: string; repo: string; base: string },
+        lastText: status.lastText ?? status.lastHandoff,
+      });
+      if (shipped.ok) {
+        deps.append({
+          event: 'queue.shipped', actor: 'queue', itemId: item.id, pr: shipped.pr.number, url: shipped.pr.url,
+        });
+        pr = shipped.pr;
+      } else if (shipped.reason) {
+        // Only a real attempt that failed is worth its own row -- a worktree with
+        // nothing to ship falls straight through to the ordinary park below with no
+        // extra noise (`shipUnfinishedWork` answers `{ ok: false }` with no reason for
+        // that case, `{ ok: false, reason }` only for an attempt that actually failed).
+        deps.append({ event: 'queue.ship-failed', actor: 'queue', itemId: item.id, reason: shipped.reason });
+      }
+    }
+  }
+  if (!pr) {
     return relaunchOnRetryOrPark(
       item, deps, 'run finished done but no PR was found in its evidence or on its branch', { hop: 'gate' },
     );
+  }
+
+  // BBZ-386/PR #219, 2026-09-23: a fix round relaunches the worker, but only the
+  // worker's own push moves the PR's head -- a worker that could not commit or push
+  // (the sandbox has no `gh`, no working git remote, etc: see the ship step below)
+  // leaves the SAME head sitting there for the queue to find again. Reviewing that
+  // head a second time is not a new round, it is the same diff a council already gave
+  // a verdict for, at the cost of a full Opus review pass. An item with a fix round
+  // pending and a prior council verdict on record checks the PR's CURRENT head before
+  // spending anything else on it; an unmoved head parks immediately rather than
+  // re-running the council or the bug hunt.
+  if (item.fixRoundAt && item.lastCouncilHead && deps.gh.headSha) {
+    const currentHead = await deps.gh.headSha(item.repo!, pr.number);
+    if (currentHead && currentHead === item.lastCouncilHead) {
+      return writeTransition(
+        item,
+        {
+          state: 'parked',
+          reason: `fix round ${item.fixRoundsUsed ?? 0} made no change to the pull request `
+            + `(head ${currentHead} unchanged); the worker could not push`,
+        },
+        deps, 'queue.parked', { hop: 'gate', head: currentHead },
+      );
+    }
   }
 
   // A.8/A.9: one fetch of the PR's own changed files and line counts, right after the PR
@@ -1091,6 +1169,12 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
     // this ticket's diff. Provisioning refreshes the remote ref, so this one is current.
     ...(item.base ? { baseRef: `origin/${item.base}` } : {}),
   });
+  // BBZ-386/PR #219, 2026-09-23: the head this verdict is FOR, read once so both fix-round
+  // branches below (council FIX FIRST and bug-hunt dirty) can stamp `lastCouncilHead`
+  // without a second GitHub call each. Absent `headSha` (an environment that never wires
+  // it) leaves the item exactly as it behaved before this fix: no unchanged-head check,
+  // no stamping, the pre-existing park-after-cap behaviour untouched.
+  const councilHead = deps.gh.headSha ? await deps.gh.headSha(item.repo!, pr.number) : undefined;
   // BBZ-60/62/74/202, 2026-09-08: a pending check is "not yet", never "no" -- four real
   // items parked on `refused: checks are pending on head <sha>` and needed an operator to
   // merge them by hand once the same checks went green minutes later. Checked before
@@ -1143,7 +1227,12 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
         ?? 'the council returned FIX FIRST with no findings text carried on this result';
       const relaunched = await deps.relaunchForFixRound({ item, findings });
       return writeTransition(
-        item, { runKey: relaunched.runKey, fixRoundsUsed: (item.fixRoundsUsed ?? 0) + 1 }, deps, 'queue.fix-round',
+        item,
+        {
+          runKey: relaunched.runKey, fixRoundsUsed: (item.fixRoundsUsed ?? 0) + 1,
+          fixRoundAt: deps.clock(), ...(councilHead ? { lastCouncilHead: councilHead } : {}),
+        },
+        deps, 'queue.fix-round',
         { previousRunKey: item.runKey, findings },
       );
     }
@@ -1179,7 +1268,12 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
           ?? 'the bug hunt found a defect with no findings text carried on this result';
         const relaunched = await deps.relaunchForFixRound({ item, findings });
         return writeTransition(
-          item, { runKey: relaunched.runKey, fixRoundsUsed: (item.fixRoundsUsed ?? 0) + 1 }, deps, 'queue.fix-round',
+          item,
+          {
+            runKey: relaunched.runKey, fixRoundsUsed: (item.fixRoundsUsed ?? 0) + 1,
+            fixRoundAt: deps.clock(), ...(councilHead ? { lastCouncilHead: councilHead } : {}),
+          },
+          deps, 'queue.fix-round',
           { previousRunKey: item.runKey, findings, hop: 'bug-hunt' },
         );
       }

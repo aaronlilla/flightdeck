@@ -841,6 +841,22 @@ export interface QueueItem {
    *  bug hunt already cleared never re-runs it. Any bug the hunt does find re-enters the
    *  ordinary fix-round loop above (this stays unset/false until the re-audit clears). */
   bugHuntClearedAt?: number | null;
+  /** BBZ-386/PR #219, 2026-09-23: the PR head sha the council (or bug hunt) most
+   *  recently gave a verdict for. A fix round relaunches the worker but never moves the
+   *  branch itself -- only the worker's own push does that -- so the gate compares this
+   *  against the PR's CURRENT head before spending another review round: an unmoved
+   *  head means the worker could not push, and the item parks instead of re-reviewing
+   *  the exact diff a council already ruled on. Absent means no verdict has been given
+   *  yet for this item's current run. */
+  lastCouncilHead?: string | null;
+  /** BBZ-386/PR #219, 2026-09-23: when the last fix round relaunched the worker.
+   *  `advanceItem` will not treat this item's run as finished on the strength of a
+   *  `run.started` row OLDER than this timestamp -- the queue's own status poller can
+   *  otherwise read the previous (already-finished) run under the reused run key on the
+   *  very next tick, before the relaunch's own `run.started` has landed, and hand the
+   *  stale verdict straight back to the council. Absent means no fix round has fired for
+   *  the item's current run. */
+  fixRoundAt?: number | null;
   /** B (2026-09-08): set by `retryItem` alongside `state: 'running'`, when the retried
    *  item already carries a `runKey` -- marks that this pass through `advanceItem` is a
    *  retry of an in-flight run, not the tick that first launched it. `advanceItem` reads

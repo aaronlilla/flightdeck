@@ -69,11 +69,13 @@ export function completeBriefWithVerification(brief: string, input: {
     '',
     '## How this run ends',
     '',
-    'Commit, push the branch, open the draft PR and call `forge_done`. Never ask whether',
-    'to commit or whether to open the PR: that is this run\'s whole job. Do not write to',
-    'the ticket tracker from this run, and do not stop because it is unreachable: the',
-    'pipeline comments on the ticket, assigns it and links the PR once the review is',
-    'done. Park only for a product or scope question the ticket itself does not answer.',
+    'You do not need to commit, push or open the PR yourself; when your change and its',
+    'tests are done, call `forge_done` with a summary. The queue commits, pushes and',
+    'opens the draft PR. Never ask whether to commit or whether to open the PR: that is',
+    'not this run\'s job. Do not write to the ticket tracker from this run, and do not',
+    'stop because it is unreachable: the pipeline comments on the ticket, assigns it and',
+    'links the PR once the review is done. Park only for a product or scope question the',
+    'ticket itself does not answer.',
     '',
   ];
   return `${brief}\n${lines.join('\n')}`;
@@ -118,6 +120,12 @@ export interface ChainRunStatus {
    *  second read of the run's own journal. Absent for every non-goal run and for a
    *  goal run whose last turn had no text. */
   lastText?: string;
+  /** BBZ-386/PR #219, 2026-09-23: the `at` timestamp of the final run's own
+   *  `run.started` row (following every handoff, same as the rest of this status).
+   *  Absent when the journal carries no `run.started` row for it -- a run registered
+   *  through the registry alone and never journaled one, which `advanceItem` treats as
+   *  no evidence to compare a fix round's timestamp against. */
+  startedAt?: number;
 }
 
 /**
@@ -145,6 +153,11 @@ export interface ChainGh {
   /** `gh pr list --repo <repo> --head <branch>`, read only when the run's own evidence
    *  named no PR URL. */
   findPrByHead(repo: string, branch: string): Promise<{ number: number; url: string } | undefined>;
+  /** BBZ-386/PR #219, 2026-09-23: the PR's current head sha, so a fix-round loop can
+   *  tell whether the worker actually moved the branch before spending another review
+   *  round on it. Absent means this environment never wires the read and the queue
+   *  behaves as it always did (no head-unchanged short-circuit). */
+  headSha?(repo: string, pr: number): Promise<string | undefined>;
 }
 
 export interface ChainCouncilResult {
