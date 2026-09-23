@@ -516,6 +516,41 @@ describe('runQueueDone', () => {
     expect(lines.join(' ')).not.toMatch(/\bok\b.*transition/i);
     expect(lines.some((l) => l.includes('403') || l.toLowerCase().includes('fail'))).toBe(true);
   });
+
+  // Aaron's 2026-09-23 standing order (full autonomous mode): an unattended merge
+  // assigns the ticket to Haiping and moves it to In Review -- independent of, and
+  // unconditional on, whatever the Done transition did.
+  it('assigns Haiping and transitions to In Review when both are configured', async () => {
+    const calls: string[] = [];
+    const client = fakeClient({
+      async comment(key) { calls.push(`comment:${key}`); return { ok: true }; },
+      async assign(key, accountId) { calls.push(`assign:${key}:${accountId}`); return { ok: true }; },
+      async transition(key, id) { calls.push(`transition:${key}:${id}`); return { ok: true }; },
+    });
+    const lines = await runQueueDone(
+      client, input,
+      { haipingAccountId: 'haiping-account', inReviewTransitionId: '41' },
+      () => {},
+    );
+
+    expect(calls).toEqual(['comment:FDTES-1', 'assign:FDTES-1:haiping-account', 'transition:FDTES-1:41']);
+    expect(lines.some((l) => l.includes('jira-haiping-assign: skipped'))).toBe(false);
+    expect(lines.some((l) => l.includes('jira-in-review-transition: skipped'))).toBe(false);
+  });
+
+  it('SKIPS the Haiping assignment and the In Review transition rather than guessing when neither id is configured', async () => {
+    const calls: string[] = [];
+    const client = fakeClient({
+      async comment() { calls.push('comment'); return { ok: true }; },
+      async assign() { calls.push('assign'); return { ok: true }; },
+      async transition() { calls.push('transition'); return { ok: true }; },
+    });
+    const lines = await runQueueDone(client, input, {}, () => {});
+
+    expect(calls).toEqual(['comment']);
+    expect(lines.some((l) => l.includes('jira-haiping-assign: skipped'))).toBe(true);
+    expect(lines.some((l) => l.includes('jira-in-review-transition: skipped'))).toBe(true);
+  });
 });
 
 describe('buildQueueDoneComment', () => {
