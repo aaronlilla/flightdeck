@@ -31,7 +31,7 @@ import { planMergeIntent, planReadyIntent, recordMergeCall, reconcileMerge } fro
 import { REAL_GH, type GhReader, type GhWriter } from './council/gh.js';
 import { findHaipingHandoff } from './council/handoffScan.js';
 import { runCouncilRound } from './council/orchestrate.js';
-import { codexLaneFor, reasonerJudge, reasonerLensRunner } from './council/reasonerRoles.js';
+import { reasonerJudge, reasonerLensRunner } from './council/reasonerRoles.js';
 import { autoMergeAllowed, councilPolicy, repoAllowedForCouncil } from './council/risk.js';
 import { redactPrBody } from './council/redact-sinks.js';
 import { SEVERITY_RANK } from './council/synthesis.js';
@@ -2181,40 +2181,32 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         const ruleVerdict = evaluateAction({
           kind: 'pr', op: 'merge', repo, title: snapshot.title, body: snapshot.body, cwd: process.cwd(),
         });
-        // Rival account 3 (2026-09-07 plan): the chain sets `deps.forceCodexLane` itself
-        // from `FORGE_COUNCIL_CODEX=always`, but a bare hand-typed `forge council` never
-        // read the environment variable at all -- it only ever saw whatever `deps`
-        // supplied. Falling back to the env var here is what makes the CLI case honour
-        // the same setting the chain already did.
-        const forceCodexLane = deps.forceCodexLane ?? process.env['FORGE_COUNCIL_CODEX'] === 'always';
         // Item 7, 2026-09-05: the PR this round is reasoning about, so a reasoner spend
         // for either role attributes back to it rather than showing up as unattributed
         // cost on the fleet's burn ledger.
+        //
+        // Aaron, 2026-09-23 (standing order): the council's own lenses and judge always
+        // reason on claude/opus-5-5 (`model-policy.json`'s audit-lens/audit-judge
+        // classes) -- there is no Codex lane left to force on, and
+        // `FORGE_COUNCIL_CODEX`/`deps.forceCodexLane` are read nowhere in this block.
         const councilRun = `${repo}#${pr}`;
         const roles = {
           lensRunner: reasonerLensRunner(reasoner, [ruleVerdict], councilRun),
-          codexLane: codexLaneFor(
-            forceCodexLane ? { ...policy, codex: 'on' } : policy,
-            { journal: councilJournal, run: councilRun },
-          ),
           judge: reasonerJudge(reasoner, councilRun),
         };
 
         // I19: a lens's own reply failure (unparseable JSON, prose, or anything else
         // `reasonerLensRunner` cannot make sense of) never reaches here as a rejection --
         // it is already folded into a `failed: true` lens report. What can still throw at
-        // this point is the judge (or, when `council.codex` is `on`, the Codex lane)
-        // genuinely failing to answer at all, which is a different condition from any
-        // verdict the judge could actually reach: the round produced nothing to attest,
-        // rather than a verdict of FIX FIRST.
+        // this point is the judge genuinely failing to answer at all, which is a
+        // different condition from any verdict the judge could actually reach: the round
+        // produced nothing to attest, rather than a verdict of FIX FIRST.
         let round: Awaited<ReturnType<typeof runCouncilRound>>;
         try {
           round = await runCouncilRound(
             {
               brief: snapshot.body, diffSummary: snapshot.diffText, changedLines: snapshot.changedLines,
               paths: snapshot.files, ci: { runId: snapshot.checks.runId, headSha: snapshot.checks.headSha },
-              cwd: councilCwd, baseRef: councilBaseRef,
-              ...(forceCodexLane ? { forceCodex: true } : {}),
             },
             roles,
           );

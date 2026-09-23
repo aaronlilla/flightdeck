@@ -67,8 +67,11 @@ beforeEach(() => {
 
 const REPO = 'acme/widgets';
 const PR = 105;
-const LENS_MODEL = modelIdFor('sonnet');
-const JUDGE_MODEL = modelIdFor('opus');
+// Aaron's 2026-09-23 standing order (full autonomous mode): both audit-lens and
+// audit-judge run on claude/opus-5-5 now -- there is no separate sonnet lens tier or a
+// Codex lane any more (`model-policy.json`'s own 2026-09-23 comment).
+const LENS_MODEL = modelIdFor('opus-5-5');
+const JUDGE_MODEL = modelIdFor('opus-5-5');
 
 function smallSnapshot(overrides: Partial<PrSnapshot> = {}): PrSnapshot {
   return {
@@ -98,20 +101,24 @@ function fakeGh(snapshots: PrSnapshot[], overrides: Partial<GhWriter> = {}): GhR
   };
 }
 
-/** A fake `query`: dispatches on the requested model so a lens reply and a judge reply
- *  can differ within the same council round, the way `ClaudeReasoner` actually reaches
- *  two different models for two different classes. */
-function fakeQueryByModel(repliesByModel: Record<string, string>) {
+/** A fake `query`: dispatches on the pushed prompt's own text, not the model. Aaron's
+ *  2026-09-23 standing order put both the lens and the judge on the same model
+ *  (claude/opus-5-5, `model-policy.json`'s audit-lens/audit-judge classes), so a lens
+ *  reply and a judge reply can no longer be told apart by which model the call named --
+ *  they are the same one. `reasonerRoles.ts`'s own prompt text ("You are the judge of a
+ *  pull request council" vs. "You are the ... lens") is what still tells them apart. */
+function fakeQueryByRole(replies: { lens: string; judge: string }) {
   return ((params: { prompt: string | AsyncIterable<unknown>; options?: { model?: string; cwd?: string } }) => {
-    const promptIter = params.prompt as AsyncIterable<unknown>;
+    const promptIter = params.prompt as AsyncIterable<{ message?: { content?: string } }>;
     const model = params.options?.model ?? '';
-    const text = repliesByModel[model] ?? '[]';
     async function* generate() {
       yield {
         type: 'system', subtype: 'init', session_id: 'council-cli-session',
         model, cwd: params.options?.cwd ?? '', tools: [], slash_commands: [],
       };
-      for await (const _pushed of promptIter) {
+      for await (const pushed of promptIter) {
+        const promptText = pushed.message?.content ?? '';
+        const text = promptText.includes('You are the judge of a pull request council') ? replies.judge : replies.lens;
         yield {
           type: 'assistant', session_id: 'council-cli-session',
           message: {
@@ -139,10 +146,7 @@ describe('forge council', () => {
 
   it('a passing fixture PR through a fake gh and fake Reasoner: attestation, journal rows, exit 0', async () => {
     process.env['FORGE_COUNCIL_REPOS'] = REPO;
-    const reasonerQueryFn = fakeQueryByModel({
-      [LENS_MODEL]: JSON.stringify({ findings: [] }),
-      [JUDGE_MODEL]: JSON.stringify({ verdict: 'PASS', decidingFindings: [] }),
-    });
+    const reasonerQueryFn = fakeQueryByRole({ lens: JSON.stringify({ findings: [] }), judge: JSON.stringify({ verdict: 'PASS', decidingFindings: [] }) });
 
     const result = await forge(['council', '--repo', REPO, '--pr', String(PR)], {
       councilGh: fakeGh([smallSnapshot(), smallSnapshot()]),
@@ -174,10 +178,7 @@ describe('forge council', () => {
   // operator watching the terminal while the gate merges on the real one anyway.
   it('prints whatever the attestation on disk says, not whatever the round computed before the write', async () => {
     process.env['FORGE_COUNCIL_REPOS'] = REPO;
-    const reasonerQueryFn = fakeQueryByModel({
-      [LENS_MODEL]: JSON.stringify({ findings: [] }),
-      [JUDGE_MODEL]: JSON.stringify({ verdict: 'PASS', decidingFindings: [] }),
-    });
+    const reasonerQueryFn = fakeQueryByRole({ lens: JSON.stringify({ findings: [] }), judge: JSON.stringify({ verdict: 'PASS', decidingFindings: [] }) });
 
     simulateDivergentReadback = true;
     const result = await forge(['council', '--repo', REPO, '--pr', String(PR)], {
@@ -196,10 +197,7 @@ describe('forge council', () => {
 
   it('accepts --cwd (and --base) alongside --repo/--pr without breaking a passing round', async () => {
     process.env['FORGE_COUNCIL_REPOS'] = REPO;
-    const reasonerQueryFn = fakeQueryByModel({
-      [LENS_MODEL]: JSON.stringify({ findings: [] }),
-      [JUDGE_MODEL]: JSON.stringify({ verdict: 'PASS', decidingFindings: [] }),
-    });
+    const reasonerQueryFn = fakeQueryByRole({ lens: JSON.stringify({ findings: [] }), judge: JSON.stringify({ verdict: 'PASS', decidingFindings: [] }) });
 
     const result = await forge(
       ['council', '--repo', REPO, '--pr', String(PR), '--cwd', '/checkout', '--base', 'develop'],
@@ -218,10 +216,7 @@ describe('forge council', () => {
       member: 'correctness', file: 'src/x.ts', line: 1, claim: 'off by one',
       failureScenario: 'boundary miscount', severity: 'high', confidence: 'high',
     };
-    const reasonerQueryFn = fakeQueryByModel({
-      [LENS_MODEL]: JSON.stringify({ findings: [finding] }),
-      [JUDGE_MODEL]: JSON.stringify({ verdict: 'FIX FIRST', decidingFindings: [finding] }),
-    });
+    const reasonerQueryFn = fakeQueryByRole({ lens: JSON.stringify({ findings: [finding] }), judge: JSON.stringify({ verdict: 'FIX FIRST', decidingFindings: [finding] }) });
 
     const result = await forge(['council', '--repo', REPO, '--pr', String(PR)], {
       councilGh: fakeGh([smallSnapshot(), smallSnapshot()]),
@@ -234,10 +229,7 @@ describe('forge council', () => {
 
   it('a moved head between the round and the write yields exit 2', async () => {
     process.env['FORGE_COUNCIL_REPOS'] = REPO;
-    const reasonerQueryFn = fakeQueryByModel({
-      [LENS_MODEL]: JSON.stringify({ findings: [] }),
-      [JUDGE_MODEL]: JSON.stringify({ verdict: 'PASS', decidingFindings: [] }),
-    });
+    const reasonerQueryFn = fakeQueryByRole({ lens: JSON.stringify({ findings: [] }), judge: JSON.stringify({ verdict: 'PASS', decidingFindings: [] }) });
 
     const result = await forge(['council', '--repo', REPO, '--pr', String(PR)], {
       councilGh: fakeGh([smallSnapshot(), smallSnapshot({ headSha: 'head-2' })]),
@@ -259,10 +251,7 @@ describe('forge council', () => {
       member: 'correctness', file: 'src/x.ts', line: 3, claim: 'off by one on the retry count',
       failureScenario: 'retries one time fewer than configured', severity: 'high', confidence: 'high',
     };
-    const reasonerQueryFn = fakeQueryByModel({
-      [LENS_MODEL]: '```json\n' + JSON.stringify([finding]) + '\n```',
-      [JUDGE_MODEL]: JSON.stringify({ verdict: 'PASS WITH NOTES', decidingFindings: [finding] }),
-    });
+    const reasonerQueryFn = fakeQueryByRole({ lens: '```json\n' + JSON.stringify([finding]) + '\n```', judge: JSON.stringify({ verdict: 'PASS WITH NOTES', decidingFindings: [finding] }) });
 
     const result = await forge(['council', '--repo', REPO, '--pr', String(PR)], {
       councilGh: fakeGh([smallSnapshot(), smallSnapshot()]),
@@ -275,10 +264,7 @@ describe('forge council', () => {
 
   it('a lens replying with prose never crashes the process: it is retried once, still records the failure honestly, and can never let the round clear (GATE.md item 1)', async () => {
     process.env['FORGE_COUNCIL_REPOS'] = REPO;
-    const reasonerQueryFn = fakeQueryByModel({
-      [LENS_MODEL]: 'sorry, I could not find anything actionable in this diff',
-      [JUDGE_MODEL]: JSON.stringify({ verdict: 'PASS', decidingFindings: [] }),
-    });
+    const reasonerQueryFn = fakeQueryByRole({ lens: 'sorry, I could not find anything actionable in this diff', judge: JSON.stringify({ verdict: 'PASS', decidingFindings: [] }) });
 
     let unhandled: unknown;
     const onUnhandled = (reason: unknown) => { unhandled = reason; };
@@ -325,10 +311,7 @@ describe('forge council', () => {
       member: 'correctness', file: 'src/x.ts', line: 1, claim: 'off by one',
       failureScenario: 'boundary miscount', severity: 'high', confidence: 'high',
     };
-    const reasonerQueryFn = fakeQueryByModel({
-      [LENS_MODEL]: JSON.stringify({ findings: [finding] }),
-      [JUDGE_MODEL]: 'sorry, I am not able to reach a verdict on this one',
-    });
+    const reasonerQueryFn = fakeQueryByRole({ lens: JSON.stringify({ findings: [finding] }), judge: 'sorry, I am not able to reach a verdict on this one' });
 
     let unhandled: unknown;
     const onUnhandled = (reason: unknown) => { unhandled = reason; };
@@ -415,28 +398,24 @@ describe('forge council', () => {
     expect(result.lines.join(' ')).toMatch(/not green/);
   });
 
-  // Rival account 3, this plan: a bare hand-typed `forge council` never read
-  // `FORGE_COUNCIL_CODEX`, so an operator setting it by hand got a round that looked
-  // clean while the Codex lane never ran. Only the chain (`forceCodexLane` on `deps`)
-  // honoured it before this. No `--cwd`/`--base` is passed, so the lane reports
-  // `ran: false` without spawning anything, and a forced round can never clear on a
-  // lane that stayed silent (`orchestrate.ts`'s own gap finding).
-  it('honours FORGE_COUNCIL_CODEX=always on a bare CLI call with no forceCodexLane dep', async () => {
+  // Aaron's 2026-09-23 standing order (full autonomous mode): the council no longer has
+  // a Codex lane at all (`orchestrate.ts`'s own 2026-09-23 comment), so
+  // `FORGE_COUNCIL_CODEX=always` is dead config -- `cli.ts` reads it nowhere any more.
+  // A round that would previously have been forced onto a Codex lane that never ran (and
+  // so could never clear) now clears normally on its lens/judge verdict alone.
+  it('FORGE_COUNCIL_CODEX=always is dead config: it no longer forces or blocks on a Codex lane', async () => {
     process.env['FORGE_COUNCIL_REPOS'] = REPO;
     process.env['FORGE_COUNCIL_CODEX'] = 'always';
-    const reasonerQueryFn = fakeQueryByModel({
-      [LENS_MODEL]: JSON.stringify({ findings: [] }),
-      [JUDGE_MODEL]: JSON.stringify({ verdict: 'PASS', decidingFindings: [] }),
-    });
+    const reasonerQueryFn = fakeQueryByRole({ lens: JSON.stringify({ findings: [] }), judge: JSON.stringify({ verdict: 'PASS', decidingFindings: [] }) });
 
     const result = await forge(['council', '--repo', REPO, '--pr', String(PR)], {
-      councilGh: fakeGh([smallSnapshot()]),
+      councilGh: fakeGh([smallSnapshot(), smallSnapshot()]),
       reasonerQueryFn,
     });
 
-    expect(result.code).toBe(1);
-    expect(result.lines.join(' ')).toMatch(/FIX FIRST/);
-    expect(result.lines.join(' ')).toMatch(/Codex lane did not run/);
+    expect(result.code).toBe(0);
+    expect(result.lines.join(' ')).toMatch(/verdict: PASS/);
+    expect(result.lines.join(' ')).not.toMatch(/Codex lane did not run/);
   });
 });
 
@@ -453,10 +432,7 @@ function bodyWithHandoff(): string {
 async function attestPass(overrides: Partial<PrSnapshot> = {}): Promise<PrSnapshot> {
   process.env['FORGE_COUNCIL_REPOS'] = REPO;
   const snapshot = smallSnapshot({ body: bodyWithHandoff(), ...overrides });
-  const reasonerQueryFn = fakeQueryByModel({
-    [LENS_MODEL]: JSON.stringify({ findings: [] }),
-    [JUDGE_MODEL]: JSON.stringify({ verdict: 'PASS', decidingFindings: [] }),
-  });
+  const reasonerQueryFn = fakeQueryByRole({ lens: JSON.stringify({ findings: [] }), judge: JSON.stringify({ verdict: 'PASS', decidingFindings: [] }) });
   const result = await forge(['council', '--repo', REPO, '--pr', String(PR)], {
     councilGh: fakeGh([snapshot, snapshot]),
     reasonerQueryFn,
