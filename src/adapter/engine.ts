@@ -107,6 +107,13 @@ export interface EngineConfig {
   /** Tool servers the session may reach. The runner registers exactly one. */
   mcpServers?: Options['mcpServers'];
   /**
+   * Load ONLY `mcpServers` above, ignoring every MCP server in user/project config
+   * (.mcp.json, ~/.claude.json). Workers set this: each inherited server is a separate
+   * process per session (cloudwatch alone is ~1.4 GB), and they were the main cause of
+   * the machine running out of memory with several runs live.
+   */
+  strictMcpConfig?: boolean;
+  /**
    * Tools that are auto-allowed without a permission prompt. This does NOT restrict
    * which tools the model can reach -- the SDK's own doc for `allowedTools` says so
    * explicitly ("To restrict which tools are available, use the `tools` option
@@ -220,6 +227,7 @@ export function buildOptions(
   if (config.env) options.env = config.env;
   if (config.maxTurns !== undefined) options.maxTurns = config.maxTurns;
   if (config.mcpServers) options.mcpServers = config.mcpServers;
+  if (config.strictMcpConfig) options.strictMcpConfig = true;
   if (config.allowedTools) options.allowedTools = config.allowedTools;
   if (config.tools) options.tools = config.tools;
   if (config.effort) options.effort = config.effort;
