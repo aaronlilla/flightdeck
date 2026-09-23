@@ -131,7 +131,19 @@ export interface Policy {
   /** The Conductor agent behind `POST /command` (2026-09-08). On by default: a policy
    *  file with no `conductor` key at all routes the rail to the agent, and only an
    *  explicit `{ agent: { enabled: false } }` keeps every message on the regex grammar. */
-  conductor?: { agent?: { enabled?: boolean }; rounds?: Partial<RoundsPolicy> };
+  conductor?: {
+    agent?: {
+      enabled?: boolean;
+      /** Finding #9/PLAN item 9: how long the interactive rail waits for the Conductor's
+       *  live session before answering with the fast grammar fallback instead. Distinct
+       *  from `reasoner.timeoutMs` (the batch-class ceiling classes like `verify` or
+       *  `audit-lens` legitimately need minutes for) -- an operator typing a message
+       *  waits on this budget, never the fleet-wide reasoner timeout. Missing reads as
+       *  `DEFAULT_CONDUCTOR_FALLBACK_BUDGET_MS` below. */
+      fallbackBudgetMs?: number;
+    };
+    rounds?: Partial<RoundsPolicy>;
+  };
   /**
    * The protected-capability classifier's own config (roadmap P4.6, decision 6): file
    * globs and, where a path alone will not tell, an added-text pattern to search a
@@ -273,6 +285,16 @@ export function routerEnabled(path?: string): boolean {
  *  Defaults to on; only an explicit `conductor.agent.enabled: false` turns it off. */
 export function conductorAgentEnabled(path?: string): boolean {
   return loadPolicy(path).conductor?.agent?.enabled !== false;
+}
+
+/** Finding #9/PLAN item 9: the fast-fallback budget for the interactive console rail --
+ *  distinct from `reasonerTimeoutMsFor(CONDUCTOR_CLASS)`, which stays the outer ceiling
+ *  a hung subprocess is finally killed at. A policy file with no
+ *  `conductor.agent.fallbackBudgetMs` reads as `DEFAULT_CONDUCTOR_FALLBACK_BUDGET_MS`. */
+export const DEFAULT_CONDUCTOR_FALLBACK_BUDGET_MS = 20_000;
+
+export function conductorFallbackBudgetMs(path?: string): number {
+  return loadPolicy(path).conductor?.agent?.fallbackBudgetMs ?? DEFAULT_CONDUCTOR_FALLBACK_BUDGET_MS;
 }
 
 /** The Conductor's rounds (`console/rounds-route.ts`): the walk around the board that
