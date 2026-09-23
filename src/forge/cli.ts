@@ -78,6 +78,7 @@ import { addTicketItem, runQueueTick } from './intake/queue.js';
 import { readAutonomy, runAutopilot, ticketAsText } from './intake/autopilot.js';
 import { acquireQueueLock } from './intake/queueLock.js';
 import { notTickingHere, QueueTickRunner } from './intake/queueTickRunner.js';
+import { SingleFlightTick } from './single-flight-tick.js';
 import { QueueStore } from './intake/queueStore.js';
 import { buildQueueRuntimeDeps, queueMergeDeps, queuePromoteDeps, jiraConfigFromEnv, queueSearch } from './queue-wire.js';
 import { slackConfigFromEnv } from './intake/slack.js';
@@ -828,9 +829,15 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           : `${targetPort} is already in use`;
         return { code: 76, lines: [message] };
       }
-      const tick = setInterval(() => {
+      // Finding #12 (flightdeck-audit/03-code.md): this pass has no ceiling of its own
+      // -- the Warden's relaunch call alone can run for however long a relaunched run
+      // takes -- so a 30s `setInterval` with no guard queues up a pile of overlapping
+      // passes under load. `SingleFlightTick` copies `QueueTickRunner`'s own `running`
+      // flag (`intake/queueTickRunner.ts:125-126,154`): a tick that lands while the
+      // previous one is still in flight is a no-op, not a second pass.
+      const wardenLivenessTick = new SingleFlightTick(async () => {
         liveness.evaluate();
-        void wardenTick.run();
+        await wardenTick.run();
         try {
           // A lane with no process, no queue row and nothing unpushed leaves the board on
           // its own (Aaron, 2026-09-12: "if a lane is stuck it needs to self heal ... what
@@ -903,7 +910,8 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           // Guarded the same as every other tick step: one bad read never stops liveness
           // or the Warden tick that already ran this cycle.
         }
-      }, 30_000);
+      });
+      const tick = setInterval(wardenLivenessTick.tick, 30_000);
       tick.unref();
 
       // R-49: the whole-machine session registry, on its own 5 s cadence rather than the
