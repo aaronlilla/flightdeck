@@ -11,7 +11,8 @@
  * same two steps `chain-wire.ts#chainIntake` already runs for a poll-sourced packet,
  * just triggered by an operator's own add instead of a poll cycle.
  */
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import type { QueueItem } from '../shared/console-model.js';
 import { join } from 'node:path';
 
 import type { BlockerBoard } from './blockers.js';
@@ -763,6 +764,10 @@ export function buildQueueRuntimeDeps(
     // Aaron's 2026-09-23 standing order (full autonomous mode): a dedicated opus-5-5
     // bug-hunt pass runs after the council itself clears and before merge.
     bugHunt: chainBugHunt(deps),
+    // Aaron's 2026-09-23 standing order (iterate until clean): a FIX FIRST relaunches the
+    // worker on its own worktree with the findings appended to its brief. This was never
+    // wired, so every FIX FIRST parked outright (BBZ-386 / PR #219, 2026-09-23).
+    relaunchForFixRound: fixRoundRelauncher(chainLauncher(chainEnv, configDirFor)),
     gate: chainGate(deps),
     // A repository whose Actions are off never leaves a pending check rollup, so the gate
     // asks whether it runs any, and stands its own verify in their place when it does not
@@ -860,3 +865,40 @@ export function buildQueueRuntimeDeps(
 // Re-exported so `cli.ts` never needs its own import of `ForgeDeps`/`CliResult` just to
 // satisfy this file's own type signature above.
 export type { CliResult, ForgeDeps };
+
+/** The launcher surface a fix round needs: the same `launch` the first run used. */
+interface FixRoundLauncher {
+  launch(input: {
+    packetId: string; ticket: string; repo: string; briefPath: string; worktreePath: string; branch: string;
+  }): Promise<{ runKey: string }>;
+}
+
+/**
+ * A fix round: the council's (or bug hunt's) findings appended to the item's own brief,
+ * then the worker relaunched on the SAME worktree and branch, so it amends the open pull
+ * request instead of starting over. Refuses loudly when the item lacks the fields a
+ * relaunch needs; the queue's catch turns that into a park with the reason.
+ */
+export function fixRoundRelauncher(launcher: FixRoundLauncher) {
+  return async ({ item, findings }: { item: QueueItem; findings: string }): Promise<{ runKey: string }> => {
+    if (!item.briefPath || !item.worktreePath || !item.branch || !item.ticket || !item.repo) {
+      throw new Error(`cannot run a fix round for ${item.id}: brief, worktree, branch, ticket or repo is missing`);
+    }
+    const round = (item.fixRoundsUsed ?? 0) + 1;
+    appendFileSync(item.briefPath, [
+      '',
+      `## Fix round ${round}: review findings to resolve`,
+      '',
+      'The review of your pull request returned FIX FIRST. Fix every real finding below on',
+      `this same branch (${item.branch}), run the affected tests, commit and push. The pull`,
+      'request updates itself. Do not open a new one. Call forge_done with the PR URL when done.',
+      '',
+      findings.trim(),
+      '',
+    ].join('\n'), 'utf8');
+    return launcher.launch({
+      packetId: item.id, ticket: item.ticket, repo: item.repo, briefPath: item.briefPath,
+      worktreePath: item.worktreePath, branch: item.branch,
+    });
+  };
+}
