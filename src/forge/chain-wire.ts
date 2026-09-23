@@ -1228,8 +1228,8 @@ export function chainCouncil(deps: ForgeDeps): ChainCouncilFn {
     // Until 2026-09-07 nothing filled this, so every PR comment read "No deciding
     // findings" while the attestation on disk carried four.
     const attestationPath = result.data?.['attestationPath'] as string | undefined;
-    let findingsText: string | undefined;
-    if (attestationPath && existsSync(attestationPath)) {
+    let findingsText: string | undefined = (result.data?.['findingsText'] as string | undefined) || undefined;
+    if (!findingsText && attestationPath && existsSync(attestationPath)) {
       try {
         findingsText = findingsTextFrom(JSON.parse(readFileSync(attestationPath, 'utf8')) as Parameters<typeof findingsTextFrom>[0]);
       } catch {

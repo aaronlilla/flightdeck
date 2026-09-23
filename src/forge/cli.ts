@@ -2324,7 +2324,13 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
               `verdict: ${round.verdict}`,
               ...(findingLines.length ? findingLines : ['no deciding findings']),
             ],
-            data: { verdict: round.verdict, ...(coverageNote ? { coverageNote } : {}) },
+            data: {
+              verdict: round.verdict, ...(coverageNote ? { coverageNote } : {}),
+              // The fix round needs the findings; a FIX FIRST writes no attestation, so
+              // until 2026-09-23 the worker was relaunched with an empty findings list
+              // (BBZ-386: "the review findings text was empty across all rounds").
+              ...(findingLines.length ? { findingsText: findingLines.join('\n') } : {}),
+            },
           };
         }
 

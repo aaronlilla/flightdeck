@@ -225,6 +225,8 @@ describe('forge council', () => {
 
     expect(result.code).toBe(1);
     expect(() => readFileSync(attestationPath(REPO, PR, 'head-1'), 'utf8')).toThrow();
+    // The fix round is relaunched from this text; with no attestation it is the only copy.
+    expect(String(result.data?.['findingsText'] ?? '')).toContain('off by one');
   });
 
   it('a moved head between the round and the write yields exit 2', async () => {
