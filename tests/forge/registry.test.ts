@@ -132,9 +132,41 @@ describe('B.3.5: forge up reconciles a dead pid', () => {
     const outcomes = await reconcileRegistry(registry, engine, journal, undefined, undefined, (goal) => goal === 'asking');
     journal.close();
 
-    expect(outcomes).toEqual([{ goal: 'asking', ok: false, reason: 'parked on an open ask; the answer resumes it' }]);
+    expect(outcomes).toEqual([{
+      goal: 'asking', ok: false, reason: 'parked on an open ask; the answer resumes it', alreadyNoted: false,
+    }]);
     expect(engine.started).toHaveLength(0);
     expect(registry.get('asking')).toBeDefined();
+  });
+
+  it('Plan item 3: notes an open-ask park once, and marks every later reconcile pass already-noted', async () => {
+    const briefPath = join(dir, 'still-asking.md');
+    writeFileSync(briefPath, '# Goal', 'utf8');
+    const registry = new Registry(join(dir, 'registry'));
+    registry.admit({ goal: 'still-asking', cwd: dir, briefPath, pid: 999_999 });
+    registry.setSession('still-asking', 'sess-still-asking', 'claude-sonnet-5');
+
+    const engine = fakeEngine();
+    const journal = new Journal(journalPath);
+    const openAsk = () => true;
+
+    const first = await reconcileRegistry(registry, engine, journal, undefined, undefined, openAsk);
+    expect(first).toEqual([{
+      goal: 'still-asking', ok: false, reason: 'parked on an open ask; the answer resumes it', alreadyNoted: false,
+    }]);
+    expect(registry.get('still-asking')?.askNotedAt).toBeGreaterThan(0);
+
+    // Same still-open ask, five more reconcile passes (what `forge up` restarting five
+    // times, or any other repeated caller, looks like) -- every one of them now reads
+    // `alreadyNoted: true`, so the caller's journal-note skip actually has something to
+    // act on.
+    for (let i = 0; i < 5; i += 1) {
+      const again = await reconcileRegistry(registry, engine, journal, undefined, undefined, openAsk);
+      expect(again).toEqual([{
+        goal: 'still-asking', ok: false, reason: 'parked on an open ask; the answer resumes it', alreadyNoted: true,
+      }]);
+    }
+    journal.close();
   });
 
   it('I13: clears a stale park record when resuming a crashed run under the same name', async () => {

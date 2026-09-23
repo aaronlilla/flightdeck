@@ -98,7 +98,24 @@ export interface RunState {
    *  (`session-clock.ts`). Undefined for a run whose fold never saw a `run.started` row
    *  (a torn journal, or a row from before this field existed). */
   startedAt?: number;
+  /** Plan item 4, 2026-09-23: when this run last produced a REAL progress event --
+   *  `run.started`, `tool.start`, `tool.end` or `turn.end` -- as opposed to
+   *  `lastEventAt`, which any row naming this run's `run` field refreshes, including
+   *  the Warden's own periodic bookkeeping (`drift.skipped`, `burn.mismatch`, `note`)
+   *  fired on the same 30s tick whether or not the run itself did anything. BBZ-343 and
+   *  BBZ-225 (01-timeline.md: 600+ silent gaps each, bounded by repeated
+   *  `drift.skipped`) sat for hours reading as freshly active by `lastEventAt` alone --
+   *  this field is what the stuck-run detector reads instead. Undefined for a run whose
+   *  fold has seen none of those four events yet (a torn journal, or a row from before
+   *  this field existed); a caller reading it falls back to `lastEventAt`. */
+  lastProgressAt?: number;
 }
+
+/** Plan item 4: the events that count as this run actually doing something, as opposed
+ *  to the fleet's own bookkeeping ticks that also carry a `run` field and would
+ *  otherwise refresh `lastEventAt` for a run sitting silent. */
+const PROGRESS_EVENTS = new Set(['run.started', 'tool.start', 'tool.end', 'turn.end']);
+
 
 /** Tool names `turnsSinceWrite` treats as a write: the ones the roadmap's cost-shape
  *  example means by "a write tool call" (a file actually changed on disk). `Bash` is
@@ -516,6 +533,9 @@ function foldLine(state: FleetState, line: string): void {
   if (!row.run) return;
   const run = runOf(state, row.run);
   run.lastEventAt = row.at;
+  // Plan item 4: only a real progress event moves this clock -- see PROGRESS_EVENTS'
+  // own doc comment for why `lastEventAt` alone is not enough for the stuck-run check.
+  if (PROGRESS_EVENTS.has(row.event)) run.lastProgressAt = row.at;
 
   switch (row.event) {
       case 'run.started':

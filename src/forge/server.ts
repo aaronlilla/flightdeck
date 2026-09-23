@@ -60,8 +60,8 @@ import { QueueStore } from './intake/queueStore.js';
 import type { QueueLoopStatus } from './intake/queueTickRunner.js';
 import { mergeItem, type QueueMergeDeps, type QueuePromoteDeps, type QueueTicketSearch } from './intake/queue.js';
 import {
-  forgeHome, killSwitchPath as defaultKillSwitchPath, packetsDir as defaultPacketsDir, queuePath as defaultQueuePath,
-  registryDir, serverTokenPath,
+  forgeHome, gotchasDir, inboxDir, killSwitchPath as defaultKillSwitchPath, packetsDir as defaultPacketsDir,
+  queuePath as defaultQueuePath, registryDir, serverTokenPath,
 } from './paths.js';
 import { routerEnabled } from './policy.js';
 import { ingest, type IngestDeps, type IncomingSessionEvent } from './sessions/ingest.js';
@@ -70,9 +70,10 @@ import { sweepAndCollectLocks, worktreeStatusFor } from './sessions/cleanup.js';
 import { retireFinished, retireLane, retirePreview, retiredPath, type RetireLaneDeps } from './console/retire.js';
 import { mergeReadyReportFrom } from './console/lanes.js';
 import { chainStatusRows, foldChainState } from './chain.js';
-import { processAlive, Registry } from './registry.js';
+import { processAlive, Registry, relaunchAbandonedGoal } from './registry.js';
 import { route as routeMessage } from './router.js';
 import { RunInbox, deliverAnswer } from './runinbox.js';
+import { SdkEngine } from './sdkengine.js';
 import { assertRunListening } from './console/listening.js';
 import { readWorktreeState } from './console/worktree-state.js';
 import { amendRunBrief, type AmendDeps } from './console/amend.js';
@@ -1454,7 +1455,15 @@ export class ForgeServer {
         // not resume anything. This process holds no live SdkEngine to answer in place
         // (that path is the CLI's, when it happens to share a process with the run), so
         // this always rides the cross-process inbox queue.
-        await deliverAnswer(answered, parsed.key, parsed.answer);
+        // Plan item 3, 2026-09-23: also resume a run parked on an open ask by session id
+        // -- the same one-shot resume the CLI's `forge answer` now does, since that run's
+        // process already exited and `forge up`'s reconcile deliberately skips it.
+        await deliverAnswer(
+          answered, parsed.key, parsed.answer, undefined,
+          (goal) => relaunchAbandonedGoal(this.registry, new SdkEngine({
+            journalPath: this.journalPath, inboxDir: inboxDir(), gotchasDir: gotchasDir(),
+          }), goal),
+        );
         this.publish({ event: 'ask.answered', key: answered.key, runs: answered.runs });
         journalInterviewAnswer((row) => appendOnce(this.journalPath, row), answered);
         json(response, 200, answered);

@@ -336,6 +336,29 @@ export function retryItem(
 // The worker: advancing what is already in the queue
 // ---------------------------------------------------------------------------------------
 
+/**
+ * Plan item 4: after the Warden kills a run's process for producing no progress event
+ * for 15 minutes, this finds the one queue item that was running under that `runKey`
+ * (a run launched outside the queue -- a bare `forge run`, a goal loop -- names none,
+ * and this returns `undefined`) and requeues it exactly like a person clicking Retry:
+ * parked first, so `retryItem`'s own state guard (`parked` or `failed` only) accepts
+ * it, then retried with `askedByAPerson: false` -- a machine's retry, not a person's,
+ * so the recovery budgets a chronically-stuck item has already spent stay spent instead
+ * of resetting to fresh on every kill.
+ */
+export function requeueStuckItem(
+  store: QueueStore, runKey: string, now: number = Date.now(),
+): QueueItem | undefined {
+  const item = store.all().find((row) => row.runKey === runKey);
+  if (!item) return undefined;
+  store.append({
+    id: item.id, at: now, state: 'parked',
+    reason: 'killed: no progress for 15 minutes with the process still alive',
+    updatedAt: now,
+  });
+  return retryItem(store, item.id, now, { askedByAPerson: false });
+}
+
 /** A minimal journal event handed back to `advanceItem` -- everything this module needs
  *  from `Journal.append`/`appendOnce`'s real `ForgeEvent`. */
 export interface QueueJournalWrite {
@@ -488,6 +511,16 @@ export interface QueueRuntimeDeps {
    *  already gets. Absent means an auto-merged item lands on `done` with no OTA line,
    *  the same fallback `mergeItem` already has. */
   postMergeVerify?: (input: { repo: string; branch: string; mergeSha?: string }) => Promise<{ android: string; ios: string } | undefined>;
+  /** Plan item 5, 2026-09-23: when `postMergeVerify` gives up after its 30-minute wait
+   *  and answers `undefined`, this raises a board blocker naming the ticket and the PR
+   *  instead of the item's reason line being the only place that 30-minute silence is
+   *  ever recorded. `BBZ-72`/`Q-7409e170` and three other tickets sat 391.8 hours total
+   *  with nobody told beyond that one queue-item reason string -- a person reading the
+   *  board never saw it unless they opened that specific card. Best effort: called from
+   *  inside `postMergeVerify`'s own `.then`, after the item's `done` transition has
+   *  already landed, so a failure here can never unwind or delay the merge itself.
+   *  Absent means this environment never wires it, and the old silent behaviour stands. */
+  raiseDeployBlocker?: (input: { item: QueueItem; pr: { no: number; url: string } }) => Promise<void>;
   /** 2026-09-08: launches a `goal` item -- its own worktree, its own gates, no brief
    *  file to plan or amend. Absent means a goal item always fails at the launch hop;
    *  every other source ignores this. */
@@ -507,6 +540,13 @@ export interface QueueRuntimeDeps {
    *  fallback repo is known, the same "never resolves" answer as before this field
    *  existed. */
   mergeCheckRepos?: string[];
+  /** Plan item 2, 2026-09-23: whether any linked Claude account has room right now --
+   *  the same question `pickAccount`/`launchAccountDecision` already answer for a fresh
+   *  launch, asked here for a park that already happened. Absent means an
+   *  accounts-spent park is never re-read by this pass and waits on the Warden's own
+   *  reconcile cadence instead, the behaviour every environment had before this field
+   *  existed. */
+  accountHasRoom?: () => boolean;
   clock(): number;
   killSwitch(): boolean;
   paused(): boolean;
@@ -1329,6 +1369,12 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
         .then((reason) => {
           const at = deps.clock();
           deps.store.append({ id: item.id, at, reason, updatedAt: at });
+          // Plan item 5: the reason line above is not enough on its own -- it only
+          // reaches a person who opens this exact card. A board blocker names the
+          // ticket and the PR so the 30-minute silence stops being silent.
+          if (reason.startsWith('merged; deploy run not found') && deps.raiseDeployBlocker) {
+            void deps.raiseDeployBlocker({ item, pr: { no: pr.number, url: pr.url } }).catch(() => undefined);
+          }
         });
     }
     return merged;
@@ -1425,10 +1471,11 @@ async function recoverParkedItems(deps: QueueRuntimeDeps, items: QueueItem[], sl
     // provision ten workers on one tick. Journalled once, like every other decision here:
     // an item held back by the width is a decision, and skipping it in silence is the
     // thing this function's own comment promises not to do.
-    // Only a `run` recovery ends in a relaunched worker; a `checks` recovery re-enters
-    // the gate hop and provisions nothing, so it neither needs a slot nor spends one.
-    // Charging it a slot starved the relaunches the width is actually there to bound.
-    const needsSlot = verdict.reRead === 'run';   // checks and overlap re-enter the gate hop and provision nothing
+    // Only a `run` or `accounts` recovery ends in a relaunched worker; a `checks`
+    // recovery re-enters the gate hop and provisions nothing, so it neither needs a slot
+    // nor spends one. Charging it a slot starved the relaunches the width is actually
+    // there to bound.
+    const needsSlot = verdict.reRead === 'run' || verdict.reRead === 'accounts';
     if (needsSlot && slots <= 0) {
       // Its own marker, not `recoveryHeldOn`: overwriting the real reading with the width
       // made a queue oscillating around its cap write a row on every flip, which is what
@@ -1470,6 +1517,20 @@ async function recoverParkedItems(deps: QueueRuntimeDeps, items: QueueItem[], sl
         // lowercase verdict (`council/gh.ts`), and comparing against 'SUCCESS' made this
         // whole branch dead in production while the specimen stayed green.
         clear = found.toLowerCase() === 'success';
+      }
+    } else if (verdict.reRead === 'accounts') {
+      // Plan item 2: the short check the plan asks for -- every 15s tick, since this
+      // module is never told the queue's own poll cadence, and a check this cheap (one
+      // in-memory read, no network) costs nothing to run every tick rather than on a
+      // window of its own the way `checks` and `run` recoveries are throttled. No cap
+      // to spend here either: unlike `checks` (a GitHub call) or `run` (a relaunch),
+      // a `false` reading changes nothing and writes no row (see the `!clear` branch
+      // below, which is silent for a `found` string that has not changed).
+      if (!deps.accountHasRoom) {
+        found = 'no account reader wired';
+      } else {
+        found = deps.accountHasRoom() ? 'an account has room again' : 'every account still reads as spent';
+        clear = deps.accountHasRoom();
       }
     } else if (!deps.runPid) {
       found = 'no liveness reader wired';
@@ -1514,9 +1575,10 @@ async function recoverParkedItems(deps: QueueRuntimeDeps, items: QueueItem[], sl
         checksReads: 0, checksReadAt: 0,
         // `retriedAt` means "a person asked for this run to be looked at again", and
         // `relaunchOnRetryOrPark` answers it by provisioning a NEW worker. That is right
-        // for a run that died and wrong for checks that went green: there the run
-        // finished correctly and the item only needs its gate hop read again.
-        ...(item.runKey && verdict.reRead === 'run' ? { retriedAt: deps.clock() } : {}),
+        // for a run that died, and for `accounts` (the whole reason the item parked was
+        // that nothing could launch), and wrong for checks that went green: there the
+        // run finished correctly and the item only needs its gate hop read again.
+        ...(item.runKey && (verdict.reRead === 'run' || verdict.reRead === 'accounts') ? { retriedAt: deps.clock() } : {}),
         ...(item.pendingGatePolls ? { pendingGatePolls: 0 } : {}),
       },
       deps, 'queue.recovered',
@@ -1673,6 +1735,11 @@ export interface QueueMergeDeps {
    *  landed. Absent means this environment never wires it, and the item still lands on
    *  `done`, just without an OTA line in its reason. */
   postMergeVerify?: (input: { repo: string; branch: string; mergeSha?: string }) => Promise<{ android: string; ios: string } | undefined>;
+  /** Plan item 5, 2026-09-23: same shape and same best-effort contract as
+   *  `QueueRuntimeDeps.raiseDeployBlocker`, wired here so a person's own Merge click
+   *  raises the same board blocker an auto-merge would when the deploy run never turns
+   *  up. Absent means this click's own 30-minute timeout stays silent, the old behaviour. */
+  raiseDeployBlocker?: (input: { item: QueueItem; pr: { no: number; url: string } }) => Promise<void>;
   /** R-22: when present, the Merge click lands the PR with git itself: fetch, squash onto
    *  a local checkout of the base, commit, push, instead of `gh pr merge`. That way a
    *  GitHub rate limit on mutations never blocks something already reviewed. The one API
@@ -1798,6 +1865,11 @@ export async function mergeItem(item: QueueItem, deps: QueueMergeDeps): Promise<
       .then((reason) => {
         const at = deps.clock();
         deps.store.append({ id: item.id, at, reason, updatedAt: at });
+        // Plan item 5: same board blocker the queue's own auto-merge raises -- a
+        // person's Merge click must not go quiet after 30 minutes either.
+        if (reason.startsWith('merged; deploy run not found') && deps.raiseDeployBlocker) {
+          void deps.raiseDeployBlocker({ item, pr: { no: item.pr!.no, url: item.pr!.url } }).catch(() => undefined);
+        }
       });
   }
   return { ok: true, message: patch.reason ?? 'merged', item: { ...item, ...patch } };

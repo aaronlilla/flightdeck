@@ -528,6 +528,50 @@ export async function provisionWorktree(input: {
   let reused = false;
   if (samePath && samePath.branch === branch) {
     reused = true;
+  } else if (samePath) {
+    // Plan item 8, 2026-09-23: a worktree already registered at this exact path on a
+    // DIFFERENT branch -- the residue of an earlier attempt of the SAME queue item
+    // (`worktreePathFor` is deterministic per repo+ticket, so a retry always computes
+    // this identical path). `branchElsewhere` below only ever catches the branch
+    // checked out at a DIFFERENT path; this path being already-a-worktree-but-wrong-
+    // branch fell through to the plain `git worktree add` case, which git refuses with
+    // "already used by worktree at <path>" on its own target path -- 117 episodes over
+    // 14 days (`Q-2f338f3d`, 04-failures.md rank 5). Same reclaim rule as
+    // `branchElsewhere`: a live registry row still owning this path blocks (real work in
+    // progress), and only a worktree with no live owner behind it is removed and retried.
+    const isAlive = input.isAlive ?? processAlive;
+    const rows = input.registryRows ? [...input.registryRows()] : undefined;
+    const ownedLive = rows?.some(
+      (row) => normalizeWorktreePath(row.cwd) === target && isAlive(row.pid),
+    );
+    if (rows === undefined || ownedLive) {
+      throw new Error(`${worktreePath} is already used by worktree (branch ${samePath.branch ?? 'detached'})`);
+    }
+    if (worktreeRemovalOff()) {
+      throw new Error(
+        `${worktreePath} is already used by worktree (branch ${samePath.branch ?? 'detached'}), `
+        + 'and worktree removal is switched off (FORGE_WORKTREE_REMOVAL=off)',
+      );
+    }
+
+    const removed = await runner({
+      argv: ['git', '-C', checkout, 'worktree', 'remove', '--force', worktreePath],
+      cwd: checkout, owner: `chain-${input.ticket}`, cls: 'script',
+    });
+    if (!removed.ok) {
+      throw new Error(
+        `${worktreePath} is already used by worktree (branch ${samePath.branch ?? 'detached'}), `
+        + `and reclaiming it failed: ${tailOfCommand(removed.tail, 300)}`,
+      );
+    }
+    input.onReclaim?.(worktreePath, branch);
+
+    fs.mkdirSync(dirname(worktreePath), { recursive: true });
+    const add = await runner({
+      argv: ['git', '-C', checkout, 'worktree', 'add', '-B', branch, worktreePath, `origin/${base}`],
+      cwd: checkout, owner: `chain-${input.ticket}`, cls: 'script',
+    });
+    if (!add.ok) throw new Error(tailOfCommand(add.tail));
   } else if (branchElsewhere) {
     const isAlive = input.isAlive ?? processAlive;
     const elsewhereTarget = normalizeWorktreePath(branchElsewhere.path);

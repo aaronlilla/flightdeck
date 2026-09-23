@@ -157,12 +157,22 @@ export interface AnswerableEngine {
  * (`injectMessages(deps.goal, ...)`), not the per-segment run name a handoff renames.
  * `engine`, when this process happens to hold the answered run's live session, resumes it
  * in place immediately.
+ *
+ * Plan item 3, 2026-09-23: a run parked on an open ask exits its own process on purpose
+ * (`reconcileRegistry`'s `openAsk` check leaves its dead-pid row alone specifically so it
+ * is not re-asked the same question on the next `forge up`). Queuing into the inbox above
+ * is therefore a message nobody is listening for -- there is no live process left to poll
+ * it. `relaunch`, when supplied, is exactly `relaunchAbandonedGoal`: resuming that dead
+ * session by its session id, the same one-shot resume a crash gets, now triggered by the
+ * answer itself rather than waiting for the next `forge up` (which never comes for an
+ * open ask, since the reconcile deliberately skips it).
  */
 export async function deliverAnswer(
   entry: { runs: string[]; goals: string[]; question: string },
   key: string,
   answerText: string,
   engine?: AnswerableEngine,
+  relaunch?: (goal: string) => Promise<'relaunched' | 'skipped'>,
 ): Promise<{ delivered: string[] }> {
   const resumeText = `Question: ${entry.question}\nAnswer: ${answerText}`;
   const inboxTargets = entry.goals.length ? entry.goals : entry.runs;
@@ -175,6 +185,16 @@ export async function deliverAnswer(
     for (const run of entry.runs) {
       const result = await engine.answer(run, key, answerText);
       if (result.delivered) delivered.push(run);
+    }
+  }
+  if (relaunch) {
+    // Every target, not just the ones `engine.answer` missed: `engine.answer` resumes a
+    // session this process already holds live, which a run parked on an ask never is (it
+    // exited). The two paths never compete for the same goal in practice, but skipping a
+    // goal `engine` claimed to deliver to costs nothing either way.
+    for (const target of inboxTargets) {
+      if (delivered.includes(target)) continue;
+      await relaunch(target);
     }
   }
   return { delivered };

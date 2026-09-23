@@ -19,8 +19,9 @@ export function recoveryIsSpent(attempts: number | null | undefined): boolean {
   return (attempts ?? 0) >= PARK_RECOVERY_CAP;
 }
 
-/** What a recoverable park asks to be re-read: the pull request's checks, or the run. */
-export type ParkRecheck = 'checks' | 'run';
+/** What a recoverable park asks to be re-read: the pull request's checks, the run, or
+ *  (Plan item 2) whether any linked account has freed up since. */
+export type ParkRecheck = 'checks' | 'run' | 'accounts';
 
 export type ParkRecoverability =
   | { recoverable: true; reRead: ParkRecheck }
@@ -70,6 +71,20 @@ export function parkRecoverability(reason: string | null | undefined): ParkRecov
     return { recoverable: false, why: 'its branch is checked out in an existing worktree; adopt or clear that tree first', personsCall: true };
   }
   if (/checks (never settled|are pending)/i.test(text)) return { recoverable: true, reRead: 'checks' };
+  // Plan item 2 (2026-09-23): every linked account spent/rate-ceilinged, in either of
+  // the two phrasings the codebase throws it in -- `console/agent.ts`/`reasoner-claude.ts`
+  // say "every linked account is spent"; a queue launch that hit `launchAccountDecision`'s
+  // own refusal says "every linked account for this provider is spent or at its ceiling".
+  // Previously fell through to the unclassified default at the bottom of this function --
+  // `recoverable: false`, no `personsCall` -- which meant nothing here ever recovered it
+  // at all; the item sat parked until the Warden's own multi-hour reconcile cadence
+  // happened to notice (04-failures.md: 313.5h across 37 episodes). Recoverable now, on
+  // its own `accounts` re-read: `recoverParkedItems` asks whether an account has freed up,
+  // not whether the run's process is still alive -- the process for this park was never
+  // the question.
+  if (/every linked account (is spent|for this provider is spent)/i.test(text)) {
+    return { recoverable: true, reRead: 'accounts' };
+  }
   // Every run verdict `relaunchOnRetryOrPark` passes through (`stopped`, `exhausted`,
   // `parked`, `unknown`) plus the launcher's own stale-liveness refusal: all of them are
   // about a process, and all of them are answered by asking whether one is still alive.
