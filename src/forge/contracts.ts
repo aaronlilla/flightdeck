@@ -946,10 +946,9 @@ export interface EventBus {
 export type Provider = 'codex' | 'claude';
 
 /**
- * Which provider a model-policy class reasons on, per the 2026-09-04 13:20 decision: the
- * runtime master and planner run on gpt-6-astra through Codex, read-only, with Claude as
- * fallback and critic; everything that implements, verifies, researches, audits or
- * evaluates runs on Claude.
+ * Which provider a model-policy class reasons on, read from `model-policy.json`: the
+ * runtime master and planner run on Claude Opus 5.5 (2026-09-23), as does everything
+ * that implements, verifies or researches; only a class that names `codex` goes there.
  *
  * P4.7/I3: this used to be its own hardcoded `CLASS_PROVIDERS` map, a second copy of
  * exactly the fact `policy.ts`'s data-driven `providerFor` already reads out of

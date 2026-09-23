@@ -3,8 +3,7 @@
  * goal brief's text. This module never launches anything and never writes a file itself
  * -- `cli.ts` owns where a brief lands, the same separation `council/attest.ts` keeps
  * from Council's own orchestration. Provider selection is `resolvePlanProvider`'s job
- * (decision 6, the 2026-09-04 16:40 amendment): `claude` unless the policy file's
- * `reasoner.astra` is exactly `'planning-only'`.
+ * (decision 6): always `claude`.
  */
 import type { Packet, Reasoner } from '../contracts.ts';
 

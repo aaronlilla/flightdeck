@@ -42,15 +42,15 @@ function writeEvents(...rows: Partial<ForgeEvent>[]): ForgeEvent[] {
 }
 
 describe('classes assigned with a provider at planning time', () => {
-  it('reads a plan-class ticket as codex and an implement-class ticket as claude', () => {
-    expect(providerFor('plan')).toBe('codex');
+  it('reads an audit-judge ticket as codex and an implement-class ticket as claude', () => {
+    expect(providerFor('audit-judge')).toBe('codex');
     expect(providerFor('implement')).toBe('claude');
   });
 
   it('is not a constant: two different classes really do read two different providers', () => {
     // The falsifier this specimen exists to catch: a provider field hardcoded to one
     // value would pass every other specimen in this file and only fail here.
-    expect(providerFor('plan')).not.toBe(providerFor('implement'));
+    expect(providerFor('audit-judge')).not.toBe(providerFor('implement'));
   });
 });
 

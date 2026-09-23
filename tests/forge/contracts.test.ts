@@ -585,9 +585,9 @@ describe('OwnershipSchema', () => {
 // ---------------------------------------------------------------------------------------
 
 describe('providerFor', () => {
-  it('routes master and plan to codex, per the 13:20 decision', () => {
-    expect(providerFor('master')).toBe('codex');
-    expect(providerFor('plan')).toBe('codex');
+  it('routes master and plan to claude (Opus 5.5, 2026-09-23)', () => {
+    expect(providerFor('master')).toBe('claude');
+    expect(providerFor('plan')).toBe('claude');
   });
 
   it('routes every other class to claude, including one this map does not name', () => {

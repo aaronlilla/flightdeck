@@ -17,10 +17,9 @@ import { fileURLToPath } from 'node:url';
 import { forgeHome } from './paths.js';
 
 /**
- * Which side reasons a class: `codex` for the runtime master and planner (the
- * 2026-09-04 13:20 astra decision), `claude` for everything else. A class this file
- * does not name defaults to `claude` in `providerFor` below, which is every class the
- * policy shipped with today except `master` and `plan`.
+ * Which side reasons a class: `claude` for every class the policy ships today
+ * (plan and master moved to Opus 5.5 on 2026-09-23), `codex` only where a class names it. A class this file
+ * does not name defaults to `claude` in `providerFor` below, the safe default.
  */
 export type Provider = 'codex' | 'claude';
 
@@ -95,15 +94,10 @@ export interface Policy {
   warden?: WardenConfig;
   governor?: GovernorBudget;
   /**
-   * Optional: added for Forge Intake (P4.3), read by nothing else today. `astra` gates
-   * whether the Intake planner may reach gpt-6-astra through Codex at all; `'off'`
-   * (the shipped default) means the planner's `plan` seam always resolves to `claude`,
-   * and only `'planning-only'` turns astra on, per the 2026-09-04 16:40 amendment. A
-   * policy file written before this field existed has no `reasoner` key at all, which
-   * every reader here treats identically to `{ astra: 'off' }`.
+   * Optional: added for Forge Intake (P4.3). The Intake planner always reasons on
+   * `claude`; this block only carries the reasoner's timeout.
    */
   reasoner?: {
-    astra: 'off' | 'planning-only';
     /** How long a single `Reasoner.call` may run before it times out and gets journaled
      *  as `reasoner.timeout`, in milliseconds. A policy file written before this field
      *  existed, or one that leaves it out on purpose, falls back to the 120s default

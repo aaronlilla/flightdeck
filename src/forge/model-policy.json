@@ -82,8 +82,8 @@
   },
   "_provider_comment": [
     "P3.2: which side reasons a class, added 2026-09-04 for the Governor stream. The",
-    "runtime master and planner run on gpt-6-astra through Codex, read-only, per the",
-    "13:20 decision; everything that implements, verifies, researches, audits or",
+    "runtime master and planner run on Claude Opus 5.5 at medium effort (Aaron,",
+    "2026-09-23); everything that implements, verifies, researches, audits or",
     "evaluates runs on Claude. A class with no provider field defaults to claude in",
     "policy.ts's providerFor()."
   ],
@@ -115,8 +115,8 @@
   ],
   "classes": {
     "triage": {"model": "sonnet", "effort": "low", "maxContext": 60000, "maxTurns": 20, "provider": "claude", "maxWallMs": 1800000},
-    "plan": {"model": "opus-5-5", "effort": "medium", "maxContext": 200000, "maxTurns": 60, "provider": "codex", "maxWallMs": 5400000},
-    "master": {"model": "opus-5-5", "effort": "medium", "maxContext": 30000, "maxTurns": 40, "provider": "codex", "maxWallMs": 3600000},
+    "plan": {"model": "opus-5-5", "effort": "medium", "maxContext": 200000, "maxTurns": 60, "provider": "claude", "maxWallMs": 5400000},
+    "master": {"model": "opus-5-5", "effort": "medium", "maxContext": 30000, "maxTurns": 40, "provider": "claude", "maxWallMs": 3600000},
     "implement": {"model": "sonnet", "effort": "medium", "maxContext": 150000, "maxTurns": 120, "provider": "claude", "maxWallMs": 10800000},
     "implement-hard": {"model": "opus", "effort": "high", "maxContext": 150000, "maxTurns": 120, "provider": "claude", "maxWallMs": 10800000},
     "verify": {"model": "sonnet", "effort": "medium", "maxContext": 120000, "maxTurns": 40, "provider": "claude", "maxWallMs": 3600000},
@@ -192,20 +192,16 @@
     "turnsWithoutWrite": 30
   },
   "_reasoner_comment": [
-    "Added for Forge Intake (P4.3). astra: off is the shipped default -- the Intake",
-    "planner's plan seam always resolves to claude while this is off. Only",
-    "planning-only turns astra on, per the 2026-09-04 16:40 amendment (Aaron: limit",
-    "astra to what absolutely matters). No stream build, test, lens or review calls",
-    "astra regardless of this flag. timeoutMs bounds one Reasoner.call (P4.7/I4);",
-    "a call that outruns it is journaled as reasoner.timeout rather than left hanging."
+    "Added for Forge Intake (P4.3). The Intake planner always reasons on claude.",
+    "timeoutMs bounds one Reasoner.call (P4.7/I4); a call that outruns it is journaled",
+    "as reasoner.timeout rather than left hanging."
   ],
   "reasoner": {
-    "astra": "off",
     "timeoutMs": 120000
   },
   "_council_comment": [
-    "forge-council-live: codex stays off by default (Aaron 2026-09-04 16:40: astra and",
-    "Codex are limited to what absolutely matters). allowedRepos and autoMerge are left",
+    "forge-council-live: codex stays off by default (Aaron 2026-09-04 16:40: Codex is",
+    "limited to what absolutely matters). allowedRepos and autoMerge are left",
     "empty here on purpose -- this file is checked in and flightdeck stays project",
     "agnostic (npm run check:agnostic scans every tracked file for a real repo name),",
     "so a real entry for either list lives only in an operator's own environment",

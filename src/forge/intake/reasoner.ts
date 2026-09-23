@@ -1,9 +1,7 @@
 /**
- * Requirement 6, as narrowed by the 2026-09-04 16:40 amendment: the planner's default
- * provider is `claude`; astra is reachable only when the policy file's `reasoner.astra`
- * flag is exactly `'planning-only'`, and it ships `'off'`. `resolvePlanProvider` is the
- * one function that decision routes through; nothing else in this stream is allowed to
- * pick `'codex'` on its own.
+ * Requirement 6: the Intake planner always reasons on `claude` (Aaron, 2026-09-23: the
+ * old Codex planning route was removed outright). `resolvePlanProvider` is the one
+ * function that decision routes through; nothing in this stream picks `'codex'`.
  *
  * This module never constructs a Codex client. `codex_call.py` is the only sanctioned
  * route to Codex at all (memory `codex-side-agent.md`), and it is out of scope for
@@ -15,8 +13,8 @@
 import type { Provider } from '../contracts.js';
 import type { Policy } from '../policy.js';
 
-export function resolvePlanProvider(reasonerConfig: Policy['reasoner']): Provider {
-  return reasonerConfig?.astra === 'planning-only' ? 'codex' : 'claude';
+export function resolvePlanProvider(_reasonerConfig: Policy['reasoner']): Provider {
+  return 'claude';
 }
 
 /**

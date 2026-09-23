@@ -166,9 +166,9 @@ describe('wardenConfig', () => {
 });
 
 describe('provider, read from the policy file rather than hardcoded', () => {
-  it('sends plan and master to codex, per the 2026-09-04 13:20 decision', () => {
-    expect(providerFor('plan')).toBe('codex');
-    expect(providerFor('master')).toBe('codex');
+  it('sends plan and master to claude (Opus 5.5, 2026-09-23)', () => {
+    expect(providerFor('plan')).toBe('claude');
+    expect(providerFor('master')).toBe('claude');
   });
 
   it('defaults every other declared, non-audit class to claude', () => {
@@ -260,7 +260,7 @@ describe('reasonerTimeoutMs', () => {
   it('falls back to the default when a policy file names none', () => {
     const dir = mkdtempSync(join(tmpdir(), 'forge-policy-'));
     const fixture = join(dir, 'model-policy.json');
-    const withoutTimeout = { ...loadPolicy(), reasoner: { astra: 'off' as const } };
+    const withoutTimeout = { ...loadPolicy(), reasoner: {} };
     writeFileSync(fixture, JSON.stringify(withoutTimeout));
     expect(reasonerTimeoutMs(fixture)).toBe(DEFAULT_REASONER_TIMEOUT_MS);
   });
@@ -268,7 +268,7 @@ describe('reasonerTimeoutMs', () => {
   it('honours an override the policy file sets', () => {
     const dir = mkdtempSync(join(tmpdir(), 'forge-policy-'));
     const fixture = join(dir, 'model-policy.json');
-    const withOverride = { ...loadPolicy(), reasoner: { astra: 'off' as const, timeoutMs: 5000 } };
+    const withOverride = { ...loadPolicy(), reasoner: { timeoutMs: 5000 } };
     writeFileSync(fixture, JSON.stringify(withOverride));
     expect(reasonerTimeoutMs(fixture)).toBe(5000);
   });
@@ -282,7 +282,7 @@ describe('reasonerTimeoutMsFor: a class may need longer than the fleet-wide defa
   it('a class with no timeoutMs of its own falls back to the fleet-wide reasoner.timeoutMs', () => {
     const dir = mkdtempSync(join(tmpdir(), 'forge-policy-'));
     const fixture = join(dir, 'model-policy.json');
-    const policy = { ...loadPolicy(), reasoner: { astra: 'off' as const, timeoutMs: 7000 } };
+    const policy = { ...loadPolicy(), reasoner: { timeoutMs: 7000 } };
     writeFileSync(fixture, JSON.stringify(policy));
     expect(reasonerTimeoutMsFor('audit-judge', fixture)).toBe(7000);
   });
