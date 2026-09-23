@@ -158,3 +158,13 @@ describe('parseNarration', () => {
     expect(parseNarration(JSON.stringify(['Merged.']))).toBeNull();
   });
 });
+
+describe('narration token budget', () => {
+  it('caps an oversized facts block and leaves a short one alone', async () => {
+    const { capFacts, NARRATION_FACTS_MAX_CHARS } = await import('../../../src/forge/console/narrate.js');
+    expect(capFacts('short')).toBe('short');
+    const capped = capFacts('y'.repeat(100_000));
+    expect(capped.length).toBeLessThan(NARRATION_FACTS_MAX_CHARS + 100);
+    expect(capped).toContain('[facts cut at');
+  });
+});

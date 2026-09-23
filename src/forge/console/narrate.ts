@@ -189,7 +189,9 @@ export function buildNarrationPrompt(input: NarrationFacts, protectedTokens: str
     examples,
     '',
     'Facts:',
-    rawFor(input),
+    // Token budget (2026-09-23): a fact can carry a whole agent reply or log excerpt;
+    // uncapped, 263 of 736 narrate calls ran past 20k tokens for a two-sentence answer.
+    capFacts(rawFor(input)),
     '',
     'The template sentence the console shows today, for register only -- do not copy it:',
     input.template,
@@ -236,4 +238,13 @@ export function parseNarration(reply: string): ParsedNarration | null {
   } catch {
     return null;
   }
+}
+
+/** Longest facts block a narration prompt carries; the rest is cut with a marker. */
+export const NARRATION_FACTS_MAX_CHARS = 4000;
+
+export function capFacts(raw: string): string {
+  return raw.length > NARRATION_FACTS_MAX_CHARS
+    ? `${raw.slice(0, NARRATION_FACTS_MAX_CHARS)}\n[facts cut at ${NARRATION_FACTS_MAX_CHARS} characters]`
+    : raw;
 }
