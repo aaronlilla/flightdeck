@@ -1505,6 +1505,29 @@ describe('bug hunt: runs after a clean council, before merge (2026-09-23 standin
     expect(result.bugHuntClearedAt).toBeUndefined();
   });
 
+  it('a fix round clears the last run\'s block and gives it a fresh clock before relaunching', async () => {
+    // BBZ-386/388, 2026-09-23: the relaunch was refused overnight with "Running 3.0 h,
+    // expected 3.0 h" because the block and the wall clock from the first run carried over.
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const order: string[] = [];
+    const { deps, events: rows } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'FIX FIRST', findingsText: 'x' }),
+      clearRunBlock: (runKey: string) => { order.push(`clear:${runKey}`); },
+      relaunchForFixRound: async () => { order.push('relaunch'); return { runKey: 'k-2' }; },
+    });
+
+    let current = item;
+    current = await advanceItem(current, deps); // plan
+    current = await advanceItem(current, deps); // launch
+    const runKey = current.runKey!;
+    await advanceItem(current, deps); // gate -> FIX FIRST -> fix round
+
+    expect(order.slice(-2)).toEqual([`clear:${runKey}`, 'relaunch']);
+    expect(rows.some((r) => r['event'] === 'queue.fix-round-start' && r['previousRunKey'] === runKey)).toBe(true);
+  });
+
   it('a dirty bug hunt with the fix-round cap already used parks instead of relaunching again', async () => {
     const store = tempStore();
     const item = addTicketItem(store, 'ABC-1', 1000);

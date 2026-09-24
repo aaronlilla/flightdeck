@@ -526,7 +526,7 @@ function foldLine(state: FleetState, line: string): void {
   // `run.started` for that key measures from itself. Without this the warden parked every
   // retried relaunch on its first tool call (2026-09-15, "Running 20.8 h, expected 3.0 h").
   // An automatic relaunch writes no such row and still measures from the first start.
-  if (row.event === 'queue.relaunch-on-retry' && typeof row['previousRunKey'] === 'string') {
+  if ((row.event === 'queue.relaunch-on-retry' || row.event === 'queue.fix-round-start') && typeof row['previousRunKey'] === 'string') {
     const retried = state.runs[row['previousRunKey']];
     if (retried) delete retried.startedAt;
   }

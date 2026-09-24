@@ -1231,6 +1231,14 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
     ) {
       const findings = council.findingsText
         ?? 'the council returned FIX FIRST with no findings text carried on this result';
+      // A fix round is new work, not a continuation: clear any block the last run left
+      // (a warden park such as "Running 3.0 h, expected 3.0 h") and give the run a fresh
+      // wall clock, or the launcher refuses to start it at all. Both BBZ-386 and BBZ-388
+      // sat overnight on 2026-09-23 behind exactly that refusal after one fix round each.
+      if (item.runKey) {
+        deps.clearRunBlock?.(item.runKey);
+        deps.append({ event: 'queue.fix-round-start', actor: 'queue', itemId: item.id, previousRunKey: item.runKey });
+      }
       const relaunched = await deps.relaunchForFixRound({ item, findings });
       return writeTransition(
         item,
@@ -1272,7 +1280,15 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
       if ((item.fixRoundsUsed ?? 0) < MAX_FIX_ROUNDS && deps.relaunchForFixRound) {
         const findings = hunt.findingsText
           ?? 'the bug hunt found a defect with no findings text carried on this result';
-        const relaunched = await deps.relaunchForFixRound({ item, findings });
+        // A fix round is new work, not a continuation: clear any block the last run left
+      // (a warden park such as "Running 3.0 h, expected 3.0 h") and give the run a fresh
+      // wall clock, or the launcher refuses to start it at all. Both BBZ-386 and BBZ-388
+      // sat overnight on 2026-09-23 behind exactly that refusal after one fix round each.
+      if (item.runKey) {
+        deps.clearRunBlock?.(item.runKey);
+        deps.append({ event: 'queue.fix-round-start', actor: 'queue', itemId: item.id, previousRunKey: item.runKey });
+      }
+      const relaunched = await deps.relaunchForFixRound({ item, findings });
         return writeTransition(
           item,
           {
