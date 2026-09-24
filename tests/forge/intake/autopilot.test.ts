@@ -20,6 +20,7 @@ function harness(open: InboxEntry[], replyText: string, over: Partial<AutopilotD
   const delivered: string[] = [];
   const worked: string[] = [];
   const retired: string[] = [];
+  const needsAaron: [string, string][] = [];
   const rows: Record<string, unknown>[] = [];
   const deps: AutopilotDeps = {
     settings: () => ({ answerAsks: true, autoMerge: true }),
@@ -31,10 +32,11 @@ function harness(open: InboxEntry[], replyText: string, over: Partial<AutopilotD
     deliver: async (e) => { delivered.push(e.key); },
     retire: (key) => { retired.push(key); },
     work: async (ticket) => { worked.push(ticket); },
+    markNeedsAaron: (key, reason) => { needsAaron.push([key, reason]); },
     journal: { append: (row) => { rows.push(row); } },
     ...over,
   };
-  return { deps, answered, delivered, worked, retired, rows };
+  return { deps, answered, delivered, worked, retired, needsAaron, rows };
 }
 
 describe('autopilot', () => {
@@ -55,12 +57,12 @@ describe('autopilot', () => {
     expect(h.answered).toEqual([['k1', LEAVE_OPTION]]);
   });
 
-  it('queues the ticket when the comment asks for a change, and acknowledges it', async () => {
+  it('queues the ticket when the comment asks for a change, and posts nothing', async () => {
     const h = harness([entry({ ticket: 'BBZ-9' })], 'ACTION: work\nWHY: asks for a code change\nANSWER: On it.');
     const r = await runAutopilot(h.deps);
     expect(r.worked).toEqual(['k1']);
     expect(h.worked).toEqual(['BBZ-9']);
-    expect(h.answered).toEqual([['k1', 'On it.']]);
+    expect(h.answered).toEqual([['k1', LEAVE_OPTION]]);
   });
 
   it('answers a worker question and delivers it to the run', async () => {
@@ -102,6 +104,49 @@ describe('autopilot', () => {
 
   it('never lets a worker question go silent', () => {
     expect(parseAutoDecision('ACTION: silent\nWHY: x\nANSWER:', false)).toBeNull();
+  });
+
+  it('downgrades a holding reply to ask instead of posting a promise', async () => {
+    const h = harness([entry({ ticket: 'BBZ-189' })],
+      "ACTION: answer\nWHY: he wants the diff reviewed\nANSWER: I'll check the #189 diff and get back to you.");
+    const r = await runAutopilot(h.deps);
+    expect(r.askedAaron).toEqual(['k1']);
+    expect(h.answered).toEqual([]);
+    expect(h.delivered).toEqual([]);
+    expect(h.needsAaron).toHaveLength(1);
+    expect(h.needsAaron[0]?.[0]).toBe('k1');
+    expect(h.rows[0]).toMatchObject({ event: 'autopilot.left_open', key: 'k1', ticket: 'BBZ-189' });
+  });
+
+  it('queues work and posts nothing when the model itself picks ask for a code lookup', async () => {
+    const h = harness([entry({ ticket: 'BBZ-190' })],
+      'ACTION: ask\nWHY: only Joe can grant staging DB access\nANSWER:');
+    const r = await runAutopilot(h.deps);
+    expect(r.askedAaron).toEqual(['k1']);
+    expect(h.worked).toEqual([]);
+    expect(h.answered).toEqual([]);
+    expect(h.needsAaron[0]?.[1]).toContain('Joe');
+  });
+
+  it('a real grounded answer with no promise language still posts', async () => {
+    const h = harness([entry({ ticket: 'BBZ-191' })],
+      'ACTION: answer\nWHY: the code already returns 404 there\nANSWER: That endpoint 404s on purpose when the playerId is unlinked, see AccountController.');
+    const r = await runAutopilot(h.deps);
+    expect(r.answered).toEqual(['k1']);
+    expect(h.answered).toEqual([['k1', 'That endpoint 404s on purpose when the playerId is unlinked, see AccountController.']]);
+    expect(h.needsAaron).toEqual([]);
+  });
+
+  it('skips an entry already marked needs_aaron instead of re-deciding it', async () => {
+    const call = vi.fn(async () => ({ text: 'ACTION: answer\nWHY: x\nANSWER: y' }));
+    const h = harness([entry({ ticket: 'BBZ-192', needs_aaron: 'only Joe can do this' })], '');
+    h.deps.reasoner = { call };
+    const r = await runAutopilot(h.deps);
+    expect(call).not.toHaveBeenCalled();
+    expect(r.askedAaron).toEqual([]);
+    expect(r.answered).toEqual([]);
+    expect(h.answered).toEqual([]);
+    expect(h.needsAaron).toEqual([]);
   });
 });
 
