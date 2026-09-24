@@ -115,6 +115,13 @@ export interface InboxEntry extends PassFields {
   /** Set alongside `stale: true`: one line saying why, for the console to show in place
    *  of the answer controls. */
   staleReason?: string;
+  /** Set by autopilot (2026-09-24, Aaron: "queue it or ask me") when a question needs a
+   *  person -- access, an account, Play Console, a business call -- and no reply was
+   *  posted. The entry stays OPEN so the operator still sees and answers it; this only
+   *  marks it so the console can show it as waiting on Aaron and autopilot skips it on
+   *  later ticks instead of re-deciding the same question forever. Same string-reason
+   *  shape as `Lane.needs_aaron` in supervisor.ts. */
+  needs_aaron?: string | null;
 }
 
 /**
@@ -359,6 +366,17 @@ export class Inbox {
     const attached: InboxEntry = { ...entry, answeredBy: from, reply: text, repliedAt: Date.now() };
     this.write(attached);
     return attached;
+  }
+
+  /** Marks an entry as needing Aaron, with no answer posted and the question left OPEN.
+   *  Autopilot's alternative to a holding reply: it never invents "I'll check" on his
+   *  behalf, it flags the question for him instead. */
+  markNeedsAaron(key: string, reason: string): InboxEntry | undefined {
+    const entry = this.entry(key);
+    if (!entry) return undefined;
+    const marked: InboxEntry = { ...entry, needs_aaron: reason };
+    this.write(marked);
+    return marked;
   }
 
   /** Answer an entry. An answer to a key nobody asked is ignored rather than invented.

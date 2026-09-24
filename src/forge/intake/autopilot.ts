@@ -128,12 +128,23 @@ export async function gatherEvidence(
 // ---------------------------------------------------------------------------------------
 // Deciding
 
-export type AutoAction = 'answer' | 'silent' | 'work';
+export type AutoAction = 'answer' | 'silent' | 'work' | 'ask';
 
 export interface AutoDecision {
   action: AutoAction;
   answer: string;
   why: string;
+}
+
+/** Cheap backstop for a holding reply the model wrote anyway: "I'll check X and get back
+ *  to you", "I'm checking who has access", "I'll come back with...", "let me find out".
+ *  Aaron's order, 2026-09-24: a feed decision must never post a promise of future action.
+ *  Autopilot answers once or not at all -- never "I'll look into it". */
+const PROMISE_PATTERN =
+  /\b(i'?ll|i will)\s+(check|look\b|find out|come back|get back|circle back|ask|see (what|who))|\bi'?m\s+checking\b|\bget back to (you|him|her|them|the team)\b|\bwill come back\b|\blet me (check|find out|look)\b|\bi'?ll keep (you|this) (posted|updated)\b|\bcheck(ing)? (with|who)\b/i;
+
+export function looksLikePromise(text: string): boolean {
+  return PROMISE_PATTERN.test(text);
 }
 
 /** Why the team's comment checks would refuse this reply, or null when it would post.
@@ -183,17 +194,27 @@ export function autopilotPrompt(entry: InboxEntry, evidence: string, operatorNam
     'What the checked-out code says (grep hits, may be empty):',
     evidence || '(nothing matched)',
     '',
+    'Holding replies are forbidden. Never answer with a promise of future action -- "I\'ll',
+    'check X and get back to you", "I\'m checking who has access", "let me find out", "I\'ll',
+    'come back with...". If you do not have a real answer right now, you have exactly two',
+    'options below (work or ask), never a placeholder reply that sounds like one.',
+    '',
     'Decide one action:',
     ...(feed
       ? [
-        '- answer: a reply is useful to the person who wrote it. Post the best short reply:',
-        '  the drafted one if it is right, or a better one using the code above. Never',
-        '  promise a date, money, or scope nobody agreed; say what you know and what you',
-        '  will do next instead.',
+        '- answer: you have a REAL answer right now, grounded in the ticket or the code',
+        '  above. Post the best short reply: the drafted one if it is right, or a better',
+        '  one using the evidence. Never promise a date, money, or scope nobody agreed,',
+        '  and never promise to check or come back later -- if you have not resolved it,',
+        '  that is not this action.',
         '- silent: no reply is needed, or one would be noise (an FYI, a thanks, a status',
         '  note, something already answered in the thread, a comment for someone else).',
-        '- work: it asks for a change to the code. The ticket is queued for a worker and',
-        '  your ANSWER is posted as a short acknowledgement.',
+        '- work: resolving it needs a code change, a repo lookup, a build, or a Sentry',
+        '  check -- something a worker can go do. The ticket is queued and nothing is',
+        '  posted; do not also write a holding reply.',
+        '- ask: resolving it needs a PERSON, not code -- access or a seeded account,',
+        '  Joe or whoever owns a system, Play Console, a business or product call. Post',
+        '  nothing; it is left open for Aaron to answer himself.',
       ]
       : [
         '- answer: pick the best option or write the answer, decided from the code and the',
@@ -205,21 +226,28 @@ export function autopilotPrompt(entry: InboxEntry, evidence: string, operatorNam
     'three sentences, no greeting, no sign-off, no mention of automation.',
     '',
     'Answer with exactly these three lines:',
-    `ACTION: ${feed ? 'answer | silent | work' : 'answer'}`,
+    `ACTION: ${feed ? 'answer | silent | work | ask' : 'answer'}`,
     'WHY: <one sentence>',
-    'ANSWER: <the reply or answer; empty for silent>',
+    'ANSWER: <the reply or answer; empty for silent or ask>',
   ].join('\n');
 }
 
 export function parseAutoDecision(text: string, feed: boolean): AutoDecision | null {
-  const action = /^\s*ACTION:\s*(answer|silent|work)\b/im.exec(text)?.[1]?.toLowerCase() as AutoAction | undefined;
+  const action = /^\s*ACTION:\s*(answer|silent|work|ask)\b/im.exec(text)?.[1]?.toLowerCase() as AutoAction | undefined;
   if (!action) return null;
   if (!feed && action !== 'answer') return null;
   const why = /^\s*WHY:\s*(.*)$/im.exec(text)?.[1]?.trim() ?? '';
   const answerAt = /^\s*ANSWER:\s*/im.exec(text);
   const answer = answerAt ? text.slice(answerAt.index + answerAt[0].length).trim() : '';
-  if (action !== 'silent' && !answer) return null;
-  return { action, answer: action === 'silent' ? '' : answer, why };
+  if (action !== 'silent' && action !== 'ask' && !answer) return null;
+  const decision: AutoDecision = { action, answer: action === 'silent' || action === 'ask' ? '' : answer, why };
+  // The team decided a feed answer never gets to promise future action (2026-09-24):
+  // a model that writes a holding reply anyway is downgraded to `ask` right here, so a
+  // regex slip in the prompt never reaches Jira as "I'll check and get back to you".
+  if (feed && decision.action === 'answer' && looksLikePromise(decision.answer)) {
+    return { action: 'ask', answer: '', why: `${why || 'model wrote a holding reply'} (held reply: "${decision.answer.slice(0, 120)}")` };
+  }
+  return decision;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -237,6 +265,9 @@ export interface AutopilotDeps {
   deliver: (entry: InboxEntry, text: string) => Promise<void>;
   /** Retires a question nothing can act on (every asking run is gone). */
   retire: (key: string) => void;
+  /** Leaves a question OPEN, posting nothing, for Aaron to answer: the `ask` action.
+   *  Reason is a one-line note the console can show. */
+  markNeedsAaron: (key: string, reason: string) => void;
   /** Queues and assigns the ticket, for a feed comment that asks for a change. */
   work: (ticket: string) => Promise<void>;
   journal: { append(row: Record<string, unknown>): void };
@@ -250,15 +281,22 @@ export interface AutopilotDeps {
   now?: () => number;
 }
 
-export interface AutopilotResult { answered: string[]; silent: string[]; worked: string[]; retired: string[]; failed: string[] }
+export interface AutopilotResult {
+  answered: string[]; silent: string[]; worked: string[]; retired: string[]; failed: string[];
+  /** Left open, no post, marked `needs_aaron`: the `ask` action. */
+  askedAaron: string[];
+}
 
 export async function runAutopilot(deps: AutopilotDeps): Promise<AutopilotResult> {
-  const result: AutopilotResult = { answered: [], silent: [], worked: [], retired: [], failed: [] };
+  const result: AutopilotResult = { answered: [], silent: [], worked: [], retired: [], failed: [], askedAaron: [] };
   if (!deps.settings().answerAsks) return result;
   const now = deps.now ?? Date.now;
   const open = deps.open().sort((a, b) => a.at - b.at).slice(0, deps.perTick ?? 3);
   for (const entry of open) {
     const feed = isFeedAsk(entry);
+    // Already flagged for Aaron: leave it alone rather than re-deciding the same
+    // question every tick forever.
+    if (entry.needs_aaron) continue;
     if (entry.stale && !feed) {
       deps.retire(entry.key);
       deps.journal.append({
@@ -288,9 +326,20 @@ export async function runAutopilot(deps: AutopilotDeps): Promise<AutopilotResult
           ? (drafted ? { action: 'answer', answer: drafted, why: 'took the drafted reply' } : { action: 'silent', answer: '', why: 'nothing drafted to send' })
           : { action: 'answer', answer: pick ?? 'Use your best judgement and keep going; note the assumption in the PR.', why: 'took the recommended option' };
       }
+      if (decision.action === 'ask') {
+        deps.markNeedsAaron(entry.key, decision.why || 'needs Aaron');
+        deps.journal.append({
+          event: 'autopilot.left_open', actor: 'autopilot', key: entry.key,
+          ...(entry.ticket ? { ticket: entry.ticket } : {}), reason: decision.why, at: now(),
+        });
+        result.askedAaron.push(entry.key);
+        continue;
+      }
       // A feed reply must pass the team's comment checks, or the post fails later with
       // nobody watching. Two rewordings, then silence rather than a refused post.
-      if (feed && decision.action !== 'silent') {
+      // `work` posts nothing at all (2026-09-24: queue it or ask, never a holding
+      // acknowledgement either), so it never enters this readability round.
+      if (feed && decision.action !== 'silent' && decision.action !== 'work') {
         const names = [deps.operatorName().split(/\s+/)[0] ?? ''].filter(Boolean);
         for (let round = 0; round < 2; round += 1) {
           const refusal = postRefusal(decision.answer, names);
@@ -303,12 +352,25 @@ export async function runAutopilot(deps: AutopilotDeps): Promise<AutopilotResult
           if (next && next.action !== 'silent') decision = { ...next, action: decision.action === 'work' ? 'work' : next.action };
           else if (next) { decision = next; break; }
         }
-        if (decision.action !== 'silent' && postRefusal(decision.answer, names)) {
+        if (decision.action !== 'silent' && decision.action !== 'ask' && postRefusal(decision.answer, names)) {
           decision = { action: decision.action === 'work' ? 'work' : 'silent', answer: decision.action === 'work' ? 'On it.' : '', why: `${decision.why} (reply kept failing the comment check)` };
         }
       }
+      // The rewording round can itself land on `ask` (the model, pressed to fix a
+      // refused reply, admits it cannot answer at all): same no-post, leave-it-open path.
+      if (decision.action === 'ask') {
+        deps.markNeedsAaron(entry.key, decision.why || 'needs Aaron');
+        deps.journal.append({
+          event: 'autopilot.left_open', actor: 'autopilot', key: entry.key,
+          ...(entry.ticket ? { ticket: entry.ticket } : {}), reason: decision.why, at: now(),
+        });
+        result.askedAaron.push(entry.key);
+        continue;
+      }
       if (decision.action === 'work' && entry.ticket) await deps.work(entry.ticket);
-      const text = decision.action === 'silent' ? LEAVE_OPTION : decision.answer;
+      // `work` closes the question the same silent way `silent` does: queued, nothing
+      // posted to the ticket.
+      const text = decision.action === 'silent' || decision.action === 'work' ? LEAVE_OPTION : decision.answer;
       const answered = deps.answer(entry.key, text);
       if (!answered) throw new Error(`the inbox has no ${entry.key}`);
       if (!feed) await deps.deliver(answered, text);

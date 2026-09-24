@@ -1161,6 +1161,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
             journalInterviewAnswer((row) => autopilotJournal.append(row as never), entry, 'autopilot', 'autopilot');
           },
           retire: (key) => { server.inbox.retire(key); },
+          markNeedsAaron: (key, reason) => { server.inbox.markNeedsAaron(key, reason); },
           work: async (ticket) => {
             if (queueStore.all().some((item) => item.ticket === ticket)) return;
             const config = jiraConfigFromEnv();
