@@ -87,6 +87,26 @@ export interface InFlightDeps {
    * somewhere else is somebody else's work, not an unmeasured claim on this one.
    */
   ownRepo?: string | null;
+  /**
+   * The ticket's current Jira status (`detail.status` from `readTicketDetail`, already
+   * fetched by the caller -- no second Jira read). A merged pull request only means the
+   * work is truly done while the ticket is still sitting at In Review/QA/Done; QA can
+   * bounce a ticket back to In Progress (or To Do/Backlog) after the merge, and rework is
+   * exactly what this queue exists to pick up. Absent or unknown status keeps the old,
+   * fail-closed behaviour: a merged pull request always refuses.
+   */
+  ticketStatus?: string | null;
+}
+
+/** Statuses under which a merged pull request still means "done, do not restart" --
+ *  everything else (In Progress, To Do, Backlog, ...) means the ticket moved backward
+ *  after the merge, so the merge is not the last word. Compared case-insensitively;
+ *  `null`/`undefined` is treated as unknown and keeps the old refuse-on-merge behaviour. */
+const MERGED_STILL_BLOCKS_STATUSES = new Set(['in review', 'qa', 'done']);
+
+function mergedStillBlocks(status: string | null | undefined): boolean {
+  if (status === null || status === undefined) return true;
+  return MERGED_STILL_BLOCKS_STATUSES.has(status.trim().toLowerCase());
 }
 
 export interface InFlightVerdict {
@@ -152,12 +172,19 @@ export async function checkTicketInFlight(ticket: string, deps: InFlightDeps): P
       };
     }
     if (state === 'MERGED') {
-      return {
-        start: false,
-        reason: `${ticket} already has a merged pull request: ${ref.url} (found in a ${ref.where}). `
-          + 'The work landed; the status field is what is out of date.',
-        pr: ref,
-      };
+      if (mergedStillBlocks(deps.ticketStatus)) {
+        return {
+          start: false,
+          reason: `${ticket} already has a merged pull request: ${ref.url} (found in a ${ref.where}). `
+            + 'The work landed; the status field is what is out of date.',
+          pr: ref,
+        };
+      }
+      // The merge is real, but the ticket moved backward since -- QA bounced it -- so the
+      // merged pull request is not the last word on it. Treated like a closed pull
+      // request: it does not block a fresh start.
+      closed.push(ref);
+      continue;
     }
     closed.push(ref);
   }

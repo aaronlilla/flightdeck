@@ -2830,3 +2830,61 @@ describe('the gate hop never parks a run whose process is alive', () => {
     }
   });
 });
+
+// A queue item stuck reading `running` while its run had already ended -- a worker
+// killed outside the Warden's own path, or a handoff whose successor died before it
+// could journal `run.finished` -- read `started`/`paused`/`handed-off` forever by
+// `status.finished`, and nothing else in `advanceItem` ever revisited that verdict.
+// BBZ-354/BBZ-387/BBZ-342/BBZ-386/BBZ-388/BBZ-74/BBZ-304/BBZ-343 all sat this way.
+describe('a running item whose run never reports finished reconciles against liveness', () => {
+  it('parks an item whose run key has no live process behind it', async () => {
+    const store = tempStore();
+    const added = addTicketItem(store, 'BBZ-343', 1000);
+    const runKey = 'queue-BBZ-343-Q-ceffa11b';
+    store.append({
+      id: added.id, at: 1100, state: 'running', ticket: 'BBZ-343', repo: 'owner/name',
+      briefPath: 'C:/briefs/BBZ-343.md', runKey, branch: 'feature/bbz-343', updatedAt: 1100,
+    });
+    const { deps } = buildDeps(store, { launcher: { status: async () => ({ finished: false }) } });
+    // No process is alive under this run key -- the registry row is gone or its pid is dead.
+    deps.runPid = () => undefined;
+
+    const result = await advanceItem(store.get(added.id)!, deps);
+
+    expect(result.state).toBe('parked');
+    expect(result.reason).toContain(runKey);
+    expect(store.get(added.id)!.state).toBe('parked');
+  });
+
+  it('leaves the item running when no liveness check is wired at all (fail standing-down, not parked)', async () => {
+    const store = tempStore();
+    const added = addTicketItem(store, 'BBZ-343', 1000);
+    const runKey = 'queue-BBZ-343-Q-ceffa11b';
+    store.append({
+      id: added.id, at: 1100, state: 'running', ticket: 'BBZ-343', repo: 'owner/name',
+      briefPath: 'C:/briefs/BBZ-343.md', runKey, branch: 'feature/bbz-343', updatedAt: 1100,
+    });
+    const { deps } = buildDeps(store, { launcher: { status: async () => ({ finished: false }) } });
+    // deps.runPid left unset entirely: this environment cannot tell.
+
+    const result = await advanceItem(store.get(added.id)!, deps);
+
+    expect(result.state).toBe('running');
+  });
+
+  it('still holds the item running while its process really is alive', async () => {
+    const store = tempStore();
+    const added = addTicketItem(store, 'BBZ-343', 1000);
+    const runKey = 'queue-BBZ-343-Q-ceffa11b';
+    store.append({
+      id: added.id, at: 1100, state: 'running', ticket: 'BBZ-343', repo: 'owner/name',
+      briefPath: 'C:/briefs/BBZ-343.md', runKey, branch: 'feature/bbz-343', updatedAt: 1100,
+    });
+    const { deps } = buildDeps(store, { launcher: { status: async () => ({ finished: false }) } });
+    deps.runPid = () => 41412;
+
+    const result = await advanceItem(store.get(added.id)!, deps);
+
+    expect(result.state).toBe('running');
+  });
+});

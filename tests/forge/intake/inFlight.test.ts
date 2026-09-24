@@ -167,6 +167,29 @@ describe('checkTicketInFlight -- never reads the status field', () => {
   });
 });
 
+describe('checkTicketInFlight -- a merged pull request after a QA bounce', () => {
+  // BBZ-371: Q-1d521ec4 parked on "already has a merged pull request", but QA had
+  // bounced the ticket back to In Progress after that merge. A merge is not the last
+  // word once the ticket has moved backward.
+  it('starts a ticket whose merged pull request predates a bounce back to In Progress', async () => {
+    const { deps } = depsFor({ 'ACME-284': { comments: [PR_URL] } }, { 161: 'MERGED' });
+    const verdict = await checkTicketInFlight('ACME-284', { ...deps, ticketStatus: 'In Progress' });
+    expect(verdict.start).toBe(true);
+  });
+
+  it('still refuses when the ticket is sitting In Review after the merge', async () => {
+    const { deps } = depsFor({ 'ACME-284': { comments: [PR_URL] } }, { 161: 'MERGED' });
+    const verdict = await checkTicketInFlight('ACME-284', { ...deps, ticketStatus: 'In Review' });
+    expect(verdict.start).toBe(false);
+  });
+
+  it('still refuses when no ticket status is known at all (fail closed)', async () => {
+    const { deps } = depsFor({ 'ACME-284': { comments: [PR_URL] } }, { 161: 'MERGED' });
+    const verdict = await checkTicketInFlight('ACME-284', deps);
+    expect(verdict.start).toBe(false);
+  });
+});
+
 describe('ticketKeysIn -- the key pattern comes from the contract', () => {
   it('takes every distinct key out of a pull request title and body', () => {
     expect(ticketKeysIn('ACME-284 Stop the sheet dismissing itself\n\nAlso closes ACME-285 and ACME-284.'))

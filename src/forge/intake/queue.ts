@@ -989,7 +989,27 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
   }
 
   const status = await deps.launcher.status(item.runKey);
-  if (!status.finished) return item;
+  if (!status.finished) {
+    // Reconcile: `status.finished` reads false forever when a run's own fold is stuck
+    // at `started`/`paused`/`handed-off` and nothing is left alive to move it past that
+    // -- a worker killed outside the Warden's own path, a crash before `run.finished`
+    // ever got journaled, or a handoff whose successor never registered and itself died.
+    // `deps.runPid` is the same liveness read `relaunchOnRetryOrPark` already uses right
+    // below for a park held on a live worker; no live pid under this run key means
+    // nothing is ever going to finish it, so the item is parked with that fact as its
+    // reason (existing `parked` state, existing `relaunchOnRetryOrPark` transition)
+    // instead of sitting `running` on the board forever with no way to retry it.
+    // Absent `deps.runPid` means this environment cannot tell, and the reconcile stands
+    // down exactly like every other `runPid` read in this file -- never treated as "no
+    // process", or every environment with no liveness wiring would park its whole board.
+    if (deps.runPid && deps.runPid(item.runKey) === undefined) {
+      return relaunchOnRetryOrPark(
+        item, deps, `run ${item.runKey} is not finished but no process is running for it`,
+        { hop: 'gate', verdict: null },
+      );
+    }
+    return item;
+  }
   // BBZ-386/PR #219, 2026-09-23: a fix round relaunches the worker under the SAME run
   // key (`runKeyForBrief` is deterministic on the brief path), and the launcher's own
   // registration wait can resolve on the registry row alone, before the new run's own

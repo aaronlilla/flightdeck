@@ -218,6 +218,11 @@ export function queuePlanner(
           remoteLinks: (key) => fetchIssueRemoteLinks(config, key),
           stateOf: async (repoSlug, pr) => (await prState(repoSlug, pr)).prState,
           ownRepo: repo,
+          // BBZ-371: QA can bounce a ticket back to In Progress after its pull request
+          // merged; `detail` is already fetched above (readTicketDetail), so this is not
+          // a second Jira call. Absent (no `config`, so `detail` is unset) keeps the old
+          // fail-closed behaviour: a merged pull request always refuses.
+          ticketStatus: detail?.status ?? null,
         });
         if (!verdict.start) {
           return { inFlight: true, ticket, prUrl: verdict.pr?.url ?? '', reason: verdict.reason };
