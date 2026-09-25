@@ -1021,6 +1021,17 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
   // `status.startedAt` (an environment that never wires it) skips the wait rather than
   // blocking forever on evidence that will never arrive.
   if (item.fixRoundAt && status.startedAt !== undefined && status.startedAt < item.fixRoundAt) {
+    // BBZ-386, 2026-09-24: a relaunch the launcher refused (over time, a stale live-run
+    // row) never journals a `run.started`, so this wait held the item `running` for good
+    // and filled a width slot with nothing behind it. Past the grace window with no
+    // process under the run key, nothing will ever start it: park it where retry works.
+    if (deps.runPid && deps.runPid(item.runKey) === undefined
+      && deps.clock() - item.fixRoundAt > FIX_ROUND_START_GRACE_MS) {
+      return relaunchOnRetryOrPark(
+        item, deps, `fix-round relaunch never started for run ${item.runKey} and no process is running for it`,
+        { hop: 'gate', verdict: null },
+      );
+    }
     return item;
   }
   // A park already held on a live worker (`relaunchOnRetryOrPark`) waits on that process.
@@ -1555,6 +1566,10 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
  *  Module scope rather than a field, because the tick is a free function and one process
  *  owns one queue. */
 const advancing = new Set<string>();
+/** How long a fix-round relaunch may take to journal its `run.started` before a run key
+ *  with no live process is treated as never started (see `advanceItem`). */
+const FIX_ROUND_START_GRACE_MS = 10 * 60_000;
+
 const MERGED_SWEEP_MS = 120_000;
 let lastMergedSweepAt = 0;
 /** Finding #6/#9: how many `prMerged` GitHub calls the merged-elsewhere sweep may have
