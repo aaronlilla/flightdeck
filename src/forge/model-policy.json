@@ -86,7 +86,7 @@
     "later) runs on provider claude, model opus-5-5, and nothing else -- no codex",
     "lane, no sonnet fallback for an audit. A clean audit plus a clean bug hunt plus",
     "green CI merges the PR with no human input on every repo named in",
-    "FORGE_COUNCIL_AUTOMERGE / FORGE_QUEUE_MERGE_REPOS, except BBManagementSystemV2,",
+    "FORGE_COUNCIL_AUTOMERGE / FORGE_QUEUE_MERGE_REPOS, except a repo marked controlled,",
     "which always stops at a draft PR for Joe because merging the controlled .NET",
     "backend needs another person. Jira updates (In Review, assign Haiping, a",
     "comment in Aaron's voice) run right after the merge, unattended.",

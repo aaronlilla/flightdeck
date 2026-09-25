@@ -366,6 +366,13 @@ describe('item 1: a parked item recovers on its own when the park reason was tra
       checksConclusion: async () => conclusionOf([{ conclusion: 'SUCCESS' }]),
       runPid: () => undefined,
       maxInFlight: () => 1,
+      // A checks park means the run already finished and opened its PR. Left reading as
+      // unfinished with no process, the stuck-run reconcile would rightly park it again.
+      launcher: {
+        status: async (runKey: string): Promise<ChainRunStatus> => (runKey === 'chk'
+          ? { finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/7' }
+          : { finished: false }),
+      },
     });
 
     await runQueueTick(deps, store.all());

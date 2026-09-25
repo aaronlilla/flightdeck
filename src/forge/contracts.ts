@@ -310,6 +310,14 @@ export const FORGE_EVENT_NAMES = [
   'autopilot.answered', 'autopilot.retired', 'autopilot.failed',
   // server.ts POST /autonomy: the operator flipped answerAsks or autoMerge.
   'autonomy.changed',
+  // chain-wire.ts: the council's bug-hunt pass over a PR, with whether it came back clean.
+  'bug-hunt.run',
+  // intake/autopilot.ts: a question autopilot chose to leave open for a person.
+  'autopilot.left_open',
+  // intake/interviewPlanner.ts: the tier a plan was routed to.
+  'plan.tier',
+  // intake/queue.ts: a fix round starting, and the ship step's outcome.
+  'queue.fix-round-start', 'queue.shipped', 'queue.ship-failed',
   // 2026-09-18: the claim half of the feed. `taken` is a ticket replied to, assigned to
   // the operator and queued; `refused` names the stage that stopped a claim part-way;
   // `capped` is a claim the per-pass or hourly limit stopped before the model was asked.

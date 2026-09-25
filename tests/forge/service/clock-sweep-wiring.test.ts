@@ -18,7 +18,8 @@ describe('cli.ts tick wiring: session-clock and sweep', () => {
 
   it('calls sessionClock.tick(...) inside the up case\'s setInterval body', () => {
     const upCaseStart = cliSource.indexOf("case 'up': {");
-    const tickStart = cliSource.indexOf('const tick = setInterval(', upCaseStart);
+    // The tick body lives in the SingleFlightTick that setInterval drives.
+    const tickStart = cliSource.indexOf('new SingleFlightTick(', upCaseStart);
     expect(tickStart).toBeGreaterThan(upCaseStart);
     const tickEnd = cliSource.indexOf('tick.unref();', tickStart);
     const tickBody = cliSource.slice(tickStart, tickEnd);
@@ -28,7 +29,8 @@ describe('cli.ts tick wiring: session-clock and sweep', () => {
 
   it('calls transcriptDrift.check(...) inside the same tick body, on the drift cadence', () => {
     const upCaseStart = cliSource.indexOf("case 'up': {");
-    const tickStart = cliSource.indexOf('const tick = setInterval(', upCaseStart);
+    // The tick body lives in the SingleFlightTick that setInterval drives.
+    const tickStart = cliSource.indexOf('new SingleFlightTick(', upCaseStart);
     const tickEnd = cliSource.indexOf('tick.unref();', tickStart);
     const tickBody = cliSource.slice(tickStart, tickEnd);
     expect(tickBody).toMatch(/transcriptDrift\.check\(/);

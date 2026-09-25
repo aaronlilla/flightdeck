@@ -330,7 +330,7 @@ export function sandboxCommand(
     ? [
       '-v', `${mountPathFor(input.runClone.hostPrimaryObjects)}:/primary-objects:ro`,
       // The clone's own alternates file names the primary by its HOST path
-      // (`C:/dev/.../objects`), which git inside the container cannot resolve: every git
+      // (a Windows host path to `objects`), which git inside the container cannot resolve: every git
       // command printed "unable to normalize alternate object path" and workers read that
       // as a broken checkout and stopped (BBZ-386/388, 2026-09-23). Mount a one-line file
       // naming the in-container path over it, read-only, so the host file is untouched.
