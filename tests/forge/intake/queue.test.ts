@@ -1459,6 +1459,38 @@ describe('BBZ-386/PR #219: a fix round never re-reviews an unchanged PR head', (
     expect(councilCalls).toBe(2);
     expect(advanced.state).not.toBe('parked');
   });
+
+  it('parks a fix round whose relaunch never started and has no live worker (BBZ-386, 2026-09-24)', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    let councilCalls = 0;
+    let now = 1_000;
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1', startedAt: 500 }) },
+      council: async () => { councilCalls += 1; return { verdict: 'FIX FIRST', findingsText: 'x' }; },
+      gh: { headSha: async () => 'sha-before-fix' },
+    });
+    deps.clock = () => now;
+    deps.relaunchForFixRound = async () => ({ runKey: 'abc-1' });
+    deps.runPid = () => undefined;
+
+    let current = item;
+    current = await advanceItem(current, deps); // plan
+    current = await advanceItem(current, deps); // launch
+    current = await advanceItem(current, deps); // gate -> FIX FIRST -> fix round at clock 1000
+    expect(current.fixRoundAt).toBe(1_000);
+
+    // Inside the grace window the wait still holds: the relaunch may be registering.
+    now = 1_000 + 60_000;
+    expect((await advanceItem(current, deps)).state).toBe('running');
+
+    // Past it, with no process behind the run, nothing will ever start it: park.
+    now = 1_000 + 11 * 60_000;
+    const parked = await advanceItem(current, deps);
+    expect(parked.state).toBe('parked');
+    expect(parked.reason).toMatch(/fix-round relaunch never started/);
+    expect(councilCalls).toBe(1);
+  });
 });
 
 describe('bug hunt: runs after a clean council, before merge (2026-09-23 standing order)', () => {
