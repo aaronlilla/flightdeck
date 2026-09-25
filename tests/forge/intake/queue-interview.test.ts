@@ -244,6 +244,34 @@ describe('the planning hop as an interview', () => {
     expect(asksForItem(h.inbox, item.id)).toHaveLength(1);
   });
 
+  // opt/tier, Aaron: complexity routing is on by default -- no env flag or setting turns
+  // it on, and it applies to a ticket planned through the ordinary queue path with
+  // nothing special configured. A reasoner reply with no tier line at all still leaves
+  // the pipeline's own default (`standard`) in the written brief, and the decision is
+  // journaled as `plan.tier` the moment the brief lands.
+  it('a ticket planned with no special config gets a tier line in its brief', async () => {
+    const reasoner: Reasoner = {
+      provider: 'claude',
+      async call(input) {
+        if (input.prompt.includes('interview')) return { text: JSON.stringify({ route: 'frontend', questions: [] }) };
+        // The model's own reply names no tier at all -- the ordinary, unconfigured case.
+        return { text: '# Goal: fix the voucher crash\n\nbody text.\n' };
+      },
+    };
+    const h = harness(reasoner);
+    const item = addTicketItem(h.store, 'BBZ-900');
+
+    await runQueueTick(h.deps, [item]);
+
+    expect(h.briefsWritten).toHaveLength(1);
+    expect(h.briefsWritten[0]).toContain('tier: standard');
+
+    const tierEvents = h.events.filter((row) => row['event'] === 'plan.tier');
+    expect(tierEvents).toHaveLength(1);
+    expect(tierEvents[0]!['tier']).toBe('standard');
+    expect(tierEvents[0]!['ticket']).toBe('BBZ-900');
+  });
+
   it('a second item on the same tick advances normally while the first waits', async () => {
     const reasoner: Reasoner = {
       provider: 'claude',

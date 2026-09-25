@@ -31,7 +31,7 @@ import { planMergeIntent, planReadyIntent, recordMergeCall, reconcileMerge } fro
 import { REAL_GH, type GhReader, type GhWriter } from './council/gh.js';
 import { findHaipingHandoff } from './council/handoffScan.js';
 import { runCouncilRound } from './council/orchestrate.js';
-import { codexLaneFor, reasonerJudge, reasonerLensRunner } from './council/reasonerRoles.js';
+import { reasonerJudge, reasonerLensRunner } from './council/reasonerRoles.js';
 import { autoMergeAllowed, councilPolicy, repoAllowedForCouncil } from './council/risk.js';
 import { redactPrBody } from './council/redact-sinks.js';
 import { SEVERITY_RANK } from './council/synthesis.js';
@@ -74,9 +74,11 @@ import {
   ensureHome, fleetConfigDirChoice, forgeHome, gotchasDir, inboxDir, intakeBriefsDir, journalPath,
   killSwitchPath, lanesDir, operatorConfigDir, queuePath, registryDir, runsDir, watcherStatePath,
 } from './paths.js';
-import { runQueueTick } from './intake/queue.js';
+import { addTicketItem, requeueStuckItem, runQueueTick } from './intake/queue.js';
+import { readAutonomy, runAutopilot, ticketAsText } from './intake/autopilot.js';
 import { acquireQueueLock } from './intake/queueLock.js';
 import { notTickingHere, QueueTickRunner } from './intake/queueTickRunner.js';
+import { SingleFlightTick } from './single-flight-tick.js';
 import { QueueStore } from './intake/queueStore.js';
 import { buildQueueRuntimeDeps, queueMergeDeps, queuePromoteDeps, jiraConfigFromEnv, queueSearch } from './queue-wire.js';
 import { slackConfigFromEnv } from './intake/slack.js';
@@ -284,7 +286,7 @@ function snapshotRuns(
 ): Array<{
   run: string; className: string; lastEventAt: number; context: number;
   currentTool?: { name: string; startedAt: number };
-  registryLive?: boolean; registryRowRemains?: boolean;
+  registryLive?: boolean; registryRowRemains?: boolean; lastProgressAt?: number;
 }> {
   // A finished, handed-off or parked run's lastEventAt is frozen at whatever it was when
   // it stopped, while `now` keeps moving; fed to assess() unfiltered, every one of them
@@ -296,6 +298,12 @@ function snapshotRuns(
       const base = {
         run: run.run, className: run.className ?? 'implement', lastEventAt: run.lastEventAt,
         context: run.context, ...(run.currentTool ? { currentTool: run.currentTool } : {}),
+        // Plan item 4: `lastProgressAt` folded by journal.ts from the four real progress
+        // events, falling back to `lastEventAt` in the snapshot itself when the fold
+        // never saw one -- a run whose journal predates this field, or whose fold has
+        // not yet reached its first `run.started`/`tool.*`/`turn.end` row, still reads
+        // as freshly active rather than as silent since the epoch.
+        lastProgressAt: run.lastProgressAt ?? run.lastEventAt,
       };
       // I15: a run whose process died mid-tool-call leaves the fold above exactly as it
       // was at the moment of death -- a `tool.start` with no `tool.end` reads as a tool
@@ -567,6 +575,9 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       )
         .then((reconciled) => {
           for (const outcome of reconciled) {
+            // Plan item 3, 2026-09-23: an already-noted open-ask park has nothing new to
+            // say -- skip it rather than re-appending the identical note on every pass.
+            if (outcome.alreadyNoted) continue;
             reconcileJournal.append({
               event: 'note', actor: 'runner', run: outcome.goal,
               message: outcome.ok ? 'reconciled: resumed by session id' : `could not reconcile: ${outcome.reason}`,
@@ -617,6 +628,14 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         for (const line of bootResult.lines) {
           reconcileBootJournal.append({ event: 'note', actor: 'console', message: line } as never);
         }
+        // One row per retired question, naming it: a retirement nobody can see is how
+        // Haiping's BBZ-168 question disappeared on 2026-09-22 with only a count logged.
+        for (const gone of bootResult.retired) {
+          reconcileBootJournal.append({
+            event: 'inbox.retired', actor: 'console', key: gone.key, why: gone.why,
+            ...(gone.ticket ? { ticket: gone.ticket } : {}),
+          } as never);
+        }
         for (const failure of bootResult.failures) {
           bootLines.push(`reconcile: ${failure}`);
           reconcileBootJournal.append({ event: 'note', actor: 'console', message: `reconcile failed: ${failure}` } as never);
@@ -642,6 +661,18 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       // resolves from the board alone.
       const whatIsJira = jiraConfigFromEnv();
       const whatIsReader = whatIsJira ? createJiraWriteClient(whatIsJira) : null;
+
+      // Plan item 5, 2026-09-23: the queue's own blocker board for a deploy run that
+      // never turns up -- shares the Blockers view's own journal/actuator shape
+      // (`drift-blockers.ts`), built here rather than reused from the Warden's own
+      // `wardenBlockers` below since this board has to exist before either `queueMergeDeps`
+      // or `buildQueueRuntimeDeps` are called, both of which run ahead of the Warden's own
+      // wiring in this function.
+      const queueBlockersJournal = new Journal(journalPath());
+      const queueBlockersActuator = new WardenActuator({
+        journal: queueBlockersJournal, journalPath: journalPath(), registry, lanes,
+      });
+      const queueBlockers = new BlockerBoard({ journal: queueBlockersJournal, actuator: queueBlockersActuator });
 
       const server = new ForgeServer({
         lanes, inbox, journalPath: journalPath(), journalCache: sharedJournalCache, registry,
@@ -692,7 +723,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         // repos on FORGE_QUEUE_MERGE_REPOS and then reads the develop deploy's outcome per
         // platform; Promote reports whether the production workflow exists and refuses
         // the dispatch until that decision is wired.
-        queueMergeDeps: queueMergeDeps(deps, queueStore, readChainEnv()),
+        queueMergeDeps: queueMergeDeps(deps, queueStore, readChainEnv(), queueBlockers),
         queuePromoteDeps: queuePromoteDeps(readChainEnv()),
       });
       const livenessJournal = new Journal(journalPath());
@@ -777,6 +808,22 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
               };
             });
         },
+        // Plan item 4: the registry pid backing this run, when the tick decides to kill
+        // it for producing no progress event in 15 minutes -- undefined once the row is
+        // already gone (the process died on its own between the trip and this tick).
+        registryPidFor: (run: string) => registry.get(run)?.pid,
+        // Never /T: one targeted pid, the same shape the orphan sweep's own killPid uses
+        // below -- a tree-kill from here is exactly what ended 161 processes under the
+        // console on 2026-09-08.
+        killProcess: (pid: number) => {
+          try { spawn('taskkill', ['/F', '/PID', String(pid)], { stdio: 'ignore' }); } catch {
+            // Already gone.
+          }
+        },
+        requeueStuckRun: (run: string) => {
+          const requeued = requeueStuckItem(queueStore, run);
+          return requeued !== undefined;
+        },
       });
 
       // P4.7/I3: the Governor's burn reconciliation, on the same cadence, deduped per run
@@ -819,9 +866,15 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           : `${targetPort} is already in use`;
         return { code: 76, lines: [message] };
       }
-      const tick = setInterval(() => {
+      // Finding #12 (flightdeck-audit/03-code.md): this pass has no ceiling of its own
+      // -- the Warden's relaunch call alone can run for however long a relaunched run
+      // takes -- so a 30s `setInterval` with no guard queues up a pile of overlapping
+      // passes under load. `SingleFlightTick` copies `QueueTickRunner`'s own `running`
+      // flag (`intake/queueTickRunner.ts:125-126,154`): a tick that lands while the
+      // previous one is still in flight is a no-op, not a second pass.
+      const wardenLivenessTick = new SingleFlightTick(async () => {
         liveness.evaluate();
-        void wardenTick.run();
+        await wardenTick.run();
         try {
           // A lane with no process, no queue row and nothing unpushed leaves the board on
           // its own (Aaron, 2026-09-12: "if a lane is stuck it needs to self heal ... what
@@ -894,7 +947,8 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           // Guarded the same as every other tick step: one bad read never stops liveness
           // or the Warden tick that already ran this cycle.
         }
-      }, 30_000);
+      });
+      const tick = setInterval(wardenLivenessTick.tick, 30_000);
       tick.unref();
 
       // R-49: the whole-machine session registry, on its own 5 s cadence rather than the
@@ -975,7 +1029,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         process.once('exit', () => queueLock.release());
         const queueJournal = new Journal(journalPath());
         const queueDeps = {
-          ...buildQueueRuntimeDeps(chainEnv, configDirForLaunch, deps, queueStore),
+          ...buildQueueRuntimeDeps(chainEnv, configDirForLaunch, deps, queueStore, undefined, queueBlockers),
           // What `forge clear` resets, minus the zero-turn-start count: a retry relaunching
           // the same run key must not be refused on the first park's stored reason, but the
           // breaker still stops a run that keeps dying on start.
@@ -1077,6 +1131,53 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         watcherLine = `jira watcher on for ${watcherProject}, every ${server.watcher.status().pollSeconds}s`;
       }
 
+      // Autopilot (2026-09-22, Aaron: "no part of the system should need my approval
+      // other than merging PRs"). Every open question is researched against the checked-
+      // out code and resolved: a teammate's comment is answered, left silent when a reply
+      // would be noise, or turned into queued work; a worker's question is answered and
+      // delivered. Toggle: `~/.forge/console/autonomy.json` answerAsks, default ON.
+      const autopilotJournal = new Journal(journalPath());
+      const autopilotReasoner = reasonerFor('claude', { journal: autopilotJournal, cwd: process.cwd() });
+      const autonomyFile = join(forgeHome(), 'console', 'autonomy.json');
+      let autopilotBusy = false;
+      const autopilotTick = setInterval(() => {
+        if (autopilotBusy) return;
+        autopilotBusy = true;
+        void runAutopilot({
+          settings: () => readAutonomy(autonomyFile),
+          open: () => server.openAsks(),
+          reasoner: autopilotReasoner,
+          checkouts: () => [...new Set(readChainEnv().checkouts.map((row) => row.value))],
+          operatorName: () => process.env['FORGE_OPERATOR'] ?? 'Aaron Lilla',
+          ticketText: async (ticket) => {
+            const config = jiraConfigFromEnv();
+            if (!config) return null;
+            const read = await createJiraWriteClient(config).read(ticket);
+            return read ? ticketAsText(ticket, read) : null;
+          },
+          answer: (key, text) => server.inbox.answer(key, text, 'autopilot'),
+          deliver: async (entry, text) => {
+            await deliverAnswer(entry, entry.key, text);
+            journalInterviewAnswer((row) => autopilotJournal.append(row as never), entry, 'autopilot', 'autopilot');
+          },
+          retire: (key) => { server.inbox.retire(key); },
+          markNeedsAaron: (key, reason) => { server.inbox.markNeedsAaron(key, reason); },
+          work: async (ticket) => {
+            if (queueStore.all().some((item) => item.ticket === ticket)) return;
+            const config = jiraConfigFromEnv();
+            if (config) {
+              const me = await probeJira(config);
+              if (me.ok && me.accountId) await createJiraWriteClient(config).assign(ticket, me.accountId);
+            }
+            addTicketItem(queueStore, ticket);
+          },
+          journal: { append: (row) => { autopilotJournal.append(row as never); } },
+        }).catch((error: unknown) => {
+          autopilotJournal.append({ event: 'autopilot.failed', actor: 'autopilot', reason: error instanceof Error ? error.message : String(error) } as never);
+        }).finally(() => { autopilotBusy = false; });
+      }, 15_000);
+      autopilotTick.unref();
+
       // The self loop (`self-wire.ts`): findings about the fleet become queue items on
       // FORGE_SELF_REPO, a self item whose gate cleared merges, and once trunk has moved
       // this process asks its launcher for a restart by exiting 75 -- only while nothing
@@ -1084,7 +1185,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       let selfLine = '';
       const selfLoop = buildSelfLoop({
         chainEnv: readChainEnv(), store: queueStore,
-        mergeDeps: queueMergeDeps(deps, queueStore, readChainEnv()), runningHead: runtimeHead(),
+        mergeDeps: queueMergeDeps(deps, queueStore, readChainEnv(), queueBlockers), runningHead: runtimeHead(),
       });
       if (selfLoop.enabled && queueLock?.ok) {
         const selfSeconds = Number(process.env['FORGE_SELF_POLL_S']) || 300;
@@ -1508,6 +1609,14 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       // has already ended.
       const { delivered } = await deliverAnswer(
         answered, key, answerText, deps.engine instanceof SdkEngine ? deps.engine : undefined,
+        // Plan item 3, 2026-09-23: a run parked on an open ask exited its process on
+        // purpose, so the inbox message above has nobody to poll it. Resume it here, by
+        // its own last session id, the way a crash would be resumed on the next `forge
+        // up` -- except `forge up`'s reconcile deliberately never touches an open-ask
+        // row, so without this the answer only ever reached a run already dead.
+        (goal) => relaunchAbandonedGoal(new Registry(registryDir()), deps.engine ?? new SdkEngine({
+          journalPath: journalPath(), inboxDir: inboxDir(), gotchasDir: gotchasDir(),
+        }), goal),
       );
       return {
         code: 0,
@@ -2126,40 +2235,32 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         const ruleVerdict = evaluateAction({
           kind: 'pr', op: 'merge', repo, title: snapshot.title, body: snapshot.body, cwd: process.cwd(),
         });
-        // Rival account 3 (2026-09-07 plan): the chain sets `deps.forceCodexLane` itself
-        // from `FORGE_COUNCIL_CODEX=always`, but a bare hand-typed `forge council` never
-        // read the environment variable at all -- it only ever saw whatever `deps`
-        // supplied. Falling back to the env var here is what makes the CLI case honour
-        // the same setting the chain already did.
-        const forceCodexLane = deps.forceCodexLane ?? process.env['FORGE_COUNCIL_CODEX'] === 'always';
         // Item 7, 2026-09-05: the PR this round is reasoning about, so a reasoner spend
         // for either role attributes back to it rather than showing up as unattributed
         // cost on the fleet's burn ledger.
+        //
+        // Aaron, 2026-09-23 (standing order): the council's own lenses and judge always
+        // reason on claude/opus-5-5 (`model-policy.json`'s audit-lens/audit-judge
+        // classes) -- there is no Codex lane left to force on, and
+        // `FORGE_COUNCIL_CODEX`/`deps.forceCodexLane` are read nowhere in this block.
         const councilRun = `${repo}#${pr}`;
         const roles = {
           lensRunner: reasonerLensRunner(reasoner, [ruleVerdict], councilRun),
-          codexLane: codexLaneFor(
-            forceCodexLane ? { ...policy, codex: 'on' } : policy,
-            { journal: councilJournal, run: councilRun },
-          ),
           judge: reasonerJudge(reasoner, councilRun),
         };
 
         // I19: a lens's own reply failure (unparseable JSON, prose, or anything else
         // `reasonerLensRunner` cannot make sense of) never reaches here as a rejection --
         // it is already folded into a `failed: true` lens report. What can still throw at
-        // this point is the judge (or, when `council.codex` is `on`, the Codex lane)
-        // genuinely failing to answer at all, which is a different condition from any
-        // verdict the judge could actually reach: the round produced nothing to attest,
-        // rather than a verdict of FIX FIRST.
+        // this point is the judge genuinely failing to answer at all, which is a
+        // different condition from any verdict the judge could actually reach: the round
+        // produced nothing to attest, rather than a verdict of FIX FIRST.
         let round: Awaited<ReturnType<typeof runCouncilRound>>;
         try {
           round = await runCouncilRound(
             {
               brief: snapshot.body, diffSummary: snapshot.diffText, changedLines: snapshot.changedLines,
               paths: snapshot.files, ci: { runId: snapshot.checks.runId, headSha: snapshot.checks.headSha },
-              cwd: councilCwd, baseRef: councilBaseRef,
-              ...(forceCodexLane ? { forceCodex: true } : {}),
             },
             roles,
           );
@@ -2224,7 +2325,13 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
               `verdict: ${round.verdict}`,
               ...(findingLines.length ? findingLines : ['no deciding findings']),
             ],
-            data: { verdict: round.verdict, ...(coverageNote ? { coverageNote } : {}) },
+            data: {
+              verdict: round.verdict, ...(coverageNote ? { coverageNote } : {}),
+              // The fix round needs the findings; a FIX FIRST writes no attestation, so
+              // until 2026-09-23 the worker was relaunched with an empty findings list
+              // (BBZ-386: "the review findings text was empty across all rounds").
+              ...(findingLines.length ? { findingsText: findingLines.join('\n') } : {}),
+            },
           };
         }
 

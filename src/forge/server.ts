@@ -50,7 +50,8 @@ import { runtimeVersion } from './launcher.js';
 import { readQueuePaused, writeQueuePaused } from './console/queue-pause.js';
 import { writeQueueWidth } from './console/queue-width.js';
 import type { Actuator, Reasoner } from './contracts.js';
-import { isAskStale, projectStaleness, type Inbox } from './inbox.js';
+import { isAskStale, projectStaleness, type Inbox, type InboxEntry } from './inbox.js';
+import { readAutonomy, writeAutonomy, type AutonomySettings } from './intake/autopilot.js';
 import { journalInterviewAnswer } from './intake/interviewPlanner.js';
 import { appendOnce, Journal, JournalCache, type RangeReader } from './journal.js';
 import type { StuckSignal } from './liveness.js';
@@ -59,8 +60,8 @@ import { QueueStore } from './intake/queueStore.js';
 import type { QueueLoopStatus } from './intake/queueTickRunner.js';
 import { mergeItem, type QueueMergeDeps, type QueuePromoteDeps, type QueueTicketSearch } from './intake/queue.js';
 import {
-  forgeHome, killSwitchPath as defaultKillSwitchPath, packetsDir as defaultPacketsDir, queuePath as defaultQueuePath,
-  registryDir, serverTokenPath,
+  forgeHome, gotchasDir, inboxDir, killSwitchPath as defaultKillSwitchPath, packetsDir as defaultPacketsDir,
+  queuePath as defaultQueuePath, registryDir, serverTokenPath,
 } from './paths.js';
 import { routerEnabled } from './policy.js';
 import { ingest, type IngestDeps, type IncomingSessionEvent } from './sessions/ingest.js';
@@ -69,9 +70,10 @@ import { sweepAndCollectLocks, worktreeStatusFor } from './sessions/cleanup.js';
 import { retireFinished, retireLane, retirePreview, retiredPath, type RetireLaneDeps } from './console/retire.js';
 import { mergeReadyReportFrom } from './console/lanes.js';
 import { chainStatusRows, foldChainState } from './chain.js';
-import { processAlive, Registry } from './registry.js';
+import { processAlive, Registry, relaunchAbandonedGoal } from './registry.js';
 import { route as routeMessage } from './router.js';
 import { RunInbox, deliverAnswer } from './runinbox.js';
+import { SdkEngine } from './sdkengine.js';
 import { assertRunListening } from './console/listening.js';
 import { readWorktreeState } from './console/worktree-state.js';
 import { amendRunBrief, type AmendDeps } from './console/amend.js';
@@ -1149,6 +1151,22 @@ export class ForgeServer {
     if (path.startsWith('/run/') && request.method === 'GET') {
       return this.runDetail(request, response, decodeURIComponent(path.slice('/run/'.length)));
     }
+    if (path === '/autonomy') {
+      // Aaron's order, 2026-09-22: nothing waits on him but merges, and merges run
+      // unattended once audited unless he turns this off. Both default ON.
+      const file = join(this.forgeHomeDir, 'console', 'autonomy.json');
+      if (request.method === 'GET') return json(response, 200, readAutonomy(file));
+      if (request.method !== 'POST') return json(response, 405, { error: 'GET or POST' });
+      if (!this.authorized(request, response)) return;
+      return this.readJson<Partial<AutonomySettings>>(request, response, (parsed) => {
+        const patch: Partial<AutonomySettings> = {};
+        if (typeof parsed?.answerAsks === 'boolean') patch.answerAsks = parsed.answerAsks;
+        if (typeof parsed?.autoMerge === 'boolean') patch.autoMerge = parsed.autoMerge;
+        const next = writeAutonomy(file, patch);
+        this.publish({ event: 'autonomy.changed', ...next });
+        json(response, 200, next);
+      });
+    }
     if (path === '/answer') {
       if (request.method !== 'POST') {
         return json(response, 405, { error: 'answering a question is not a safe method' });
@@ -1415,6 +1433,11 @@ export class ForgeServer {
     void advisor.status(id).then((status) => json(response, 200, status));
   }
 
+  /** Open questions with `stale` projected, as `GET /inbox` serves them. */
+  openAsks(): InboxEntry[] {
+    return projectStaleness(this.inbox.open(), (run: string) => Boolean(this.registry.get(run)));
+  }
+
   private answer(request: IncomingMessage, response: ServerResponse): void {
     if (!this.authorized(request, response)) return;
     this.readJson<{ key?: string; answer?: string }>(request, response, (parsed) => {
@@ -1432,7 +1455,15 @@ export class ForgeServer {
         // not resume anything. This process holds no live SdkEngine to answer in place
         // (that path is the CLI's, when it happens to share a process with the run), so
         // this always rides the cross-process inbox queue.
-        await deliverAnswer(answered, parsed.key, parsed.answer);
+        // Plan item 3, 2026-09-23: also resume a run parked on an open ask by session id
+        // -- the same one-shot resume the CLI's `forge answer` now does, since that run's
+        // process already exited and `forge up`'s reconcile deliberately skips it.
+        await deliverAnswer(
+          answered, parsed.key, parsed.answer, undefined,
+          (goal) => relaunchAbandonedGoal(this.registry, new SdkEngine({
+            journalPath: this.journalPath, inboxDir: inboxDir(), gotchasDir: gotchasDir(),
+          }), goal),
+        );
         this.publish({ event: 'ask.answered', key: answered.key, runs: answered.runs });
         journalInterviewAnswer((row) => appendOnce(this.journalPath, row), answered);
         json(response, 200, answered);

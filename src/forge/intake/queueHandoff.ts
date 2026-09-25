@@ -266,9 +266,25 @@ export async function runQueueHandoff(
 
 /** The env this run reads. `doneTransitionId` is deliberately SEPARATE from
  *  `qaTransitionId`: the handoff moves a ticket to a review/QA column when the draft PR
- *  opens, and this moves it to Done when that PR merges. One id cannot mean both. */
+ *  opens, and this moves it to Done when that PR merges. One id cannot mean both.
+ *
+ *  Aaron's 2026-09-23 standing order (full autonomous mode): once the queue itself
+ *  merges a PR unattended, the ticket is assigned to Haiping and moved to In Review --
+ *  a person still has to look at it, the merge just no longer waits on one. `haiping`
+ *  and `inReviewTransitionId` are their own fields, separate from `doneTransitionId`,
+ *  so an environment can run either or both writes: a ticket that never gets a real
+ *  Done column can still get the Haiping handoff, and vice versa. */
 export interface QueueDoneEnv {
   doneTransitionId?: string;
+  /** `FORGE_JIRA_HAIPING_ACCOUNT`: assigns the ticket to Haiping once the merge lands.
+   *  Unset skips the assignment honestly, the same discipline `qaAccountId` already
+   *  uses above -- a wrong account id assigns the wrong person, which is worse than
+   *  leaving the ticket assigned to whoever had it. */
+  haipingAccountId?: string;
+  /** `FORGE_JIRA_IN_REVIEW_TRANSITION`: the transition id that moves the ticket to
+   *  In Review once the merge lands. Unset skips it, same discipline as every other
+   *  transition id in this file. */
+  inReviewTransitionId?: string;
 }
 
 export interface QueueDoneInput {
@@ -318,6 +334,27 @@ export async function runQueueDone(
     lines.push(transition.line);
   } else {
     lines.push('jira-done-transition: skipped (FORGE_JIRA_DONE_TRANSITION is not set)');
+  }
+
+  // Aaron's 2026-09-23 standing order: an unattended merge hands the ticket to Haiping
+  // and moves it to In Review -- both independent of, and unconditional on, whatever the
+  // Done transition above did (a repo may run one, both, or neither).
+  if (env.haipingAccountId) {
+    const assign = await performOne(
+      'jira-haiping-assign', ticket, input.prUrl, () => client.assign(ticket, env.haipingAccountId!), emit,
+    );
+    lines.push(assign.line);
+  } else {
+    lines.push('jira-haiping-assign: skipped (FORGE_JIRA_HAIPING_ACCOUNT is not set)');
+  }
+
+  if (env.inReviewTransitionId) {
+    const transition = await performOne(
+      'jira-in-review-transition', ticket, input.prUrl, () => client.transition(ticket, env.inReviewTransitionId!), emit,
+    );
+    lines.push(transition.line);
+  } else {
+    lines.push('jira-in-review-transition: skipped (FORGE_JIRA_IN_REVIEW_TRANSITION is not set)');
   }
 
   return lines;

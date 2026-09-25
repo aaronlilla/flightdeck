@@ -353,6 +353,69 @@ describe('provisionWorktree', () => {
     });
   });
 
+  describe('plan item 8, 2026-09-23: stale worktree at the SAME path (a previous attempt of the same item)', () => {
+    it('a no-live-owner worktree at the target path on a different branch is reclaimed: removed, and the add retried', async () => {
+      const chainEnv = envWith({ checkouts: [{ repo, value: checkout }] });
+      const calls: RunRequest[] = [];
+      let listedOnce = false;
+      const exec = async (request: RunRequest): Promise<RunResult> => {
+        calls.push(request);
+        if (request.argv.includes('list')) {
+          if (!listedOnce) {
+            listedOnce = true;
+            return listResult(`worktree ${worktreePath}\nHEAD abcdef\nbranch refs/heads/some-stale-branch\n`);
+          }
+          return listResult('');
+        }
+        return { ok: true, tail: '' } as RunResult;
+      };
+      let reclaimed: [string, string] | undefined;
+
+      const result = await provisionWorktree({
+        chainEnv, repo, ticket, exec, fs: fakeFs(),
+        registryRows: () => [{ cwd: '/somewhere/else', pid: 1 }],
+        isAlive: () => true,
+        onReclaim: (path, reclaimedBranch) => { reclaimed = [path, reclaimedBranch]; },
+      });
+
+      expect(result.worktreePath).toBe(worktreePath);
+      expect(reclaimed).toEqual([worktreePath, branch]);
+      const remove = calls.find((c) => c.argv.includes('remove'));
+      expect(remove?.argv).toContain(worktreePath);
+      const add = calls.find((c) => c.argv.includes('add'));
+      expect(add?.argv).toContain(worktreePath);
+    });
+
+    it('a live registry row still owning this exact path blocks rather than reclaiming', async () => {
+      const chainEnv = envWith({ checkouts: [{ repo, value: checkout }] });
+      const exec = async (request: RunRequest): Promise<RunResult> => {
+        if (request.argv.includes('list')) {
+          return listResult(`worktree ${worktreePath}\nHEAD abcdef\nbranch refs/heads/some-stale-branch\n`);
+        }
+        return { ok: true, tail: '' } as RunResult;
+      };
+
+      await expect(provisionWorktree({
+        chainEnv, repo, ticket, exec, fs: fakeFs(),
+        registryRows: () => [{ cwd: worktreePath, pid: 1 }],
+        isAlive: () => true,
+      })).rejects.toThrow(/already used by worktree/);
+    });
+
+    it('with no registryRows wired at all, still blocks rather than guessing (old behavior)', async () => {
+      const chainEnv = envWith({ checkouts: [{ repo, value: checkout }] });
+      const exec = async (request: RunRequest): Promise<RunResult> => {
+        if (request.argv.includes('list')) {
+          return listResult(`worktree ${worktreePath}\nHEAD abcdef\nbranch refs/heads/some-stale-branch\n`);
+        }
+        return { ok: true, tail: '' } as RunResult;
+      };
+
+      await expect(provisionWorktree({ chainEnv, repo, ticket, exec, fs: fakeFs() }))
+        .rejects.toThrow(/already used by worktree/);
+    });
+  });
+
   describe('B.7: main-checkout guard', () => {
     it('refuses a checkout resolving to a configured main checkout when the lock is not held', async () => {
       const chainEnv = envWith({ checkouts: [{ repo, value: checkout }] });

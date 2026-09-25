@@ -14,6 +14,9 @@ import {
 import type { QueueStore } from '../intake/queueStore.js';
 import { addTicketItem } from '../intake/queue.js';
 import { parseRepoMap } from '../intake/repoRoute.js';
+import { feedProjects } from '../intake/watcherWire.js';
+
+export { feedProjects };
 import type { Journal } from '../journal.js';
 import { jiraFeedLedgerPath } from '../paths.js';
 import { RunInbox } from '../runinbox.js';
@@ -98,7 +101,7 @@ export function buildJiraFeedActivity(options: JiraFeedWireOptions): JiraFeedAct
       if (!config) throw new Error('no Jira credentials');
       const write = createJiraWriteClient(config);
       const result = await runFeedActivity({
-        project,
+        project: feedProjects(project, options.env),
         me: readMe,
         operatorName: () => me?.displayName || 'the developer',
         fetchIssues: (jql) => fetchFeedIssues(config, jql),
@@ -113,6 +116,10 @@ export function buildJiraFeedActivity(options: JiraFeedWireOptions): JiraFeedAct
         // Read on every pass, so turning the self-test off (or its end time passing)
         // takes effect on the next pass with no restart.
         selfTest: () => readSelfTestUntil() !== null,
+        // Scoped to the sandbox by default: a self-test left on must never let the feed
+        // answer the operator's own comments on the real board.
+        selfTestProjects: () => ((options.env ?? process.env)['FORGE_JIRA_SELFTEST_PROJECTS'] ?? 'FDTES')
+          .split(',').map((p) => p.trim()).filter(Boolean),
         avoidWords,
         // The claim half. Switched off unless FORGE_JIRA_CLAIM is on, and dark anyway
         // when the repo map names nothing, so turning it on is one variable and turning

@@ -10,6 +10,7 @@ import {
   briefIdFor, buildBacklogJql, queueBackendHandoff, queueCommentOnPr, queueMergeAllowed, queueProductionWorkflowExists,
 } from '../../src/forge/queue-wire.ts';
 import { readChainEnv } from '../../src/forge/chain-env.ts';
+import { tierOfBrief } from '../../src/forge/policy.ts';
 
 const calls: { url: string; init?: RequestInit }[] = [];
 
@@ -123,5 +124,60 @@ describe('queueMergeDeps and queuePromoteDeps: A.7 wiring', () => {
     const { readChainEnv } = await import('../../src/forge/chain-env.js');
     const verify = queuePostMergeVerify(readChainEnv({} as NodeJS.ProcessEnv));
     expect(await verify({ repo: 'owner/none', branch: 'feature/x' })).toBeUndefined();
+  });
+});
+
+// opt/tier, Aaron: complexity routing is on by default -- no env flag or setting
+// enables it, and it applies to every source this queue plans, including a pasted
+// brief and a typed hotfix that never go near the reasoner's rubric prompt at all.
+describe('queuePlanner: complexity routing applies to every brief, with no config', () => {
+  it('a pasted brief with no tier line gets one written -- standard, with default config', async () => {
+    const { queuePlanner } = await import('../../src/forge/queue-wire.js');
+    const { mkdtempSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = mkdtempSync(join(tmpdir(), 'forge-queue-briefs-'));
+    process.env['FORGE_HOME'] = dir;
+    // No FORGE_JIRA_* set (cleared in beforeEach) and no FORGE_INTAKE_REPO_MAP: this is
+    // the plain, unconfigured environment every fresh install starts in.
+    const planner = queuePlanner();
+    const outcome = await planner.planBrief('# Goal: fix a typo in the footer\n\nJust a copy change.\n');
+    const { readFileSync } = await import('node:fs');
+    const text = readFileSync(outcome.briefPath, 'utf8');
+    expect(text).toContain('tier: standard');
+  });
+
+  it('a typed hotfix with no tier line also gets one -- routing is not source-specific', async () => {
+    const { queuePlanner } = await import('../../src/forge/queue-wire.js');
+    const planner = queuePlanner();
+    const outcome = await planner.planHotfix!('# Goal: hotfix the login redirect\n');
+    const { readFileSync } = await import('node:fs');
+    const text = readFileSync(outcome.briefPath, 'utf8');
+    expect(text).toContain('tier:');
+  });
+
+  it('a brief whose own tier line already survives (never overwritten by a machine guess) is left as-is when clean', async () => {
+    const { queuePlanner } = await import('../../src/forge/queue-wire.js');
+    const planner = queuePlanner();
+    const outcome = await planner.planBrief('# Goal: rewrite the auth flow\n\ntier: hard\ntier-reason: touches auth\n');
+    const { readFileSync } = await import('node:fs');
+    const text = readFileSync(outcome.briefPath, 'utf8');
+    expect(text).toContain('tier: hard');
+    expect((text.match(/^tier:/gm) ?? []).length).toBe(1);
+  });
+
+  it('never escalates on a retry: re-writing the identically stored brief text yields the identical tier', () => {
+    // A retry never re-plans (advanceItem only calls the planner when the item has no
+    // briefPath yet) -- but the guarantee that matters is structural: tierOfBrief and
+    // ensureTierLine both take only the text in front of them, so calling the pipeline's
+    // own tier reader on the SAME stored brief, any number of times, in any order,
+    // returns the SAME tier. Nothing about a run's failure count ever reaches it.
+    const storedBrief = '# Goal: rewrite the payment retry loop\n\ntier: hard\ntier-reason: touches payment\n\nbody\n';
+    const first = tierOfBrief(storedBrief);
+    const second = tierOfBrief(storedBrief);
+    const third = tierOfBrief(storedBrief);
+    expect(first).toBe('implement-hard');
+    expect(second).toBe(first);
+    expect(third).toBe(first);
   });
 });

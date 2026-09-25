@@ -1122,6 +1122,7 @@ export class SdkEngine implements EngineLike {
     const engineConfig: EngineConfig = {
       ...toEngineConfig(workerOptions),
       mcpServers: { forge: buildForgeMcpServer(handlers) },
+      strictMcpConfig: true,
       canUseTool: buildCanUseTool({ run: request.run, goal, inbox, journal, parked: this.parked }) as never,
       onToolCall: buildPreToolUseHook({
         run: request.run, goal, journal, parked: this.parked, inbox, deliverVia: this.deliverVia,

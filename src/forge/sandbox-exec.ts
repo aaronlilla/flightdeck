@@ -21,7 +21,8 @@
  * containment would be worse than no containment at all.
  */
 
-import { cpSync, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 export interface SandboxConfig {
@@ -182,6 +183,9 @@ export interface RunClone {
   hostClonePath: string;
   /** The primary object store, mounted read-only and shared through alternates. */
   hostPrimaryObjects: string;
+  /** A host file whose one line is `/primary-objects`, mounted over the clone's own
+   *  alternates inside the container. Absent when the clone has no alternates. */
+  containerAlternatesFile?: string;
 }
 
 /**
@@ -217,6 +221,17 @@ export function adoptRunCloneCommands(
  * `git clone --shared` records it. A clone without alternates is self-contained and
  * needs no second mount, so an absent file is not an error.
  */
+/** The shared one-line alternates file for containers, written once under FORGE_HOME. */
+function containerAlternatesFile(): string {
+  const dir = join(process.env['FORGE_HOME'] ?? join(homedir(), '.forge'), 'sandbox');
+  const path = join(dir, 'alternates');
+  if (!existsSync(path)) {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path, '/primary-objects\n', 'utf8');
+  }
+  return path;
+}
+
 export function resolveRunClone(checkoutPath: string): RunClone | undefined {
   try {
     const gitDir = join(checkoutPath, '.git');
@@ -228,6 +243,7 @@ export function resolveRunClone(checkoutPath: string): RunClone | undefined {
     return {
       hostClonePath: checkoutPath,
       hostPrimaryObjects: primaryObjects ?? join(gitDir, 'objects'),
+      ...(primaryObjects ? { containerAlternatesFile: containerAlternatesFile() } : {}),
     };
   } catch {
     return undefined;
@@ -313,9 +329,23 @@ export function sandboxCommand(
   const cloneArgs = input.runClone
     ? [
       '-v', `${mountPathFor(input.runClone.hostPrimaryObjects)}:/primary-objects:ro`,
+      // The clone's own alternates file names the primary by its HOST path
+      // (a Windows host path to `objects`), which git inside the container cannot resolve: every git
+      // command printed "unable to normalize alternate object path" and workers read that
+      // as a broken checkout and stopped (BBZ-386/388, 2026-09-23). Mount a one-line file
+      // naming the in-container path over it, read-only, so the host file is untouched.
+      ...(input.runClone.containerAlternatesFile
+        ? ['-v', `${mountPathFor(input.runClone.containerAlternatesFile)}:/work/.git/objects/info/alternates:ro`]
+        : []),
       // The clone's alternates file points here, so history resolves without the
       // primary being writable or its refs being visible.
       '-e', 'GIT_ALTERNATE_OBJECT_DIRECTORIES=/primary-objects',
+      // The checkout was written on Windows with CRLF; without this git in the Linux
+      // container reports every file changed (982 of them on BBZ-388) and a worker
+      // concludes its diff is garbage.
+      '-e', 'GIT_CONFIG_COUNT=2',
+      '-e', 'GIT_CONFIG_KEY_0=core.autocrlf', '-e', 'GIT_CONFIG_VALUE_0=true',
+      '-e', 'GIT_CONFIG_KEY_1=safe.directory', '-e', 'GIT_CONFIG_VALUE_1=*',
       '-e', 'GIT_CONFIG_GLOBAL=/dev/null',
       '-e', 'GIT_CONFIG_SYSTEM=/dev/null',
       '-e', 'GIT_TERMINAL_PROMPT=0',

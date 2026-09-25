@@ -829,8 +829,34 @@ export interface QueueItem {
   createdAt: number;
   updatedAt: number;
   /** A.1: how many times this item has been relaunched on a FIX FIRST round -- 0 or
-   *  absent means the fix round hasn't been used yet, and it's capped at one. */
+   *  absent means the fix round hasn't been used yet. Capped at
+   *  `council/rounds.ts`'s `MAX_FIX_ROUNDS` (6, raised from 1 by Aaron's 2026-09-23
+   *  standing order: full autonomous mode iterates FIX FIRST -> relaunch -> re-audit
+   *  until clean, up to the cap, rather than parking after the very first fix round). */
   fixRoundsUsed?: number;
+  /** Aaron's 2026-09-23 standing order: once the council itself is clean (PASS/PASS WITH
+   *  NOTES), a dedicated bug-hunt pass (opus-5-5, `council/bugHunt.ts`) reads the diff
+   *  plus surrounding code hunting for real defects before merge. `true` once that pass
+   *  has come back clean for the item's current head -- checked so a re-tick after the
+   *  bug hunt already cleared never re-runs it. Any bug the hunt does find re-enters the
+   *  ordinary fix-round loop above (this stays unset/false until the re-audit clears). */
+  bugHuntClearedAt?: number | null;
+  /** BBZ-386/PR #219, 2026-09-23: the PR head sha the council (or bug hunt) most
+   *  recently gave a verdict for. A fix round relaunches the worker but never moves the
+   *  branch itself -- only the worker's own push does that -- so the gate compares this
+   *  against the PR's CURRENT head before spending another review round: an unmoved
+   *  head means the worker could not push, and the item parks instead of re-reviewing
+   *  the exact diff a council already ruled on. Absent means no verdict has been given
+   *  yet for this item's current run. */
+  lastCouncilHead?: string | null;
+  /** BBZ-386/PR #219, 2026-09-23: when the last fix round relaunched the worker.
+   *  `advanceItem` will not treat this item's run as finished on the strength of a
+   *  `run.started` row OLDER than this timestamp -- the queue's own status poller can
+   *  otherwise read the previous (already-finished) run under the reused run key on the
+   *  very next tick, before the relaunch's own `run.started` has landed, and hand the
+   *  stale verdict straight back to the council. Absent means no fix round has fired for
+   *  the item's current run. */
+  fixRoundAt?: number | null;
   /** B (2026-09-08): set by `retryItem` alongside `state: 'running'`, when the retried
    *  item already carries a `runKey` -- marks that this pass through `advanceItem` is a
    *  retry of an in-flight run, not the tick that first launched it. `advanceItem` reads

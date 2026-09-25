@@ -9,7 +9,7 @@
  * (`src/adapter/engine.ts`'s injectable `QueryFn`, via `Engine`), never a mock of this
  * class itself.
  *
- * `codex` stays unimplemented on purpose (Aaron, 2026-09-04 16:40: limit astra to what
+ * `codex` stays unimplemented on purpose (Aaron, 2026-09-04 16:40: limit Codex to what
  * absolutely matters) -- `CodexReasoner.call` returns a clear "not configured" error
  * without ever spawning a subprocess. The one sanctioned route to Codex is
  * `dev-harness/tools/codex_call.py` (`codex-side-agent` memory note), which this file
@@ -333,14 +333,14 @@ export class ClaudeReasoner implements Reasoner {
   }
 }
 
-/** `codex` stays unimplemented (Aaron, 2026-09-04 16:40: astra is limited to what
+/** `codex` stays unimplemented (Aaron, 2026-09-04 16:40: Codex is limited to what
  *  absolutely matters). No subprocess, no network call, no side effect of any kind. */
 export class CodexReasoner implements Reasoner {
   readonly provider: Provider = 'codex';
 
   async call(_input: { className: string; prompt: string }): Promise<{ text: string }> {
     throw new Error(
-      'the codex provider is not configured: astra is reachable only through '
+      'the codex provider is not configured: Codex is reachable only through '
       + 'dev-harness/tools/codex_call.py, never through this seam',
     );
   }

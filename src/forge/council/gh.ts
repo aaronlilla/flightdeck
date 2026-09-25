@@ -1,3 +1,15 @@
+/** Why a merge may not land, or null. BoltBetz repos integrate on `develop`; their
+ *  main/master/release lines are promoted by a person (GITFLOW-OVERLAY). Other repos
+ *  (FlightDeck itself) use main as trunk and are not held to that. */
+export function protectedBaseRefusal(baseRef: string, repo = ''): string | null {
+  if (!baseRef) return 'refusing to merge: could not read the pull request base branch';
+  if (!/^BOLTBETZ-LLC\//i.test(repo)) return null;
+  if (/^(main|master|production|prod)$/i.test(baseRef) || /^release([/-]|$)/i.test(baseRef)) {
+    return `refusing to merge into protected branch ${baseRef}: only a person merges there`;
+  }
+  return null;
+}
+
 /**
  * Reads and writes GitHub state for a pull request Council is reviewing, through `gh`,
  * behind an injectable interface -- the same shape `sdkengine.ts`'s own `checkDrift` /
@@ -251,6 +263,15 @@ export const REAL_GH: GhReader & GhWriter = {
   },
 
   async mergePr(repo, pr, subject, body) {
+    // Unattended merges are allowed (2026-09-22), but never into a protected line: the
+    // base is read from GitHub itself at merge time, not trusted from the caller.
+    const base = await execRun({
+      argv: ['gh', 'pr', 'view', String(pr), '--repo', repo, '--json', 'baseRefName', '--jq', '.baseRefName'],
+      cwd: process.cwd(), owner: 'council', cls: 'script', fullOutput: true, raw: true,
+    });
+    const baseRef = (base.full ?? base.tail ?? '').trim();
+    const refusal = protectedBaseRefusal(baseRef, repo);
+    if (refusal) return { returncode: 1, stderr: refusal };
     const result = await execRun({
       argv: ['gh', 'pr', 'merge', String(pr), '--repo', repo, '--squash', '--subject', subject, '--body', body],
       cwd: process.cwd(), owner: 'council', cls: 'script',

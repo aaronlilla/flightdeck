@@ -158,6 +158,17 @@ describe('replay', () => {
     expect(replay(path).runs['alpha']?.startedAt).toBe(9_000);
   });
 
+  // BBZ-386/388, 2026-09-23: a fix round relaunched under the old key was refused with
+  // "Running 3.0 h, expected 3.0 h" because its clock kept counting from the first run.
+  it('starts the clock again when a fix round relaunches the run', () => {
+    write(
+      { event: 'run.started', run: 'alpha', actor: 'runner', at: 1_000 },
+      { event: 'queue.fix-round-start', actor: 'queue', itemId: 'Q-1', previousRunKey: 'alpha', at: 5_000 },
+      { event: 'run.started', run: 'alpha', actor: 'runner', at: 9_000 },
+    );
+    expect(replay(path).runs['alpha']?.startedAt).toBe(9_000);
+  });
+
   it('leaves another run\'s clock alone when a retry relaunches one run', () => {
     write(
       { event: 'run.started', run: 'alpha', actor: 'runner', at: 1_000 },

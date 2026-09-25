@@ -29,7 +29,7 @@
  *   `Inbox.retire` already does, so what was asked and why it was dropped stay on disk.
  */
 import type { Inbox, InboxEntry } from './inbox.js';
-import { isAskStale, ITEM_RUN_PREFIX } from './inbox.js';
+import { FEED_RUNS, isAskStale, ITEM_RUN_PREFIX } from './inbox.js';
 
 /** One `git` invocation, injected so specimens never shell out. Resolves with the
  *  command's own success flag and trimmed stdout; a throw is the caller's failure, not a
@@ -69,7 +69,6 @@ export interface ClonePass {
 /** The pseudo-run names a relayed ask carries instead of a real run id. An entry whose
  *  every run is one of these was raised by a poller, so no registry row will ever exist
  *  for it and "all its runs are gone" is meaningless. */
-const FEED_RUNS = new Set(['jira-feed', 'slack']);
 
 export interface RetiredAsk {
   key: string;
@@ -261,11 +260,17 @@ export interface TicketState {
   statusIsDone: boolean;
 }
 
-/** Jira statuses aside, an ask on a ticket somebody else owns is not the operator's
+/** Jira statuses aside, an ask on a ticket somebody ELSE owns is not the operator's
  *  work. This is the rule that would have kept fourteen of Haiping's own In Review
- *  tickets off the board in the first place. */
+ *  tickets off the board in the first place.
+ *
+ *  An UNASSIGNED ticket is nobody's, which is not the same as somebody else's: a
+ *  teammate @-mentioning the operator on a backlog ticket with no assignee is exactly
+ *  the question this inbox exists for. Found live 2026-09-22: Haiping's "@Aaron where
+ *  are we with this?" on unassigned BBZ-168 was relayed correctly, then retired by this
+ *  rule at the next boot as "assigned to somebody else", unread. */
 function notTheOperators(state: TicketState | undefined, operatorAccountId: string): boolean {
-  if (!state) return false;
+  if (!state || state.assigneeAccountId === null) return false;
   return state.assigneeAccountId !== operatorAccountId;
 }
 

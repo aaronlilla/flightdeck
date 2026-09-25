@@ -187,7 +187,7 @@ describe('slash commands are answered by the app', () => {
     // The whole point of the project, exercised through the keyboard: plan
     // mode and the plan model are set together, with no prompt to type.
     expect(engine.modes).toEqual(['plan']);
-    expect(engine.models).toEqual(['claude-fable-5']);
+    expect(engine.models).toEqual(['claude-opus-5-5']);
     expect(engine.sent).toEqual([]);
     app.unmount();
   });

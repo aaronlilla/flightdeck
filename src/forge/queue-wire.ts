@@ -11,15 +11,18 @@
  * same two steps `chain-wire.ts#chainIntake` already runs for a poll-sourced packet,
  * just triggered by an operator's own add instead of a poll cycle.
  */
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import type { QueueItem } from '../shared/console-model.js';
 import { join } from 'node:path';
 
-import { chainCouncil, chainGate, chainGh, chainRebase, chainLauncher, chainLaunchGoal } from './chain-wire.js';
+import type { BlockerBoard } from './blockers.js';
+import { chainCouncil, chainGate, chainGh, chainRebase, chainLauncher, chainLaunchGoal, chainBugHunt, chainShipUnfinishedWork } from './chain-wire.js';
 import {
   checkoutFor, declaredRepoKind, repoKindFor as repoKindForEnv, verifyCommandFor, type ChainEnv,
 } from './chain-env.js';
 import type { CliResult, ForgeDeps } from './cli.js';
 import { autoMergeAllowed } from './council/risk.js';
+import { protectedBaseRefusal } from './council/gh.js';
 import { conclusionOf, countAddDel, guardedCommentPr, REAL_GH, type GhWriter } from './council/gh.js';
 import type { Packet, PollSourceName, Watermark } from './contracts.js';
 import { run as execRun } from './exec.js';
@@ -28,12 +31,14 @@ import type {
 } from './intake/queue.js';
 import { asksForItem, planTicketWithInterview } from './intake/interviewPlanner.js';
 import { InterviewStore } from './intake/interviewStore.js';
+import { ensureTierLine } from './intake/tier.js';
 import { scoutAnswer } from './intake/scout.js';
 import { Inbox } from './inbox.js';
 import { gitSquashMergeToBase, type GitRunFn } from './intake/gitMerge.js';
 import { developDeployVerifier } from './intake/otaVerify.js';
 import { briefWithRoutines, loadRoutines } from './self/routines.js';
 import { routinesDir } from './paths.js';
+import { autoMergeOn } from './intake/autopilot.js';
 import { createJiraFeed, createJiraWriteClient, type JiraConfig } from './intake/jira.js';
 import { fetchIssueComments, fetchIssueRemoteLinks, readTicketDetail } from './intake/jira.js';
 import { checkTicketInFlight } from './intake/inFlight.js';
@@ -45,6 +50,8 @@ import { Journal } from './journal.js';
 import { loadPolicy } from './policy.js';
 import { inboxDir, interviewRecordsDir, queueBriefsDir, journalPath, killSwitchPath, registryDir } from './paths.js';
 import { liveRunPid, Registry } from './registry.js';
+import { accountsRegistryPath, defaultLoginOff, loadAccounts, pickAccount } from './accounts.js';
+import { readAccountUsage } from './accounts-usage.js';
 import { reasonerFor } from './reasoner-claude.js';
 import { readKillSwitch } from './supervisor.js';
 import { readQueuePaused } from './console/queue-pause.js';
@@ -165,7 +172,15 @@ export function queuePlanner(
   const routines = loadRoutines(routinesDir());
   async function writeBrief(id: string, text: string, repoKind?: string): Promise<string> {
     const path = join(briefsDir, `${id.replace(/[^A-Za-z0-9._-]/g, '_')}.md`);
-    writeFileSync(path, briefWithRoutines(text, routines, repoKind), 'utf8');
+    // Complexity routing applies to every brief this queue writes, ticket-planned or
+    // hand-typed alike -- on by default, no env flag or setting to turn it off. A
+    // ticket-planned brief already carries its own `tier:` line (written by
+    // `writeBrief`/`planFromPacket` in `intake/interview.ts`/`intake/planner.ts`) and
+    // `ensureTierLine` leaves an already-valid one untouched; a pasted brief or a typed
+    // hotfix, which never went through the reasoner's rubric prompt at all, gets one
+    // here for the first time -- `standard`, never skipped for want of a signal.
+    const { text: tiered } = ensureTierLine(text);
+    writeFileSync(path, briefWithRoutines(tiered, routines, repoKind), 'utf8');
     return path;
   }
 
@@ -203,6 +218,11 @@ export function queuePlanner(
           remoteLinks: (key) => fetchIssueRemoteLinks(config, key),
           stateOf: async (repoSlug, pr) => (await prState(repoSlug, pr)).prState,
           ownRepo: repo,
+          // BBZ-371: QA can bounce a ticket back to In Progress after its pull request
+          // merged; `detail` is already fetched above (readTicketDetail), so this is not
+          // a second Jira call. Absent (no `config`, so `detail` is unset) keeps the old
+          // fail-closed behaviour: a merged pull request always refuses.
+          ticketStatus: detail?.status ?? null,
         });
         if (!verdict.start) {
           return { inFlight: true, ticket, prUrl: verdict.pr?.url ?? '', reason: verdict.reason };
@@ -343,7 +363,13 @@ export function queueJiraDone(
       await runQueueDone(
         createJiraWriteClient(config),
         { ticket: item.ticket, prUrl: pr.url, prNumber: pr.no, mergedAt },
-        { doneTransitionId: process.env['FORGE_JIRA_DONE_TRANSITION'] },
+        {
+          doneTransitionId: process.env['FORGE_JIRA_DONE_TRANSITION'],
+          // Aaron's 2026-09-23 standing order (full autonomous mode): the ticket goes
+          // to Haiping and In Review once the queue itself merges the PR unattended.
+          haipingAccountId: process.env['FORGE_JIRA_HAIPING_ACCOUNT'],
+          inReviewTransitionId: process.env['FORGE_JIRA_IN_REVIEW_TRANSITION'],
+        },
         (doneEvent) => journal.append({ actor: 'queue', ...doneEvent }),
       );
     } finally {
@@ -542,6 +568,28 @@ export function queueBranchMerged(chainEnv: ChainEnv): NonNullable<QueueRuntimeD
   };
 }
 
+/** Plan item 5, 2026-09-23: raises a board blocker keyed to the ticket and PR when
+ *  `postMergeVerify` gives up after its 30-minute wait -- the fix for the 391.8-hour
+ *  `deploy-run-missing` sink (`Q-7409e170`/BBZ-72 and three other tickets, 04-failures.md
+ *  rank 1). Shares the same `BlockerBoard` shape (`raise(key, what, run)`) every other
+ *  wall on a run already goes through (`drift-blockers.ts`), so it shows up on the
+ *  Blockers view the same way a credential lapse or a billing refusal would, rather than
+ *  living only in the queue item's own reason string nobody but that card's own reader
+ *  ever sees. Keyed by the item id, not the run key: a merged item has usually already
+ *  finished its worker run, so a run-scoped key would name a process that no longer
+ *  exists to unblock. */
+export function queueRaiseDeployBlocker(
+  blockers: BlockerBoard,
+): NonNullable<QueueRuntimeDeps['raiseDeployBlocker']> {
+  return async ({ item, pr }) => {
+    const ticket = item.ticket ?? item.id;
+    const key = `deploy-run-missing:${item.id}`;
+    const what = `ticket ${ticket}'s PR #${pr.no} (${pr.url}) merged, but its deploy run was `
+      + 'not found after 30 minutes -- check the workflow run list by hand';
+    await blockers.raise(key, what, item.id);
+  };
+}
+
 /** R-22: routes the Merge click's actual merge through git instead of `gh pr merge`,
  *  against the repo's own `FORGE_REPO_CHECKOUTS` entry on the base branch. A repo with no
  *  checkout configured refuses rather than guessing at a path. Wraps `execRun` as a
@@ -555,6 +603,8 @@ export function queueGitMerge(chainEnv: ChainEnv): NonNullable<QueueMergeDeps['g
   return async ({ repo, base, branch, subject, body }) => {
     const checkoutDir = checkoutFor(chainEnv, repo);
     if (!checkoutDir) return { ok: false, reason: `no checkout configured for ${repo}` };
+    const refusal = protectedBaseRefusal(base, repo);
+    if (refusal) return { ok: false, reason: refusal };
     return gitSquashMergeToBase({ checkoutDir, base, branch, subject, body }, runGit);
   };
 }
@@ -567,7 +617,9 @@ export function queueGitMerge(chainEnv: ChainEnv): NonNullable<QueueMergeDeps['g
  * wiring this into a live route is the next hop for whichever stream builds that
  * construction call.
  */
-export function queueMergeDeps(deps: ForgeDeps, store: QueueRuntimeDeps['store'], chainEnv?: ChainEnv): QueueMergeDeps {
+export function queueMergeDeps(
+  deps: ForgeDeps, store: QueueRuntimeDeps['store'], chainEnv?: ChainEnv, blockers?: BlockerBoard,
+): QueueMergeDeps {
   return {
     mergeAllowed: queueMergeAllowed(),
     gate: chainGate(deps),
@@ -595,6 +647,7 @@ export function queueMergeDeps(deps: ForgeDeps, store: QueueRuntimeDeps['store']
         : { ok: false, reason: result.stderr.slice(0, 300) };
     },
     ...(chainEnv ? { postMergeVerify: queuePostMergeVerify(chainEnv), gitMerge: queueGitMerge(chainEnv) } : {}),
+    ...(blockers ? { raiseDeployBlocker: queueRaiseDeployBlocker(blockers) } : {}),
   };
 }
 
@@ -695,7 +748,7 @@ export function queuePromoteDeps(chainEnv: ChainEnv): QueuePromoteDeps {
 
 export function buildQueueRuntimeDeps(
   chainEnv: ChainEnv, configDirFor: () => string, deps: ForgeDeps, store: QueueRuntimeDeps['store'],
-  maxInFlight: () => number = readQueueWidth,
+  maxInFlight: () => number = readQueueWidth, blockers?: BlockerBoard,
 ): QueueRuntimeDeps {
   return {
     // The tick's retry for a pull request the merge could not close at the time --
@@ -713,6 +766,17 @@ export function buildQueueRuntimeDeps(
     gh: chainGh(),
     rebaseOnBase: chainRebase(),
     council: chainCouncil(deps),
+    // Aaron's 2026-09-23 standing order (full autonomous mode): a dedicated opus-5-5
+    // bug-hunt pass runs after the council itself clears and before merge.
+    bugHunt: chainBugHunt(deps),
+    // Aaron's 2026-09-23 standing order (iterate until clean): a FIX FIRST relaunches the
+    // worker on its own worktree with the findings appended to its brief. This was never
+    // wired, so every FIX FIRST parked outright (BBZ-386 / PR #219, 2026-09-23).
+    relaunchForFixRound: fixRoundRelauncher(chainLauncher(chainEnv, configDirFor)),
+    // BUG B (BBZ-386/BBZ-388, 2026-09-23): the sandbox a worker runs in cannot commit,
+    // push or open its own PR. The queue does it on the host once a run finishes with
+    // real changes and no PR anywhere.
+    shipUnfinishedWork: chainShipUnfinishedWork(),
     gate: chainGate(deps),
     // A repository whose Actions are off never leaves a pending check rollup, so the gate
     // asks whether it runs any, and stands its own verify in their place when it does not
@@ -760,8 +824,11 @@ export function buildQueueRuntimeDeps(
     // `FORGE_COUNCIL_AUTOMERGE` off `councilPolicy()` on each call), the same allow-list
     // `forge gate --merge` already refuses against for a person -- this is the queue's
     // own worker asking for the identical decision instead of waiting on a click.
-    mergeAllowed: (repo) => autoMergeAllowed(repo),
+    // 2026-09-22, Aaron: merges run unattended once the council passes, behind one
+    // Settings switch (`autonomy.json` autoMerge, default ON, read every tick).
+    mergeAllowed: (repo) => autoMergeOn() && autoMergeAllowed(repo),
     postMergeVerify: queuePostMergeVerify(chainEnv),
+    ...(blockers ? { raiseDeployBlocker: queueRaiseDeployBlocker(blockers) } : {}),
     prMerged: async (repo, pr) => {
       const result = await execRun({
         argv: ['gh', 'pr', 'view', String(pr), '--repo', repo, '--json', 'mergedAt'],
@@ -792,9 +859,56 @@ export function buildQueueRuntimeDeps(
     // alive. `hasRunRegistered` is not this question -- it answers "did this run ever
     // start", which stays true for a run that died an hour ago.
     runPid: (runKey) => liveRunPid(new Registry(registryDir()), runKey),
+    // Plan item 2, 2026-09-23: the same reading `pickAccount` gives a fresh launch,
+    // asked here for a park that already happened. `pickAccount` with no `live` map
+    // (every account read as zero live runs) is deliberately optimistic about
+    // concurrency ceilings -- this only answers "is anything not rate-limited right
+    // now", which is exactly the fact `recoverParkedItems` needs and no more.
+    accountHasRoom: () => (
+      pickAccount(loadAccounts(accountsRegistryPath()), readAccountUsage(), {}, Date.now(), 'claude') !== undefined
+      || !defaultLoginOff(accountsRegistryPath())
+    ),
   };
 }
 
 // Re-exported so `cli.ts` never needs its own import of `ForgeDeps`/`CliResult` just to
 // satisfy this file's own type signature above.
 export type { CliResult, ForgeDeps };
+
+/** The launcher surface a fix round needs: the same `launch` the first run used. */
+interface FixRoundLauncher {
+  launch(input: {
+    packetId: string; ticket: string; repo: string; briefPath: string; worktreePath: string; branch: string;
+  }): Promise<{ runKey: string }>;
+}
+
+/**
+ * A fix round: the council's (or bug hunt's) findings appended to the item's own brief,
+ * then the worker relaunched on the SAME worktree and branch, so it amends the open pull
+ * request instead of starting over. Refuses loudly when the item lacks the fields a
+ * relaunch needs; the queue's catch turns that into a park with the reason.
+ */
+export function fixRoundRelauncher(launcher: FixRoundLauncher) {
+  return async ({ item, findings }: { item: QueueItem; findings: string }): Promise<{ runKey: string }> => {
+    if (!item.briefPath || !item.worktreePath || !item.branch || !item.ticket || !item.repo) {
+      throw new Error(`cannot run a fix round for ${item.id}: brief, worktree, branch, ticket or repo is missing`);
+    }
+    const round = (item.fixRoundsUsed ?? 0) + 1;
+    appendFileSync(item.briefPath, [
+      '',
+      `## Fix round ${round}: review findings to resolve`,
+      '',
+      'The review of your pull request returned FIX FIRST. Fix every real finding below on',
+      `this same branch (${item.branch}) and run the affected tests. You do not need to`,
+      'commit, push or open the PR yourself; call forge_done with a summary when done and',
+      'the queue commits, pushes and updates the pull request.',
+      '',
+      findings.trim(),
+      '',
+    ].join('\n'), 'utf8');
+    return launcher.launch({
+      packetId: item.id, ticket: item.ticket, repo: item.repo, briefPath: item.briefPath,
+      worktreePath: item.worktreePath, branch: item.branch,
+    });
+  };
+}

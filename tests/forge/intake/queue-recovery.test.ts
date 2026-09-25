@@ -37,6 +37,7 @@ interface Overrides {
   gate?: ChainGateFn;
   checksConclusion?: QueueRuntimeDeps['checksConclusion'];
   runPid?: QueueRuntimeDeps['runPid'];
+  accountHasRoom?: QueueRuntimeDeps['accountHasRoom'];
   maxInFlight?: () => number;
   clock?: () => number;
 }
@@ -75,6 +76,7 @@ function buildDeps(store: QueueStore, overrides: Overrides = {}): { deps: QueueR
     store,
     ...(overrides.checksConclusion ? { checksConclusion: overrides.checksConclusion } : {}),
     ...(overrides.runPid ? { runPid: overrides.runPid } : {}),
+    ...(overrides.accountHasRoom ? { accountHasRoom: overrides.accountHasRoom } : {}),
   };
   return { deps, events };
 }
@@ -364,6 +366,13 @@ describe('item 1: a parked item recovers on its own when the park reason was tra
       checksConclusion: async () => conclusionOf([{ conclusion: 'SUCCESS' }]),
       runPid: () => undefined,
       maxInFlight: () => 1,
+      // A checks park means the run already finished and opened its PR. Left reading as
+      // unfinished with no process, the stuck-run reconcile would rightly park it again.
+      launcher: {
+        status: async (runKey: string): Promise<ChainRunStatus> => (runKey === 'chk'
+          ? { finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/7' }
+          : { finished: false }),
+      },
     });
 
     await runQueueTick(deps, store.all());
@@ -483,6 +492,20 @@ describe('item 1: a parked item recovers on its own when the park reason was tra
     expect(row.recoveryDeclinedFor ?? null).toBeNull();
   });
 
+  it('gives the fix-round budget back when a person retries the item', async () => {
+    // BBZ-386, 2026-09-23: an item that hit the fix-round cap could never be reviewed again.
+    const store = tempStore();
+    const item = parkedItem(store, 'FIX FIRST after 6 fix round(s) (cap 6)');
+    store.append({ id: item.id, at: 1_000, fixRoundsUsed: 6, lastCouncilHead: 'abc', bugHuntClearedAt: 900 } as never);
+
+    retryItem(store, item.id, 2_000, { askedByAPerson: true });
+
+    const row = store.get(item.id)!;
+    expect(row.fixRoundsUsed ?? 0).toBe(0);
+    expect(row.lastCouncilHead ?? null).toBeNull();
+    expect(row.bugHuntClearedAt ?? null).toBeNull();
+  });
+
   it('clears the last read time on disk, not only in memory', async () => {
     // `QueueStore.append` serialises with `JSON.stringify`, which drops undefined-valued
     // keys, and the fold is a spread -- so writing `checksReadAt: undefined` left the old
@@ -564,6 +587,68 @@ describe('item 1: a parked item recovers on its own when the park reason was tra
 
     expect(store.get(item.id)!.state).toBe('parked');
     expect(events.find((e) => e['event'] === 'queue.recovery-held')).toMatchObject({ found: 'run still alive (pid 4242)' });
+  });
+});
+
+describe('Plan item 2: a run parked behind an accounts ceiling resumes as soon as one frees', () => {
+  it('recovers as soon as an account has room, and relaunches a fresh worker', async () => {
+    const store = tempStore();
+    const item = parkedItem(
+      store,
+      'every linked account is spent, and the login belonging to this machine is switched off in Settings',
+      { runKey: 'abc-1' },
+    );
+    const launches: string[] = [];
+    const { deps, events } = buildDeps(store, {
+      accountHasRoom: () => true,
+      runPid: () => undefined,
+      launcher: {
+        status: async (): Promise<ChainRunStatus> => ({ finished: true, verdict: 'stopped' }),
+        launch: async ({ ticket }) => { launches.push(ticket); return { runKey: ticket.toLowerCase() }; },
+      },
+    });
+
+    await runQueueTick(deps, store.all());
+    expect(store.get(item.id)!.state).not.toBe('parked');
+    const recovered = events.find((e) => e['event'] === 'queue.recovered');
+    expect(recovered).toMatchObject({ itemId: item.id, reRead: 'accounts', found: 'an account has room again' });
+
+    await advanceItem(store.get(item.id)!, deps);
+    expect(launches).toEqual(['ABC-1']);
+  });
+
+  it('holds, silently on repeat, while every account still reads as spent', async () => {
+    const store = tempStore();
+    const item = parkedItem(store, 'every linked account is spent, and the login belonging to this machine is switched off in Settings');
+    const { deps, events } = buildDeps(store, { accountHasRoom: () => false });
+
+    for (let tick = 0; tick < 5; tick += 1) await runQueueTick(deps, store.all());
+
+    expect(store.get(item.id)!.state).toBe('parked');
+    const held = events.filter((e) => e['event'] === 'queue.recovery-held');
+    expect(held).toHaveLength(1);
+    expect(held[0]).toMatchObject({ found: 'every account still reads as spent' });
+  });
+
+  it('holds when no account reader is wired rather than guessing one has room', async () => {
+    const store = tempStore();
+    const item = parkedItem(store, 'every linked account is spent, and the login belonging to this machine is switched off in Settings');
+    const { deps, events } = buildDeps(store);
+
+    await runQueueTick(deps, store.all());
+
+    expect(store.get(item.id)!.state).toBe('parked');
+    expect(events.find((e) => e['event'] === 'queue.recovery-held')).toMatchObject({ found: 'no account reader wired' });
+  });
+
+  it('also recovers the launch-side phrasing of the same refusal', async () => {
+    const store = tempStore();
+    const item = parkedItem(store, 'every linked account for this provider is spent or at its ceiling; the earliest window frees in 45m');
+    const { deps } = buildDeps(store, { accountHasRoom: () => true, runPid: () => undefined });
+
+    await runQueueTick(deps, store.all());
+
+    expect(store.get(item.id)!.state).not.toBe('parked');
   });
 });
 

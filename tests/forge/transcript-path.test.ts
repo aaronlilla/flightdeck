@@ -71,3 +71,17 @@ describe('readTranscriptTail', () => {
     expect(readTranscriptTail('Z:\\nope\\nothing.jsonl', 40)).toBe('');
   });
 });
+
+describe('readTranscriptTail token budget', () => {
+  it('clips a huge tool-result line and caps the whole tail, keeping the newest lines', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tail-budget-'));
+    const file = join(dir, 't.jsonl');
+    const huge = `{"tool_result":"${'x'.repeat(200_000)}"}`;
+    const lines = Array.from({ length: 40 }, (_, i) => (i % 2 === 0 ? huge : `{"n":${i}}`));
+    writeFileSync(file, lines.join('\n'));
+    const tail = readTranscriptTail(file, 40);
+    expect(tail.length).toBeLessThanOrEqual(24_000 + 1_600);
+    expect(tail.endsWith('{"n":39}')).toBe(true);
+    expect(tail).toContain('[clipped]');
+  });
+});

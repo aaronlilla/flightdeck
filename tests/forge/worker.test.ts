@@ -261,7 +261,7 @@ describe('the tier', () => {
       brief: '# Goal\n\ntier: opus\n\nDo the hard thing.\n',
     });
     await worker.run();
-    expect(worker.engine.started[0]?.model).toBe('claude-opus-5');
+    expect(worker.engine.started[0]?.model).toBe('claude-opus-5-5');
   });
 
   it('does not change tier across a retry, however many there have been', async () => {

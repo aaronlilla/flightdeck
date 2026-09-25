@@ -36,7 +36,7 @@ import { readAccountUsage } from '../accounts-usage.js';
 import { consoleDir, fleetConfigDir, forgeHome } from '../paths.js';
 import { readThread } from './thread.js';
 import {
-  contextFor, effortFor, modelFor, modelIdFor, reasonerTimeoutMsFor,
+  contextFor, conductorFallbackBudgetMs, effortFor, modelFor, modelIdFor, reasonerTimeoutMsFor,
 } from '../policy.js';
 import { RunInbox } from '../runinbox.js';
 import { workerEnv } from '../worker.js';
@@ -737,11 +737,73 @@ export class ConductorAgent {
    * Answers one operator message. Never throws: a session that cannot open, errors, or
    * runs past the class timeout falls back to the grammar, and the reply row says so.
    * Messages are answered one at a time, in order.
+   *
+   * Finding #4/#9 (`flightdeck-audit/03-code.md`, `policy.ts` `conductorFallbackBudgetMs`):
+   * the reasoner's own ceiling (`reasonerTimeoutMsFor(CONDUCTOR_CLASS)`, 120s) stays the
+   * outer point a hung subprocess is finally killed at, but the operator is never made to
+   * wait that long. If the reasoner has not answered within the shorter fallback budget
+   * (20s), the grammar answers now and this promise resolves with that reply; the
+   * reasoner keeps running underneath, unattended, and when it eventually settles its
+   * own cards are still recorded onto the rail (an agent reply appended after the
+   * grammar's, or -- if it too times out or errors -- a second, discarded-looking
+   * grammar attempt that never reaches a caller because the first one already answered).
    */
   handle(text: string, context: ConductorContext = {}): Promise<ConductorReply> {
-    const next = this.busy.then(() => this.handleSerial(text, context));
-    this.busy = next.catch(() => undefined);
-    return next;
+    const settle = this.busy.then(() => this.handleSerial(text, context));
+    this.busy = settle.catch(() => undefined);
+    return this.raceFallback(text, context, settle);
+  }
+
+  private raceFallback(
+    text: string, context: ConductorContext, settle: Promise<ConductorReply>,
+  ): Promise<ConductorReply> {
+    const fallbackMs = conductorFallbackBudgetMs(this.deps.policyPath);
+    let fallbackTimer: ReturnType<typeof setTimeout> | undefined;
+    const SLOW = Symbol('slow');
+    const fallback = new Promise<typeof SLOW>((resolve) => {
+      fallbackTimer = (this.deps.setTimeoutFn ?? setTimeout)(() => resolve(SLOW), fallbackMs);
+    });
+    return Promise.race([settle, fallback]).then(async (raced) => {
+      if (fallbackTimer !== undefined) (this.deps.clearTimeoutFn ?? clearTimeout)(fallbackTimer);
+      if (raced !== SLOW) return raced as ConductorReply;
+      // The reasoner is still running past the fast budget. Answer with the grammar now
+      // rather than block the operator until the outer 120s ceiling; the slower turn is
+      // left to finish on its own and its cards land on the rail whenever it does.
+      const early = await this.grammarFallbackReply(
+        text, context, `no answer within ${Math.round(fallbackMs / 1000)}s`,
+      );
+      // Not awaited: the caller already has `early`. `settle` keeps running under
+      // `this.busy` regardless, so the next `handle()` still waits for it properly.
+      void settle.catch(() => undefined);
+      return early;
+    });
+  }
+
+  /** The grammar's answer to one message, recorded onto the rail exactly as the class
+   *  timeout / session-failure path already did before this was split out. Shared by
+   *  the fast-fallback race above and `handleSerial`'s own catch, below. */
+  private async grammarFallbackReply(
+    text: string, context: ConductorContext, reason: string,
+  ): Promise<ConductorReply> {
+    // A cap change is irreversible-by-policy: even on the fallback it gets a Confirm
+    // card, matching the agent's own set_daily_cap/set_run_cap tools, rather than the
+    // grammar's immediate apply. Everything else runs through the grammar unchanged
+    // (kill/retire/merge already come back as their own confirm/plan cards).
+    const intent = parseIntent(text);
+    let answer: Message[];
+    if (intent.kind === 'set-daily-cap') {
+      const outcome = await this.handlers().set_daily_cap({ tokens: intent.amount });
+      answer = [replyRow(outcome.text, 'grammar'), ...(outcome.cards ?? [])];
+    } else if (intent.kind === 'set-run-cap') {
+      const outcome = await this.handlers().set_run_cap({ lane: intent.lane, tokens: intent.amount });
+      answer = [replyRow(outcome.text, 'grammar'), ...(outcome.cards ?? [])];
+    } else {
+      answer = (await this.deps.writes.runGrammar(text, 'conductor')).map((card) => ({ ...card, path: 'grammar' as const }));
+    }
+    const head = replyRow(`The Conductor could not answer (${reason}). The grammar answered instead:`, 'grammar');
+    const cards = [head, ...answer];
+    for (const card of cards) this.record(card, context.run);
+    return { cards, path: 'grammar', reason };
   }
 
   private async handleSerial(text: string, context: ConductorContext): Promise<ConductorReply> {
@@ -815,25 +877,7 @@ export class ConductorAgent {
       // this one's reply. A session that was resumed and still failed has its id dropped
       // too, so the next message opens fresh instead of resuming the same dead session.
       this.closeSession(!resumed);
-      // A cap change is irreversible-by-policy: even on the fallback it gets a Confirm
-      // card, matching the agent's own set_daily_cap/set_run_cap tools, rather than the
-      // grammar's immediate apply. Everything else runs through the grammar unchanged
-      // (kill/retire/merge already come back as their own confirm/plan cards).
-      const intent = parseIntent(text);
-      let answer: Message[];
-      if (intent.kind === 'set-daily-cap') {
-        const outcome = await this.handlers().set_daily_cap({ tokens: intent.amount });
-        answer = [replyRow(outcome.text, 'grammar'), ...(outcome.cards ?? [])];
-      } else if (intent.kind === 'set-run-cap') {
-        const outcome = await this.handlers().set_run_cap({ lane: intent.lane, tokens: intent.amount });
-        answer = [replyRow(outcome.text, 'grammar'), ...(outcome.cards ?? [])];
-      } else {
-        answer = (await this.deps.writes.runGrammar(text, 'conductor')).map((card) => ({ ...card, path: 'grammar' as const }));
-      }
-      const head = replyRow(`The Conductor could not answer (${reason}). The grammar answered instead:`, 'grammar');
-      const cards = [head, ...answer];
-      for (const card of cards) this.record(card, context.run);
-      return { cards, path: 'grammar', reason };
+      return this.grammarFallbackReply(text, context, reason);
     } finally {
       this.turnCards = [];
       this.turnRun = undefined;

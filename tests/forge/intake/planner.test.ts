@@ -50,7 +50,7 @@ describe('planFromPacket', () => {
     expect(typeof result.text).toBe('string');
   });
 
-  it('passes the built prompt to the reasoner and returns its text unchanged', async () => {
+  it('passes the built prompt to the reasoner and returns its text with a tier line added', async () => {
     let seenPrompt: string | undefined;
     const reasoner: Reasoner = {
       provider: 'claude',
@@ -58,7 +58,11 @@ describe('planFromPacket', () => {
     };
     const result = await planFromPacket(packet(), reasoner);
     expect(seenPrompt).toBe(buildPlannerPrompt(packet()));
-    expect(result.text).toBe('# Goal: fix it\n');
+    expect(result.text).toContain('# Goal: fix it');
+    // opt/tier: complexity routing is on by default -- every brief gets a tier line,
+    // defaulting to standard when the reasoner's reply named none.
+    expect(result.text).toContain('tier: standard');
+    expect(result.tier.tier).toBe('standard');
   });
 });
 

@@ -1,53 +1,38 @@
 /**
- * Requirement 6, as narrowed by the 16:40 amendment: the planner's default provider is
- * `claude` (Sonnet through the Reasoner's `plan` seam); astra is reachable only when the
- * policy file's `reasoner.astra` flag is `planning-only`, and the flag ships `off`. No
- * stream build, test, lens or review calls astra — this file never constructs a real
- * Codex client; `resolvePlanProvider` is pure and only ever reads a policy object.
+ * Requirement 6: the Intake planner always reasons on `claude`. The old Codex planning
+ * route was removed on 2026-09-23, so `resolvePlanProvider` answers `claude` for any
+ * policy object, and the ledger fallback therefore never fires.
  */
 import { describe, expect, it } from 'vitest';
 
-import { loadPolicy, policyPath } from '../../../src/forge/policy.js';
+import { loadPolicy, policyPath, providerFor } from '../../../src/forge/policy.js';
 import { planProviderWithLedgerFallback, resolvePlanProvider } from '../../../src/forge/intake/reasoner.js';
 
-describe('the policy file ships the astra flag off', () => {
-  it('reasoner.astra is "off" in the real, checked-in policy file', () => {
-    expect(loadPolicy(policyPath()).reasoner?.astra ?? 'off').toBe('off');
+describe('the policy file plans on claude', () => {
+  it('the real, checked-in policy file plans on claude', () => {
+    const policy = loadPolicy(policyPath());
+    expect(resolvePlanProvider(policy.reasoner)).toBe('claude');
+    expect(providerFor('plan')).toBe('claude');
+    expect(providerFor('master')).toBe('claude');
+    expect(JSON.stringify(policy)).not.toMatch(/astra/i);
   });
 });
 
 describe('resolvePlanProvider', () => {
-  it('defaults to claude when the flag is off', () => {
-    expect(resolvePlanProvider({ astra: 'off' })).toBe('claude');
+  it('is claude with a reasoner block', () => {
+    expect(resolvePlanProvider({ timeoutMs: 5000 })).toBe('claude');
   });
 
-  it('defaults to claude when the flag is missing entirely (an older policy file)', () => {
+  it('is claude when the block is missing entirely (an older policy file)', () => {
     expect(resolvePlanProvider(undefined)).toBe('claude');
-  });
-
-  it('is reachable on codex only when the flag is exactly "planning-only"', () => {
-    expect(resolvePlanProvider({ astra: 'planning-only' })).toBe('codex');
-  });
-
-  it('treats any other value as off — astra is opt-in, not opt-out', () => {
-    expect(resolvePlanProvider({ astra: 'always' as never })).toBe('claude');
   });
 });
 
 describe('planProviderWithLedgerFallback', () => {
-  it('falls back to claude and journals it when astra is wanted but the ledger cap is reached', () => {
+  it('never falls back (and never journals), since claude was the only choice', () => {
     const calls: Array<[string, string]> = [];
     const provider = planProviderWithLedgerFallback(
-      { astra: 'planning-only' }, true, (from, to) => calls.push([from, to]),
-    );
-    expect(provider).toBe('claude');
-    expect(calls).toEqual([['codex', 'claude']]);
-  });
-
-  it('never falls back (and never journals) when astra was never wanted in the first place', () => {
-    const calls: Array<[string, string]> = [];
-    const provider = planProviderWithLedgerFallback(
-      { astra: 'off' }, true, (from, to) => calls.push([from, to]),
+      { timeoutMs: 5000 }, true, (from, to) => calls.push([from, to]),
     );
     expect(provider).toBe('claude');
     expect(calls).toEqual([]);

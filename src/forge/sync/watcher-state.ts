@@ -7,13 +7,13 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-import type { WatcherStatus } from '../../shared/sync-contract.js';
+import type { FeedPassStatus, WatcherStatus } from '../../shared/sync-contract.js';
 import type { JiraConfig } from '../intake/jira.js';
 import type { FeedActivityResult } from '../intake/jiraFeed.js';
 import type { TicketPoller, TicketPollResult } from './watcher-thread-host.js';
 import type { WatermarkStore } from '../intake/once.js';
 import type { QueueStore } from '../intake/queueStore.js';
-import { readWatcherPollSeconds, watcherFeed, watcherJql, watcherTick } from '../intake/watcherWire.js';
+import { feedProjects, readWatcherPollSeconds, watcherFeed, watcherJql, watcherTick } from '../intake/watcherWire.js';
 import type { Journal } from '../journal.js';
 import { watcherStatePath } from '../paths.js';
 
@@ -115,6 +115,9 @@ export class JiraWatcher {
 
   private feeding: Promise<void> | null = null;
 
+  /** The comment feed's last pass, for `status().feed`. */
+  private lastFeed: FeedPassStatus | undefined;
+
   private ticketsAdded: (() => void) | undefined;
 
   private feedTimer: ReturnType<typeof setInterval> | undefined;
@@ -149,7 +152,7 @@ export class JiraWatcher {
     }
     try {
       const result = await watcherTick({
-        feedFor: (ownedKeys) => watcherFeed(project, config, ownedKeys),
+        feedFor: (ownedKeys) => watcherFeed(feedProjects(project), config, ownedKeys),
         watermarks: this.deps.watermarks,
         store: this.deps.store,
         journal: this.deps.journal,
@@ -175,9 +178,26 @@ export class JiraWatcher {
     const activity = this.deps.activity;
     if (!activity || this.feeding || !this.deps.jiraConfig()) return;
     this.feeding = activity.run(project)
-      .then(() => { this.activityError = undefined; })
+      .then((result) => {
+        this.activityError = undefined;
+        this.lastFeed = {
+          lastPassAt: this.now(),
+          considered: result.considered,
+          replied: result.replied.length,
+          deferred: result.deferred.length,
+          ignored: result.ignored.length,
+          claimed: result.claimed.length,
+          sent: result.sent.length,
+          failed: result.failed.length,
+        };
+      })
       .catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
+        this.lastFeed = {
+          ...(this.lastFeed ?? { considered: 0, replied: 0, deferred: 0, ignored: 0, claimed: 0, sent: 0, failed: 0 }),
+          lastPassAt: this.now(),
+          lastError: message,
+        };
         if (message !== this.activityError) {
           this.deps.journal.append({ event: 'feed.tick-error', actor: 'feed', message } as never);
         }
@@ -249,6 +269,7 @@ export class JiraWatcher {
       ...(this.lastCount !== undefined ? { lastCount: this.lastCount } : {}),
       ...((() => { const until = this.deps.selfTestUntil?.() ?? null; return until !== null ? { selfTestUntil: until } : {}; })()),
       ...((this.lastError ?? this.activityError) !== undefined ? { lastError: this.lastError ?? this.activityError } : {}),
+      ...(this.lastFeed ? { feed: this.lastFeed } : {}),
     };
   }
 }

@@ -47,6 +47,21 @@ export interface WatcherStatus {
   lastCount?: number;           // tickets observed on the last poll
   lastError?: string;           // last watcher.tick-error message, cleared on a good poll
   selfTestUntil?: number;       // R-101: when the operator's-own-comments self-test ends, while it is on
+  /** The comment feed's last pass: when, what it decided, and its error if it failed.
+   *  Absent until the first pass. The factory board draws it as its own node. */
+  feed?: FeedPassStatus;
+}
+
+export interface FeedPassStatus {
+  lastPassAt: number;
+  considered: number;
+  replied: number;
+  deferred: number;
+  ignored: number;
+  claimed: number;
+  sent: number;
+  failed: number;
+  lastError?: string;
 }
 
 export interface SyncStateResponse {

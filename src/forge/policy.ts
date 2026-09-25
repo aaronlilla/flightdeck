@@ -17,10 +17,9 @@ import { fileURLToPath } from 'node:url';
 import { forgeHome } from './paths.js';
 
 /**
- * Which side reasons a class: `codex` for the runtime master and planner (the
- * 2026-09-04 13:20 astra decision), `claude` for everything else. A class this file
- * does not name defaults to `claude` in `providerFor` below, which is every class the
- * policy shipped with today except `master` and `plan`.
+ * Which side reasons a class: `claude` for every class the policy ships today
+ * (plan and master moved to Opus 5.5 on 2026-09-23), `codex` only where a class names it. A class this file
+ * does not name defaults to `claude` in `providerFor` below, the safe default.
  */
 export type Provider = 'codex' | 'claude';
 
@@ -95,15 +94,10 @@ export interface Policy {
   warden?: WardenConfig;
   governor?: GovernorBudget;
   /**
-   * Optional: added for Forge Intake (P4.3), read by nothing else today. `astra` gates
-   * whether the Intake planner may reach gpt-6-astra through Codex at all; `'off'`
-   * (the shipped default) means the planner's `plan` seam always resolves to `claude`,
-   * and only `'planning-only'` turns astra on, per the 2026-09-04 16:40 amendment. A
-   * policy file written before this field existed has no `reasoner` key at all, which
-   * every reader here treats identically to `{ astra: 'off' }`.
+   * Optional: added for Forge Intake (P4.3). The Intake planner always reasons on
+   * `claude`; this block only carries the reasoner's timeout.
    */
   reasoner?: {
-    astra: 'off' | 'planning-only';
     /** How long a single `Reasoner.call` may run before it times out and gets journaled
      *  as `reasoner.timeout`, in milliseconds. A policy file written before this field
      *  existed, or one that leaves it out on purpose, falls back to the 120s default
@@ -137,7 +131,19 @@ export interface Policy {
   /** The Conductor agent behind `POST /command` (2026-09-08). On by default: a policy
    *  file with no `conductor` key at all routes the rail to the agent, and only an
    *  explicit `{ agent: { enabled: false } }` keeps every message on the regex grammar. */
-  conductor?: { agent?: { enabled?: boolean }; rounds?: Partial<RoundsPolicy> };
+  conductor?: {
+    agent?: {
+      enabled?: boolean;
+      /** Finding #9/PLAN item 9: how long the interactive rail waits for the Conductor's
+       *  live session before answering with the fast grammar fallback instead. Distinct
+       *  from `reasoner.timeoutMs` (the batch-class ceiling classes like `verify` or
+       *  `audit-lens` legitimately need minutes for) -- an operator typing a message
+       *  waits on this budget, never the fleet-wide reasoner timeout. Missing reads as
+       *  `DEFAULT_CONDUCTOR_FALLBACK_BUDGET_MS` below. */
+      fallbackBudgetMs?: number;
+    };
+    rounds?: Partial<RoundsPolicy>;
+  };
   /**
    * The protected-capability classifier's own config (roadmap P4.6, decision 6): file
    * globs and, where a path alone will not tell, an added-text pattern to search a
@@ -279,6 +285,16 @@ export function routerEnabled(path?: string): boolean {
  *  Defaults to on; only an explicit `conductor.agent.enabled: false` turns it off. */
 export function conductorAgentEnabled(path?: string): boolean {
   return loadPolicy(path).conductor?.agent?.enabled !== false;
+}
+
+/** Finding #9/PLAN item 9: the fast-fallback budget for the interactive console rail --
+ *  distinct from `reasonerTimeoutMsFor(CONDUCTOR_CLASS)`, which stays the outer ceiling
+ *  a hung subprocess is finally killed at. A policy file with no
+ *  `conductor.agent.fallbackBudgetMs` reads as `DEFAULT_CONDUCTOR_FALLBACK_BUDGET_MS`. */
+export const DEFAULT_CONDUCTOR_FALLBACK_BUDGET_MS = 20_000;
+
+export function conductorFallbackBudgetMs(path?: string): number {
+  return loadPolicy(path).conductor?.agent?.fallbackBudgetMs ?? DEFAULT_CONDUCTOR_FALLBACK_BUDGET_MS;
 }
 
 /** The Conductor's rounds (`console/rounds-route.ts`): the walk around the board that

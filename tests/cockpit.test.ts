@@ -20,12 +20,12 @@ function state(overrides: Partial<SessionState> = {}): SessionState {
 describe('status bar', () => {
   it('shows the phase and the selected model', () => {
     const bar = buildStatusBar(
-      state({ phase: 'planning', selectedModel: 'claude-fable-5' }),
+      state({ phase: 'planning', selectedModel: 'claude-opus-5-5' }),
       healthy,
       null,
     );
     expect(bar.phase).toBe('planning');
-    expect(bar.model).toBe('fable');
+    expect(bar.model).toBe('opus-5-5');
     expect(bar.reroute).toBeNull();
     expect(bar.alarm).toBeNull();
   });
@@ -75,7 +75,7 @@ describe('status bar', () => {
 
   it('reads an unknown model as unknown rather than as nothing', () => {
     expect(shortModel(null)).toBe('unknown');
-    expect(shortModel('claude-fable-5')).toBe('fable');
+    expect(shortModel('claude-opus-5-5')).toBe('opus-5-5');
     expect(shortModel('claude-opus-5[1m]')).toBe('opus');
   });
 });

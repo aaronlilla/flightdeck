@@ -28,6 +28,7 @@ import type { Message } from '../../../src/shared/console-model.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { hangingQuery, refusingQuery, scriptedQuery, type ScriptedTurn } from './agent-fake.js';
+import type { QueryFn } from '../../../src/adapter/engine.js';
 
 class FakeActuator implements Actuator {
   parked: string[] = [];
@@ -221,13 +222,73 @@ describe('ConductorAgent: the mission, on a fake model and a real board', () => 
       setTimeoutFn, clearTimeoutFn: (() => {}) as unknown as typeof clearTimeout,
     });
     const pending = agent.handle('status');
-    // Fire the class timeout by hand rather than waiting 120s for it.
+    // Fire the fast-fallback timer by hand -- it is scheduled first, before the class
+    // ceiling's own timer -- rather than waiting 20s for it.
     await new Promise((resolve) => setImmediate(resolve));
     fired[0]!();
     const reply = await pending;
     expect(reply.path).toBe('grammar');
-    expect(reply.cards[0]!.text).toMatch(/did not answer in 120s/);
+    expect(reply.cards[0]!.text).toMatch(/no answer within 20s/);
     expect(reply.cards[1]!.type).toBe('reply');
+    await agent.stop();
+  });
+
+  it('a reply that lands within the fast-fallback budget answers on the agent path, not the grammar', async () => {
+    const fake = scriptedQuery([{ reply: 'quick answer' }]);
+    makeServer(fake.fn);
+    const reply = await server!.conductor.handle('status');
+    expect(reply.path).toBe('agent');
+    expect(reply.cards[0]!.text).toBe('quick answer');
+  });
+
+  it('the fast fallback answers at conductorFallbackBudgetMs, distinct from and shorter than the class ceiling, and the slow reasoner\'s own reply still lands on the rail once it settles', async () => {
+    deadLane();
+    const fired: Array<{ cb: () => void; ms: number }> = [];
+    const setTimeoutFn = ((cb: () => void, ms: number) => {
+      fired.push({ cb, ms });
+      return fired.length as unknown as ReturnType<typeof setTimeout>;
+    }) as unknown as typeof setTimeout;
+    let releaseHang: (() => void) | undefined;
+    const slowFn = ((params: { prompt: AsyncIterable<unknown>; options?: import('@anthropic-ai/claude-agent-sdk').Options }) => {
+      async function* generate() {
+        yield {
+          type: 'system' as const, subtype: 'init' as const, session_id: 'slow-session',
+          model: params.options?.model ?? '', cwd: params.options?.cwd ?? '', tools: [], slash_commands: [],
+        };
+        await new Promise<void>((resolve) => { releaseHang = resolve; });
+        yield {
+          type: 'assistant' as const, session_id: 'slow-session',
+          message: { model: params.options?.model ?? '', content: [{ type: 'text' as const, text: 'slow answer' }], usage: { input_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 1 } },
+        };
+        yield { type: 'result' as const, subtype: 'success' as const, is_error: false, duration_ms: 5, total_cost_usd: 0 };
+      }
+      return generate() as unknown as ReturnType<QueryFn>;
+    }) as QueryFn;
+    const agent = new ConductorAgent({
+      writes: new ConsoleWrites({
+        journalPath, registry: new Registry(join(dir, 'registry')), inbox: new Inbox(join(dir, 'inbox')), actuator,
+        authorized: () => true, forgeHomeDir: dir,
+      }),
+      reads: fakeReads(), queue: fakeQueue(), amend: { registry: new Registry(join(dir, 'registry')), journalPath, publish: () => {} },
+      inbox: new Inbox(join(dir, 'inbox')), journalPath, publish: () => {}, queryFn: slowFn,
+      setTimeoutFn, clearTimeoutFn: (() => {}) as unknown as typeof clearTimeout,
+    });
+    const pending = agent.handle('status');
+    await new Promise((resolve) => setImmediate(resolve));
+    // The fast-fallback timer (20s) is scheduled before the class ceiling (120s).
+    expect(fired.map((row) => row.ms)).toEqual(expect.arrayContaining([20_000, 120_000]));
+    expect(Math.min(...fired.map((row) => row.ms))).toBe(20_000);
+    fired.find((row) => row.ms === 20_000)!.cb();
+    const reply = await pending;
+    expect(reply.path).toBe('grammar');
+    expect(reply.cards[0]!.text).toMatch(/no answer within 20s/);
+
+    // The slow reasoner now finishes on its own; its own reply still lands on the rail,
+    // appended after the grammar's fallback, even though the caller already moved on.
+    releaseHang!();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const thread = readFileSync(join(dir, 'console', 'thread.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line) as Message);
+    expect(thread.some((row) => row.text === 'slow answer' && row.path === 'agent')).toBe(true);
     await agent.stop();
   });
 

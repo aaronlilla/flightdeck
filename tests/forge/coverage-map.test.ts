@@ -85,7 +85,7 @@ const ROWS: Row[] = [
   { stream: 'warden', requirement: 'fleet-unknown reported, never acted on', specimen: 'takes no actuator parameter at all: the falsifier this closes is a caller wiring a park into it' },
 
   // ---- Governor (brief Requirements, 7 bullets) ----
-  { stream: 'governor', requirement: 'Provider at planning time', specimen: 'reads a plan-class ticket as codex and an implement-class ticket as claude' },
+  { stream: 'governor', requirement: 'Provider at planning time', specimen: 'reads audit-judge as claude, same as an implement-class ticket' },
   { stream: 'governor', requirement: 'Burn ledger from modelUsage', specimen: 'sums a result.usage row per run, per class and per model id' },
   { stream: 'governor', requirement: 'Window pause with reset time', specimen: 'pauses every queued run of that tier and never admits one before the reset time' },
   { stream: 'governor', requirement: 'Conformance per turn', specimen: 'parks the run in the very turn a mismatch is seen, never after N turns' },
@@ -99,7 +99,7 @@ const ROWS: Row[] = [
   { stream: 'intake', requirement: 'ExternalWrite, reconcile before retry', specimen: 'an `unknown` write is retried ONLY after reconciliation confirms the call never landed' },
   { stream: 'intake', requirement: 'Jira projection in Aaron\'s voice, self-write suppressed', specimen: 'refuses a comment carrying third-person Aaron phrasing before it ever reaches the sink' },
   { stream: 'intake', requirement: 'Active-ticket scope', specimen: 'a ticket assigned to the owner runs hands off' },
-  { stream: 'intake', requirement: 'Planning provider, astra gated off', specimen: 'reasoner.astra is "off" in the real, checked-in policy file' },
+  { stream: 'intake', requirement: 'Planning provider is always claude', specimen: 'the real, checked-in policy file plans on claude' },
   { stream: 'intake', requirement: 'Poll sources', specimen: 'covers every named poll source' },
   { stream: 'intake', requirement: 'source.observed, idempotent across restart/second reader', specimen: 'a restart that replays the same fetch against the advanced watermark emits nothing new' },
   { stream: 'intake', requirement: 'Backend stops at draft PR, frontend runs to merge', specimen: 'a backend-repo ticket ends at draft PR open with the backend owner pinged, never merge' },
@@ -118,7 +118,7 @@ const ROWS: Row[] = [
   { stream: 'council', requirement: 'Three lenses scaled to diff risk', specimen: 'a medium diff gets three lenses' },
   { stream: 'council', requirement: 'Codex lane, read-only, contested not dropped', specimen: 'a Codex-only finding with no matching Sonnet finding is carried as contested' },
   { stream: 'council', requirement: 'Judge reads packets only', specimen: 'never carries the raw diff text' },
-  { stream: 'council', requirement: 'Three fix rounds then park', specimen: 'three consecutive FIX FIRST verdicts produce exactly one park event with the packet attached' },
+  { stream: 'council', requirement: 'Six fix rounds then park', specimen: 'six consecutive FIX FIRST verdicts produce exactly one park event with the full findings history attached' },
   { stream: 'council', requirement: 'Judge/Codex disagreement resolves without Fable', specimen: 'judge PASS, Codex FIX FIRST: disagreement, FIX FIRST wins' },
   { stream: 'council', requirement: 'RN merge gate refuses a stale check run', specimen: 'blocks merge when the check-run head sha does not match the current head, even though conclusion is success' },
   { stream: 'council', requirement: 'Backend gate never merges', specimen: 'every gate condition green still ends at draft-PR-plus-ping, never a merge call' },

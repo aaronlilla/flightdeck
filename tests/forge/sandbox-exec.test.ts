@@ -138,3 +138,17 @@ describe('describeSandbox', () => {
     expect(line).toContain('user=1000:1000');
   });
 });
+
+describe('run clone git inside the container', () => {
+  it('mounts an in-container alternates file and sets autocrlf and safe.directory', async () => {
+    const { sandboxCommand, readSandboxConfig } = await import('../../src/forge/sandbox-exec.js');
+    const boxed = sandboxCommand(readSandboxConfig({}), {
+      command: 'git status', cwd: 'C:/wt/x', name: 'n',
+      runClone: { hostClonePath: 'C:/wt/x', hostPrimaryObjects: 'C:/p/.git/objects', containerAlternatesFile: 'C:/h/alternates' },
+    });
+    const argv = boxed.argv.join(' ');
+    expect(argv).toContain('/c/h/alternates:/work/.git/objects/info/alternates:ro');
+    expect(argv).toContain('GIT_CONFIG_VALUE_0=true');
+    expect(argv).toContain('GIT_CONFIG_KEY_1=safe.directory');
+  });
+});

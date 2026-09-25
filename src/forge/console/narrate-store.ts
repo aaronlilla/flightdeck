@@ -176,6 +176,21 @@ export interface NarrationRequest extends NarrationFacts {
 
 const CLASS_NAME = 'narrate';
 
+/** Plan item 2, 2026-09-23: the literal string `console/agent.ts` and
+ *  `reasoner-claude.ts` throw when every linked provider account is over quota and the
+ *  machine's own login is switched off in Settings. Matched here, not imported, since
+ *  neither module exports it and this module has no reason to depend on either. */
+const ACCOUNTS_SPENT_RE = /every linked account is spent/i;
+
+/** Plan item 2: once a call fails on the accounts-spent error, how long the narrator
+ *  refuses to spend another attempt on ANY key before trying again. 04-failures.md:
+ *  `narration.failed` carried this exact string 417 raw times over 14 days -- every
+ *  distinct fact record took its own doomed attempt at the same unrecoverable state,
+ *  each one a real reasoner call and a real journal row. A short backoff (Plan item 2's
+ *  own words: "a short check, e.g. every 60s") turns that into one attempt per window
+ *  instead of one attempt per surface per poll. */
+const ACCOUNTS_SPENT_BACKOFF_MS = 60_000;
+
 /**
  * The narrator. One per server.
  */
@@ -188,6 +203,10 @@ export class Narrator {
   private readonly callsPath: string;
   private running = 0;
   private lastCappedRowAt = 0;
+  /** Plan item 2: the clock time a fresh call may next be tried, set by the catch branch
+   *  below the moment a call fails on the accounts-spent error. 0 means no backoff is
+   *  in effect. */
+  private accountsSpentUntil = 0;
   private idleWaiters: Array<() => void> = [];
 
   constructor(private readonly deps: NarratorDeps) {
@@ -291,6 +310,13 @@ export class Narrator {
 
   private enqueue(key: string, input: NarrationRequest): void {
     if (!this.enabled()) return;
+    // Plan item 2: while every linked account reads as spent, every surface's poll
+    // enqueues its own key and takes its own doomed call -- 417 raw `narration.failed`
+    // rows over 14 days for the one unrecoverable state. Held here, not inside `work`,
+    // so a spent reading costs nothing at all: no queue entry, no `pending` mark, no
+    // call slot reserved. The template already served by `get()` above stands for the
+    // whole window.
+    if (this.now() < this.accountsSpentUntil) return;
     if (this.pending.has(key)) return;
     if (!this.reserveCall()) return;
     this.pending.add(key);
@@ -387,6 +413,24 @@ export class Narrator {
         },
         transport: true,
       });
+      // Plan item 2: every linked account spent is a distinct, unrecoverable-for-now
+      // failure, not a model hiccup -- worth backing every surface off for a short
+      // window instead of journaling and retrying it on the very next poll. The window
+      // gets one `narration.failed` row, logged only on the call that opens the window;
+      // a second call that lands while the window is already open (`pump()`'s own
+      // concurrency cap is 2, so at most one more call can already be in flight when the
+      // first one trips this) reuses the window silently instead of writing a second row.
+      if (ACCOUNTS_SPENT_RE.test(reason)) {
+        const opensWindow = this.now() >= this.accountsSpentUntil;
+        this.accountsSpentUntil = this.now() + ACCOUNTS_SPENT_BACKOFF_MS;
+        if (opensWindow) {
+          this.deps.journal.append({
+            event: 'narration.failed', actor: 'narrator', class: CLASS_NAME,
+            surface: input.surface, error: reason, cachedTemplate: true,
+          });
+        }
+        return;
+      }
       this.deps.journal.append({
         event: 'narration.failed', actor: 'narrator', class: CLASS_NAME,
         surface: input.surface, error: reason, cachedTemplate: true,

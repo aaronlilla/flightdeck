@@ -88,19 +88,26 @@ describe('buildJudgeInput: packets only (acceptance specimen 3)', () => {
   });
 });
 
-describe('evaluateFixRounds: three rounds then park (acceptance specimen 4)', () => {
-  it('three consecutive FIX FIRST verdicts produce exactly one park event with the packet attached', () => {
+describe('evaluateFixRounds: six rounds then park (2026-09-23 standing order, was three)', () => {
+  it('six consecutive FIX FIRST verdicts produce exactly one park event with the full findings history attached', () => {
     const rounds = [
       { round: 1, verdict: 'FIX FIRST' as const, findings: [finding({ claim: 'round 1' })] },
       { round: 2, verdict: 'FIX FIRST' as const, findings: [finding({ claim: 'round 2' })] },
       { round: 3, verdict: 'FIX FIRST' as const, findings: [finding({ claim: 'round 3' })] },
-      { round: 4, verdict: 'FIX FIRST' as const, findings: [finding({ claim: 'round 4 -- must never be entered' })] },
+      { round: 4, verdict: 'FIX FIRST' as const, findings: [finding({ claim: 'round 4' })] },
+      { round: 5, verdict: 'FIX FIRST' as const, findings: [finding({ claim: 'round 5' })] },
+      { round: 6, verdict: 'FIX FIRST' as const, findings: [finding({ claim: 'round 6' })] },
+      { round: 7, verdict: 'FIX FIRST' as const, findings: [finding({ claim: 'round 7 -- must never be entered' })] },
     ];
     const outcome = evaluateFixRounds(rounds);
     expect(outcome.parked).toBe(true);
-    expect(outcome.enteredRounds).toBe(3);
+    expect(outcome.enteredRounds).toBe(6);
     expect(outcome.packet).toBeTruthy();
-    expect(outcome.packet?.some((f) => f.claim.includes('round 4'))).toBe(false);
+    expect(outcome.packet?.some((f) => f.claim.includes('round 7'))).toBe(false);
+    // The full history, not just the last round's findings -- rounds 1 through 6.
+    expect(outcome.packet?.map((f) => f.claim)).toEqual([
+      'round 1', 'round 2', 'round 3', 'round 4', 'round 5', 'round 6',
+    ]);
   });
 
   it('a PASS on round two stops the loop with no park', () => {

@@ -40,8 +40,10 @@ import { join } from 'node:path';
 describe('the policy file', () => {
   it('declares every class the Spine names', () => {
     const wanted = [
-      'triage', 'plan', 'master', 'implement', 'implement-hard', 'verify',
-      'audit-lens', 'audit-judge', 'research', 'evaluate', 'sweep', 'narrate',
+      'triage', 'plan', 'master', 'implement', 'implement-light', 'implement-hard', 'verify',
+      // Aaron's 2026-09-23 standing order (full autonomous mode): a dedicated
+      // opus-5-5 bug-hunt class runs after a clean audit and before merge.
+      'audit-lens', 'audit-judge', 'bug-hunt', 'research', 'evaluate', 'sweep', 'narrate',
       // always-on-warden R-54: the drift judge's two classes.
       'drift-judge', 'drift-confirm',
       // R-68: the queue's own ticket planner, sonnet/medium, distinct from `plan`.
@@ -52,7 +54,7 @@ describe('the policy file', () => {
 
   it('gives every class maxTurns x 90,000ms rounded up to the nearest 60,000ms', () => {
     const cases: Array<[string, number]> = [
-      ['implement', 10_800_000], ['implement-hard', 10_800_000], ['verify', 3_600_000],
+      ['implement', 10_800_000], ['implement-light', 5_400_000], ['implement-hard', 10_800_000], ['verify', 3_600_000],
       ['evaluate', 540_000], ['triage', 1_800_000], ['plan', 5_400_000], ['master', 3_600_000],
       ['audit-lens', 3_600_000], ['audit-judge', 2_700_000], ['research', 3_600_000],
       ['sweep', 1_800_000], ['narrate', 120_000], ['drift-judge', 120_000], ['drift-confirm', 120_000],
@@ -76,10 +78,11 @@ describe('the policy file', () => {
     }
   });
 
-  it('runs implementation on sonnet and only implement-hard on opus', () => {
+  it('runs implementation on sonnet, light on haiku, hard on opus-5-5', () => {
     expect(modelFor('implement')).toBe('sonnet');
-    expect(modelFor('implement-hard')).toBe('opus');
-    expect(modelFor('plan')).toBe('fable');
+    expect(modelFor('implement-light')).toBe('haiku');
+    expect(modelFor('implement-hard')).toBe('opus-5-5');
+    expect(modelFor('plan')).toBe('opus-5-5');
   });
 
   it('caps an implement session at 150000 tokens', () => {
@@ -89,7 +92,7 @@ describe('the policy file', () => {
   });
 
   it('keeps the master cheap enough to stay a master', () => {
-    expect(modelFor('master')).toBe('fable');
+    expect(modelFor('master')).toBe('opus-5-5');
     expect(contextFor('master')).toBeLessThanOrEqual(30_000);
   });
 
@@ -114,6 +117,18 @@ describe('the policy file', () => {
 describe('the tier a brief asks for', () => {
   it('reads an explicit tier line as implement-hard', () => {
     expect(tierOfBrief('# Goal\n\ntier: opus\n\nbody\n')).toBe('implement-hard');
+  });
+
+  it('maps the rubric tier "hard" to implement-hard', () => {
+    expect(tierOfBrief('# Goal\n\ntier: hard\n\nbody\n')).toBe('implement-hard');
+  });
+
+  it('maps the rubric tier "light" to implement-light', () => {
+    expect(tierOfBrief('# Goal\n\ntier: light\n\nbody\n')).toBe('implement-light');
+  });
+
+  it('maps the rubric tier "standard" to implement', () => {
+    expect(tierOfBrief('# Goal\n\ntier: standard\n\nbody\n')).toBe('implement');
   });
 
   it('reads the same line inside front matter', () => {
@@ -166,9 +181,9 @@ describe('wardenConfig', () => {
 });
 
 describe('provider, read from the policy file rather than hardcoded', () => {
-  it('sends plan and master to codex, per the 2026-09-04 13:20 decision', () => {
-    expect(providerFor('plan')).toBe('codex');
-    expect(providerFor('master')).toBe('codex');
+  it('sends plan and master to claude (Opus 5.5, 2026-09-23)', () => {
+    expect(providerFor('plan')).toBe('claude');
+    expect(providerFor('master')).toBe('claude');
   });
 
   it('defaults every other declared, non-audit class to claude', () => {
@@ -260,7 +275,7 @@ describe('reasonerTimeoutMs', () => {
   it('falls back to the default when a policy file names none', () => {
     const dir = mkdtempSync(join(tmpdir(), 'forge-policy-'));
     const fixture = join(dir, 'model-policy.json');
-    const withoutTimeout = { ...loadPolicy(), reasoner: { astra: 'off' as const } };
+    const withoutTimeout = { ...loadPolicy(), reasoner: {} };
     writeFileSync(fixture, JSON.stringify(withoutTimeout));
     expect(reasonerTimeoutMs(fixture)).toBe(DEFAULT_REASONER_TIMEOUT_MS);
   });
@@ -268,7 +283,7 @@ describe('reasonerTimeoutMs', () => {
   it('honours an override the policy file sets', () => {
     const dir = mkdtempSync(join(tmpdir(), 'forge-policy-'));
     const fixture = join(dir, 'model-policy.json');
-    const withOverride = { ...loadPolicy(), reasoner: { astra: 'off' as const, timeoutMs: 5000 } };
+    const withOverride = { ...loadPolicy(), reasoner: { timeoutMs: 5000 } };
     writeFileSync(fixture, JSON.stringify(withOverride));
     expect(reasonerTimeoutMs(fixture)).toBe(5000);
   });
@@ -282,7 +297,7 @@ describe('reasonerTimeoutMsFor: a class may need longer than the fleet-wide defa
   it('a class with no timeoutMs of its own falls back to the fleet-wide reasoner.timeoutMs', () => {
     const dir = mkdtempSync(join(tmpdir(), 'forge-policy-'));
     const fixture = join(dir, 'model-policy.json');
-    const policy = { ...loadPolicy(), reasoner: { astra: 'off' as const, timeoutMs: 7000 } };
+    const policy = { ...loadPolicy(), reasoner: { timeoutMs: 7000 } };
     writeFileSync(fixture, JSON.stringify(policy));
     expect(reasonerTimeoutMsFor('audit-judge', fixture)).toBe(7000);
   });
@@ -328,17 +343,20 @@ describe('maxDiffLinesFor: the per-hunk cap a lens\'s diff is read at', () => {
   });
 });
 
-// accounts-connect-routing, Contract gap 3: the two audit classes reason on Codex, never
-// Claude, so a claude-account rate limit never stalls a review. Every key matching
-// `/^audit-/` is checked, not a hand-typed pair, so a third audit class added later is
-// covered automatically rather than silently defaulting to `claude`.
-describe('every audit-* class reasons on codex', () => {
-  it('checked-in model-policy.json names codex for every audit-* class', () => {
+// Aaron's 2026-09-23 standing order (full autonomous mode): every audit/review class --
+// audit-lens, audit-judge, and bug-hunt -- reasons on claude/opus-5-5, never Codex.
+// There is no Codex lane left in the council at all (`council/orchestrate.ts`). Every key
+// matching `/^audit-/` (plus `bug-hunt`) is checked, not a hand-typed pair, so a third
+// review class added later is covered automatically rather than silently defaulting away
+// from opus-5-5.
+describe('every audit/review class reasons on claude/opus-5-5', () => {
+  it('checked-in model-policy.json names claude/opus-5-5 for every audit-*/bug-hunt class', () => {
     const policy = loadPolicy();
-    const auditClassNames = Object.keys(policy.classes).filter((name) => /^audit-/.test(name));
-    expect(auditClassNames.length).toBeGreaterThan(0);
-    for (const name of auditClassNames) {
-      expect(providerFor(name)).toBe('codex');
+    const reviewClassNames = Object.keys(policy.classes).filter((name) => /^audit-/.test(name) || name === 'bug-hunt');
+    expect(reviewClassNames.length).toBeGreaterThan(0);
+    for (const name of reviewClassNames) {
+      expect(providerFor(name)).toBe('claude');
+      expect(modelFor(name)).toBe('opus-5-5');
     }
   });
 });

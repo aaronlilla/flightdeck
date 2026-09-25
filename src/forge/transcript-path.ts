@@ -40,5 +40,22 @@ export function readTranscriptTail(path: string, maxLines: number): string {
     return '';
   }
   const lines = contents.split('\n').filter((line) => line.trim().length > 0);
-  return lines.slice(-maxLines).join('\n');
+  // Token budget (2026-09-23): a transcript line can carry a whole tool result (file
+  // contents, test output), so 40 raw lines averaged ~107k input tokens per drift-judge
+  // call. Each line is clipped and the tail is capped from the newest end, which keeps
+  // what the judge needs (what the agent just did) at a few thousand tokens.
+  const clipped = lines.slice(-maxLines).map((line) =>
+    line.length > TRANSCRIPT_LINE_MAX_CHARS ? `${line.slice(0, TRANSCRIPT_LINE_MAX_CHARS)} [clipped]` : line);
+  const out: string[] = [];
+  let total = 0;
+  for (let i = clipped.length - 1; i >= 0; i--) {
+    total += clipped[i]!.length + 1;
+    if (total > TRANSCRIPT_TAIL_MAX_CHARS && out.length > 0) break;
+    out.unshift(clipped[i]!);
+  }
+  return out.join('\n');
 }
+
+/** Per-line and whole-tail character caps for {@link readTranscriptTail}. */
+export const TRANSCRIPT_LINE_MAX_CHARS = 1500;
+export const TRANSCRIPT_TAIL_MAX_CHARS = 24000;

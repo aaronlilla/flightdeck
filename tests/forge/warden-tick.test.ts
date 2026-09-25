@@ -581,6 +581,124 @@ describe('WardenTick.run', () => {
       expect(state.events.some((e) => e.event === 'blocker.raised')).toBe(false);
     });
   });
+
+  describe('Plan item 4: stuck-silent kill and requeue', () => {
+    it('kills the pid and journals run.stuck-killed and queue.stuck-requeued once, '
+      + 'not again on the next tick while the same trip stays open', async () => {
+      let requeueCalls = 0;
+      const tick = new WardenTick({
+        journal, actuator, blockers: new BlockerBoard({ journal, actuator }),
+        now: () => Date.now(),
+        stuck: () => [makeStuck({
+          key: 'r1', signal: 'stuck-silent', threshold: 900_000, observed: 900_500,
+          hint: "run r1's process is alive but it has made no progress for 15 minutes",
+        })],
+        liveRuns: () => [],
+        reportFleetHealth: () => 0,
+        registryPidFor: (run) => (run === 'r1' ? 4242 : undefined),
+        killProcess: (pid) => { killed.push(pid); },
+        requeueStuckRun: (run) => { requeueCalls += 1; return run === 'r1'; },
+      });
+
+      await tick.run();
+      await tick.run();
+      await tick.run();
+
+      expect(killed).toEqual([4242]);
+      expect(requeueCalls).toBe(1);
+      const state = replay(journalPath);
+      const killedRows = state.events.filter((e) => e.event === 'run.stuck-killed' && e.run === 'r1');
+      expect(killedRows).toHaveLength(1);
+      const requeuedRows = state.events.filter((e) => e.event === 'queue.stuck-requeued' && e.run === 'r1');
+      expect(requeuedRows).toHaveLength(1);
+    });
+
+    it('kills again once the trip clears and re-trips under the same name', async () => {
+      let stuckSignals: ExtendedStuckSignal[] = [makeStuck({
+        key: 'r1', signal: 'stuck-silent', threshold: 900_000, observed: 900_500,
+        hint: "run r1's process is alive but it has made no progress for 15 minutes",
+      })];
+      const tick = new WardenTick({
+        journal, actuator, blockers: new BlockerBoard({ journal, actuator }),
+        now: () => Date.now(),
+        stuck: () => stuckSignals,
+        liveRuns: () => [],
+        reportFleetHealth: () => 0,
+        registryPidFor: () => 4242,
+        killProcess: (pid) => { killed.push(pid); },
+        requeueStuckRun: () => true,
+      });
+
+      await tick.run();
+      stuckSignals = [];
+      await tick.run();
+      stuckSignals = [makeStuck({
+        key: 'r1', signal: 'stuck-silent', threshold: 900_000, observed: 900_500,
+        hint: "run r1's process is alive but it has made no progress for 15 minutes",
+      })];
+      await tick.run();
+
+      expect(killed).toEqual([4242, 4242]);
+      const state = replay(journalPath);
+      expect(state.events.filter((e) => e.event === 'run.stuck-killed' && e.run === 'r1')).toHaveLength(2);
+    });
+
+    it('does nothing when registryPidFor or killProcess is not wired', async () => {
+      const tick = new WardenTick({
+        journal, actuator, blockers: new BlockerBoard({ journal, actuator }),
+        now: () => Date.now(),
+        stuck: () => [makeStuck({
+          key: 'r1', signal: 'stuck-silent', threshold: 900_000, observed: 900_500,
+          hint: "run r1's process is alive but it has made no progress for 15 minutes",
+        })],
+        liveRuns: () => [],
+        reportFleetHealth: () => 0,
+      });
+
+      await tick.run();
+
+      expect(killed).toHaveLength(0);
+      const state = replay(journalPath);
+      expect(state.events.some((e) => e.event === 'run.stuck-killed')).toBe(false);
+    });
+
+    it('never kills a run with no registry pid to signal (already gone)', async () => {
+      const tick = new WardenTick({
+        journal, actuator, blockers: new BlockerBoard({ journal, actuator }),
+        now: () => Date.now(),
+        stuck: () => [makeStuck({
+          key: 'r1', signal: 'stuck-silent', threshold: 900_000, observed: 900_500,
+          hint: "run r1's process is alive but it has made no progress for 15 minutes",
+        })],
+        liveRuns: () => [],
+        reportFleetHealth: () => 0,
+        registryPidFor: () => undefined,
+        killProcess: (pid) => { killed.push(pid); },
+      });
+
+      await tick.run();
+
+      expect(killed).toHaveLength(0);
+      const state = replay(journalPath);
+      expect(state.events.some((e) => e.event === 'run.stuck-killed')).toBe(false);
+    });
+
+    it('an idle trip is never killed -- only stuck-silent is', async () => {
+      const tick = new WardenTick({
+        journal, actuator, blockers: new BlockerBoard({ journal, actuator }),
+        now: () => Date.now(),
+        stuck: () => [makeStuck()],
+        liveRuns: () => [],
+        reportFleetHealth: () => 0,
+        registryPidFor: () => 4242,
+        killProcess: (pid) => { killed.push(pid); },
+      });
+
+      await tick.run();
+
+      expect(killed).toHaveLength(0);
+    });
+  });
 });
 
 describe('DriftCadenceTracker (B.9)', () => {

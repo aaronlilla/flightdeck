@@ -419,6 +419,35 @@ describe('self-test: the operator commenting to themself', () => {
     expect(h.reasoner).toHaveBeenCalledTimes(1);
   });
 
+  it('lets only the sandbox project through when self-test is scoped', async () => {
+    const h = harness({
+      board: [
+        issue({ key: 'ABC-1', reporterAccountId: 'acc-me', comments: [selfComment({ id: 'real-1' })] }),
+        issue({ key: 'SBX-1', reporterAccountId: 'acc-me', comments: [selfComment({ id: 'sbx-1' })] }),
+      ],
+      reply: decision('defer', 'maybe'),
+    });
+    h.deps.selfTest = () => true;
+    h.deps.selfTestProjects = () => ['SBX'];
+    const result = await runFeedActivity(h.deps);
+    expect(result.considered).toBe(1);
+    expect(h.deps.ledger.read().handled['real-1']?.reason).toBe('written by the operator');
+    expect(h.deps.ledger.read().handled['sbx-1']?.selfTest).toBe(true);
+  });
+
+  it('reads the operator\'s own new-ticket description only under a sandbox-scoped self-test', async () => {
+    const own = (key: string) => issue({ key, created: LATER, reporterAccountId: 'acc-me', description: 'Robin can you look at this?' });
+    const off = harness({ board: [own('SBX-2')], reply: decision('defer', 'x') });
+    off.deps.selfTest = () => false;
+    expect((await runFeedActivity(off.deps)).considered).toBe(0);
+    const on = harness({ board: [own('ABC-2'), own('SBX-2')], reply: decision('defer', 'x') });
+    on.deps.selfTest = () => true;
+    on.deps.selfTestProjects = () => ['SBX'];
+    const result = await runFeedActivity(on.deps);
+    expect(result.deferred).toEqual(['SBX-2']);
+    expect(on.deps.ledger.read().handled['desc:SBX-2']?.selfTest).toBe(true);
+  });
+
   it('ignores the operator\'s own comments while the switch is off', async () => {
     const h = harness({ board: [issue({ reporterAccountId: 'acc-me', comments: [selfComment()] })], reply: decision('reply', 'x') });
     h.deps.selfTest = () => false;
@@ -707,5 +736,13 @@ describe('claiming a ticket from a comment', () => {
     const result = await runFeedActivity(h.deps);
     expect(result.replied).toEqual(['ABC-1']);
     expect(result.claimed).toEqual([]);
+  });
+});
+
+describe('feedJql across projects', () => {
+  it('reads several projects in one search, and one project exactly as before', () => {
+    expect(feedJql(['BBZ', 'FDTES'], 5)).toBe('project in (BBZ, FDTES) AND updated >= -5m ORDER BY updated ASC');
+    expect(feedJql('BBZ', 5)).toBe('project = BBZ AND updated >= -5m ORDER BY updated ASC');
+    expect(feedJql(['BBZ'], 5)).toBe('project = BBZ AND updated >= -5m ORDER BY updated ASC');
   });
 });

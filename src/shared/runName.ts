@@ -31,7 +31,7 @@ const KEY_SHAPED = /^(?:S-[0-9a-f]{8,}|[0-9a-f]{8,}|Q-[0-9a-f]{6,}|item:.*|queue
  * reads; the screen is held to it too.
  */
 const INTERNAL_WORDS = new Set([
-  'forge', 'flightdeck', 'astra', 'codex', 'conductor', 'warden', 'lane', 'lanes',
+  'forge', 'flightdeck', 'codex', 'conductor', 'warden', 'lane', 'lanes',
   'harness', 'council', 'refuter', 'lens', 'evaluator', 'goal', 'brief', 'run',
 ]);
 

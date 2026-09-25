@@ -34,9 +34,9 @@ function packets(count: number, words = 120) {
 }
 
 describe('the master runs on the master class', () => {
-  it('is Fable', () => {
-    expect(modelFor(MASTER_CLASS)).toBe('fable');
-    expect(buildMasterRequest({ packets: packets(2) }).model).toBe(modelIdFor('fable'));
+  it('is Opus 5.5', () => {
+    expect(modelFor(MASTER_CLASS)).toBe('opus-5-5');
+    expect(buildMasterRequest({ packets: packets(2) }).model).toBe(modelIdFor('opus-5-5'));
   });
 
   it('is budgeted well under a working session', () => {

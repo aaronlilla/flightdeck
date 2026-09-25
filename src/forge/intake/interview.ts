@@ -15,6 +15,7 @@
  */
 import type { Packet, Reasoner } from '../contracts.ts';
 import type { PlannedBrief } from './planner.ts';
+import { ensureTierLine } from './tier.ts';
 
 /** Four is the ceiling the spec sets. A fifth question is dropped, not deferred. */
 export const MAX_QUESTIONS = 4;
@@ -232,6 +233,20 @@ export function buildBriefPrompt(packet: Packet, answers: InterviewAnswer[]): st
     'End the brief with a "## Decisions" section repeating each question above, its',
     'answer and who gave it, so the worker never re-litigates a settled call.',
     '',
+    'Before the "# Goal:" heading is written, decide this ticket\'s complexity tier --',
+    'the pipeline runs the worker on a cheaper or pricier model depending on what you',
+    'say here, so read the rubric and commit to one:',
+    '  "light"    -- a copy, text, config, or single-file change with an obvious test,',
+    '                 touching no money, auth, payments, wallet, ledger, or migration.',
+    '  "hard"     -- spans multiple repos; touches money, a ledger, a wallet, a payment',
+    '                 or auth/security surface; involves concurrency; needs a migration;',
+    '                 or the root cause is not yet clear.',
+    '  "standard" -- everything else. When in doubt, say standard.',
+    'Put your call on its own line, immediately under the "# Goal:" heading, exactly as',
+    '`tier: light`, `tier: standard` or `tier: hard`, followed on the next line by',
+    '`tier-reason: ` and one short sentence for why. A ticket that could plausibly read',
+    'either way is `standard`, never guessed down to `light`.',
+    '',
     'Reply with the full brief as Markdown and nothing else, starting with a "# Goal:"',
     'heading. If the ticket text carries `repo:` or `roadmap:` lines, copy each one',
     'verbatim onto its own line directly under that heading.',
@@ -253,10 +268,19 @@ export function buildBriefPrompt(packet: Packet, answers: InterviewAnswer[]): st
 }
 
 /** The second and last reasoner call of a planning hop: the brief, written with every
- *  answer in hand. */
+ *  answer in hand. Complexity routing is on by default here too -- `ensureTierLine`
+ *  writes a `tier:` line into every brief this returns, defaulting to `standard` when
+ *  the model's reply carries none. Never applied to a `CONTRADICTION:` reply: that reply
+ *  is not a brief at all, and `readConflictSignal` (in `interviewPlanner.ts`) requires the
+ *  sentinel on the very first non-blank line -- inserting a tier line above it would hide
+ *  every conflict this planner ever raises. */
 export async function writeBrief(
   packet: Packet, answers: InterviewAnswer[], reasoner: Reasoner,
 ): Promise<PlannedBrief> {
   const result = await reasoner.call({ className: 'plan-ticket', prompt: buildBriefPrompt(packet, answers), replyShape: 'text' });
-  return { packetId: packet.id, ticket: packet.ticket, text: result.text };
+  if (readConflictSignal(result.text)) {
+    return { packetId: packet.id, ticket: packet.ticket, text: result.text, tier: { tier: 'standard', reason: 'no brief was written: the planner raised a conflict' } };
+  }
+  const { text, decision } = ensureTierLine(result.text);
+  return { packetId: packet.id, ticket: packet.ticket, text, tier: decision };
 }

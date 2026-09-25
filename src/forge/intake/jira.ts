@@ -202,6 +202,8 @@ export interface JiraIssueRead {
   priority: string | null;
   updated: string | null;
   description: string | null;
+  /** The last few comments, oldest first. Optional: older fakes and callers omit it. */
+  comments?: Array<{ author: string; body: string; created: string }>;
 }
 
 /**
@@ -271,7 +273,7 @@ export function createJiraWriteClient(config: Pick<JiraConfig, 'site' | 'email' 
     async read(key) {
       // Only the fields the card shows. Asking for the whole issue pulls changelog,
       // comments and every custom field the site has, which is a slow call for a hover.
-      const fields = 'summary,status,assignee,issuetype,priority,updated,description';
+      const fields = 'summary,status,assignee,issuetype,priority,updated,description,comment';
       const response = await fetchFn(`${config.site}/rest/api/3/issue/${key}?fields=${fields}`, {
         method: 'GET', headers: { authorization: auth },
       });
@@ -294,6 +296,11 @@ export function createJiraWriteClient(config: Pick<JiraConfig, 'site' | 'email' 
           priority: text(f['priority']),
           updated: typeof f['updated'] === 'string' ? f['updated'] : null,
           description: description.length > 0 ? description : null,
+          comments: (Array.isArray(f['comment']?.comments) ? f['comment'].comments : []).slice(-8).map((c: any) => ({
+            author: text(c?.author) ?? '',
+            body: c?.body ? flattenAdf(c.body).trim() : '',
+            created: typeof c?.created === 'string' ? c.created : '',
+          })),
         };
       } catch {
         return null;

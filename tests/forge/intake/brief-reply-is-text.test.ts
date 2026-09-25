@@ -32,7 +32,10 @@ describe('brief writers ask for a text reply', () => {
     const reasoner = recording();
     const brief = await writeBrief(PACKET, [], reasoner);
     expect(reasoner.shapes).toEqual(['text']);
-    expect(brief.text).toBe('# Goal: Add a doc file');
+    // The reasoner's own text is preserved, plus the tier line ensureTierLine adds
+    // (opt/tier: complexity routing is on by default, no config to skip it).
+    expect(brief.text).toContain('# Goal: Add a doc file');
+    expect(brief.text).toContain('tier: standard');
   });
 
   it('planFromPacket', async () => {

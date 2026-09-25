@@ -306,6 +306,18 @@ export const FORGE_EVENT_NAMES = [
   // R-101: the Jira feed (`intake/jiraFeed.ts`, `sync/feed-wire.ts`).
   'feed.replied', 'feed.deferred', 'feed.sent', 'feed.ignored', 'feed.failed', 'feed.left',
   'feed.answer-posted', 'feed.answer-failed', 'feed.started', 'feed.tick-error',
+  // intake/autopilot.ts: an open question resolved with nobody asked, or a pass that failed.
+  'autopilot.answered', 'autopilot.retired', 'autopilot.failed',
+  // server.ts POST /autonomy: the operator flipped answerAsks or autoMerge.
+  'autonomy.changed',
+  // chain-wire.ts: the council's bug-hunt pass over a PR, with whether it came back clean.
+  'bug-hunt.run',
+  // intake/autopilot.ts: a question autopilot chose to leave open for a person.
+  'autopilot.left_open',
+  // intake/interviewPlanner.ts: the tier a plan was routed to.
+  'plan.tier',
+  // intake/queue.ts: a fix round starting, and the ship step's outcome.
+  'queue.fix-round-start', 'queue.shipped', 'queue.ship-failed',
   // 2026-09-18: the claim half of the feed. `taken` is a ticket replied to, assigned to
   // the operator and queued; `refused` names the stage that stopped a claim part-way;
   // `capped` is a claim the per-pass or hourly limit stopped before the model was asked.
@@ -331,6 +343,18 @@ export const FORGE_EVENT_NAMES = [
   // registry row behind it removes that worktree and retries the add once, instead
   // of blocking the whole packet forever (B.4).
   'queue.paused', 'run.relaunched', 'registry.reaped', 'chain.worktree.reclaimed',
+  // Plan item 4, 2026-09-23: a `started` run whose process is confirmed alive, is not
+  // parked waiting on a person's answer, and has produced no `run.started`/`tool.start`/
+  // `tool.end`/`turn.end` row for 15 minutes -- distinct from `run.killed` (a person's
+  // decision) and `registry.abandoned` (the process already died): this one is a live
+  // process the tick itself decided to kill. Carries the same evidence a `liveness.stuck`
+  // idle trip would, plus the fresh `runKey` the requeue launched under.
+  'run.stuck-killed',
+  // Plan item 4: the requeue that follows a `run.stuck-killed`, naming the queue item
+  // relaunched and its fresh `runKey`. Absent when the stuck run named no queue item
+  // (never launched through the queue) -- the kill still happens, but nothing here says
+  // a requeue followed it, since there was no item to requeue.
+  'queue.stuck-requeued',
   // C.1: `POST /amend` correcting a running item's brief mid-flight (adding only this one
   // name here -- this file is shared across streams).
   'brief.amended',
@@ -942,10 +966,9 @@ export interface EventBus {
 export type Provider = 'codex' | 'claude';
 
 /**
- * Which provider a model-policy class reasons on, per the 2026-09-04 13:20 decision: the
- * runtime master and planner run on gpt-6-astra through Codex, read-only, with Claude as
- * fallback and critic; everything that implements, verifies, researches, audits or
- * evaluates runs on Claude.
+ * Which provider a model-policy class reasons on, read from `model-policy.json`: the
+ * runtime master and planner run on Claude Opus 5.5 (2026-09-23), as does everything
+ * that implements, verifies or researches; only a class that names `codex` goes there.
  *
  * P4.7/I3: this used to be its own hardcoded `CLASS_PROVIDERS` map, a second copy of
  * exactly the fact `policy.ts`'s data-driven `providerFor` already reads out of

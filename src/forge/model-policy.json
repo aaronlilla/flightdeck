@@ -16,6 +16,10 @@
       "sonnet",
       "haiku"
     ],
+    "opus-5-5": [
+      "sonnet",
+      "haiku"
+    ],
     "opus": [
       "sonnet",
       "haiku"
@@ -27,6 +31,7 @@
   },
   "aliases": {
     "fable": "claude-fable-5",
+    "opus-5-5": "claude-opus-5-5",
     "opus": "claude-opus-5",
     "sonnet": "claude-sonnet-5",
     "haiku": "claude-haiku-4-5-20251001"
@@ -45,6 +50,12 @@
   ],
   "prices": {
     "fable": {
+      "input": 15.0,
+      "cacheRead": 1.5,
+      "cacheWrite": 18.75,
+      "output": 75.0
+    },
+    "opus-5-5": {
       "input": 15.0,
       "cacheRead": 1.5,
       "cacheWrite": 18.75,
@@ -69,10 +80,23 @@
       "output": 5.0
     }
   },
+  "_standing_order_comment": [
+    "Aaron, 2026-09-23: full autonomous mode is the permanent default. Every audit/",
+    "review class (audit-lens, audit-judge, bug-hunt, and any council member added",
+    "later) runs on provider claude, model opus-5-5, and nothing else -- no codex",
+    "lane, no sonnet fallback for an audit. A clean audit plus a clean bug hunt plus",
+    "green CI merges the PR with no human input on every repo named in",
+    "FORGE_COUNCIL_AUTOMERGE / FORGE_QUEUE_MERGE_REPOS, except a repo marked controlled,",
+    "which always stops at a draft PR for Joe because merging the controlled .NET",
+    "backend needs another person. Jira updates (In Review, assign Haiping, a",
+    "comment in Aaron's voice) run right after the merge, unattended.",
+    "console.env.cmd's FORGE_COUNCIL_CODEX=always line should be removed: the",
+    "council no longer reads it (see council/orchestrate.ts) so it is dead config."
+  ],
   "_provider_comment": [
     "P3.2: which side reasons a class, added 2026-09-04 for the Governor stream. The",
-    "runtime master and planner run on gpt-6-astra through Codex, read-only, per the",
-    "13:20 decision; everything that implements, verifies, researches, audits or",
+    "runtime master and planner run on Claude Opus 5.5 at medium effort (Aaron,",
+    "2026-09-23); everything that implements, verifies, researches, audits or",
     "evaluates runs on Claude. A class with no provider field defaults to claude in",
     "policy.ts's providerFor()."
   ],
@@ -104,17 +128,19 @@
   ],
   "classes": {
     "triage": {"model": "sonnet", "effort": "low", "maxContext": 60000, "maxTurns": 20, "provider": "claude", "maxWallMs": 1800000},
-    "plan": {"model": "fable", "effort": "high", "maxContext": 200000, "maxTurns": 60, "provider": "codex", "maxWallMs": 5400000},
-    "master": {"model": "fable", "effort": "medium", "maxContext": 30000, "maxTurns": 40, "provider": "codex", "maxWallMs": 3600000},
+    "plan": {"model": "opus-5-5", "effort": "medium", "maxContext": 200000, "maxTurns": 60, "provider": "claude", "maxWallMs": 5400000},
+    "master": {"model": "opus-5-5", "effort": "medium", "maxContext": 30000, "maxTurns": 40, "provider": "claude", "maxWallMs": 3600000},
     "implement": {"model": "sonnet", "effort": "medium", "maxContext": 150000, "maxTurns": 120, "provider": "claude", "maxWallMs": 10800000},
-    "implement-hard": {"model": "opus", "effort": "high", "maxContext": 150000, "maxTurns": 120, "provider": "claude", "maxWallMs": 10800000},
+    "implement-light": {"model": "haiku", "effort": "low", "maxContext": 75000, "maxTurns": 60, "provider": "claude", "maxWallMs": 5400000},
+    "implement-hard": {"model": "opus-5-5", "effort": "high", "maxContext": 150000, "maxTurns": 120, "provider": "claude", "maxWallMs": 10800000},
     "verify": {"model": "sonnet", "effort": "medium", "maxContext": 120000, "maxTurns": 40, "provider": "claude", "maxWallMs": 3600000},
-    "audit-lens": {"model": "sonnet", "effort": "medium", "maxContext": 120000, "maxTurns": 40, "provider": "codex", "timeoutMs": 480000, "maxWallMs": 3600000},
-    "audit-judge": {"model": "opus", "effort": "high", "maxContext": 150000, "maxTurns": 30, "provider": "codex", "maxWallMs": 2700000},
+    "audit-lens": {"model": "opus-5-5", "effort": "medium", "maxContext": 120000, "maxTurns": 40, "provider": "claude", "timeoutMs": 480000, "maxWallMs": 3600000},
+    "audit-judge": {"model": "opus-5-5", "effort": "high", "maxContext": 150000, "maxTurns": 30, "provider": "claude", "maxWallMs": 2700000},
+    "bug-hunt": {"model": "opus-5-5", "effort": "high", "maxContext": 150000, "maxTurns": 40, "provider": "claude", "maxWallMs": 3600000},
     "research": {"model": "sonnet", "effort": "medium", "maxContext": 150000, "maxTurns": 40, "provider": "claude", "maxWallMs": 3600000},
     "evaluate": {"model": "haiku", "effort": "low", "maxContext": 30000, "maxTurns": 6, "provider": "claude", "maxWallMs": 540000},
     "narrate": {"model": "haiku", "effort": "low", "maxContext": 20000, "maxTurns": 1, "provider": "claude", "timeoutMs": 180000, "maxCallsPerHour": 300, "maxWallMs": 120000},
-    "sweep": {"model": "sonnet", "effort": "low", "maxContext": 80000, "maxTurns": 20, "provider": "claude", "maxWallMs": 1800000},
+    "sweep": {"model": "haiku", "effort": "low", "maxContext": 80000, "maxTurns": 20, "provider": "claude", "maxWallMs": 1800000},
     "drift-judge": {"model": "haiku", "effort": "low", "maxContext": 30000, "maxTurns": 1, "provider": "claude", "timeoutMs": 60000, "maxWallMs": 120000},
     "drift-confirm": {"model": "sonnet", "effort": "medium", "maxContext": 30000, "maxTurns": 1, "provider": "claude", "timeoutMs": 120000, "maxWallMs": 120000},
     "plan-ticket": {"model": "sonnet", "effort": "medium", "maxContext": 60000, "maxTurns": 1, "provider": "claude", "maxWallMs": 1800000}
@@ -133,10 +159,12 @@
       "plan": 20,
       "master": 10,
       "implement": 30,
+      "implement-light": 10,
       "implement-hard": 75,
       "verify": 15,
       "audit-lens": 15,
       "audit-judge": 25,
+      "bug-hunt": 20,
       "research": 15,
       "evaluate": 3,
       "narrate": 2,
@@ -150,6 +178,8 @@
     "opus": "implement-hard",
     "hard": "implement-hard",
     "sonnet": "implement",
+    "standard": "implement",
+    "light": "implement-light",
     "default": "implement"
   },
   "subagents": {
@@ -181,20 +211,16 @@
     "turnsWithoutWrite": 30
   },
   "_reasoner_comment": [
-    "Added for Forge Intake (P4.3). astra: off is the shipped default -- the Intake",
-    "planner's plan seam always resolves to claude while this is off. Only",
-    "planning-only turns astra on, per the 2026-09-04 16:40 amendment (Aaron: limit",
-    "astra to what absolutely matters). No stream build, test, lens or review calls",
-    "astra regardless of this flag. timeoutMs bounds one Reasoner.call (P4.7/I4);",
-    "a call that outruns it is journaled as reasoner.timeout rather than left hanging."
+    "Added for Forge Intake (P4.3). The Intake planner always reasons on claude.",
+    "timeoutMs bounds one Reasoner.call (P4.7/I4); a call that outruns it is journaled",
+    "as reasoner.timeout rather than left hanging."
   ],
   "reasoner": {
-    "astra": "off",
     "timeoutMs": 120000
   },
   "_council_comment": [
-    "forge-council-live: codex stays off by default (Aaron 2026-09-04 16:40: astra and",
-    "Codex are limited to what absolutely matters). allowedRepos and autoMerge are left",
+    "forge-council-live: codex stays off by default (Aaron 2026-09-04 16:40: Codex is",
+    "limited to what absolutely matters). allowedRepos and autoMerge are left",
     "empty here on purpose -- this file is checked in and flightdeck stays project",
     "agnostic (npm run check:agnostic scans every tracked file for a real repo name),",
     "so a real entry for either list lives only in an operator's own environment",

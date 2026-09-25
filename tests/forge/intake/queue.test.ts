@@ -16,7 +16,7 @@ import { describe, expect, it } from 'vitest';
 import type { ChainCouncilFn, ChainGateFn, ChainGh, ChainLauncher, ChainRunStatus } from '../../../src/forge/chain.js';
 import {
   addBacklogItems, addBriefItem, addGoalItem, addHotfixItem, addQueryItems, addTicketItem, advanceItem, mergeItem, promoteItem,
-  PENDING_CHECKS_POLL_CAP, QUEUE_IN_FLIGHT_STATES, removeItem, retryItem, runQueueTick,
+  PENDING_CHECKS_POLL_CAP, QUEUE_IN_FLIGHT_STATES, removeItem, requeueStuckItem, retryItem, runQueueTick,
   type QueuePlanner, type QueueRuntimeDeps, type QueueTicketSearch,
 } from '../../../src/forge/intake/queue.js';
 import { QueueStore } from '../../../src/forge/intake/queueStore.js';
@@ -43,6 +43,8 @@ interface FixtureOverrides {
   postMergeVerify?: QueueRuntimeDeps['postMergeVerify'];
   repoRunsChecks?: QueueRuntimeDeps['repoRunsChecks'];
   runRepoVerify?: QueueRuntimeDeps['runRepoVerify'];
+  bugHunt?: QueueRuntimeDeps['bugHunt'];
+  relaunchForFixRound?: QueueRuntimeDeps['relaunchForFixRound'];
 }
 
 function buildDeps(store: QueueStore, overrides: FixtureOverrides = {}): { deps: QueueRuntimeDeps; events: Record<string, unknown>[] } {
@@ -87,6 +89,8 @@ function buildDeps(store: QueueStore, overrides: FixtureOverrides = {}): { deps:
     ...(overrides.postMergeVerify ? { postMergeVerify: overrides.postMergeVerify } : {}),
     ...(overrides.repoRunsChecks ? { repoRunsChecks: overrides.repoRunsChecks } : {}),
     ...(overrides.runRepoVerify ? { runRepoVerify: overrides.runRepoVerify } : {}),
+    ...(overrides.bugHunt ? { bugHunt: overrides.bugHunt } : {}),
+    ...(overrides.relaunchForFixRound ? { relaunchForFixRound: overrides.relaunchForFixRound } : {}),
   };
   return { deps, events };
 }
@@ -428,6 +432,38 @@ describe('removeItem / retryItem', () => {
     const retried = retryItem(store, 'q1', 2000);
     expect(retried?.state).toBe('running');
     expect(QUEUE_IN_FLIGHT_STATES).toContain(retried?.state);
+  });
+});
+
+describe('Plan item 4: requeueStuckItem', () => {
+  it('parks a running item under the killed runKey, then relaunches it like a machine retry', () => {
+    const store = tempStore();
+    store.append({
+      id: 'q1', at: 1000, source: 'ticket', input: 'ABC-1', ticket: 'ABC-1', repo: 'owner/name',
+      briefPath: 'C:/briefs/abc-1.md', branch: 'feature/abc-1', worktreePath: '/wt/abc-1', base: 'main',
+      state: 'running', reason: null, runKey: 'run-stuck-1', pr: null,
+      journalIds: [], createdAt: 1000, updatedAt: 1000,
+    });
+
+    const requeued = requeueStuckItem(store, 'run-stuck-1', 5000);
+
+    expect(requeued?.state).toBe('running');
+    expect(requeued?.runKey).toBe('run-stuck-1');
+    // A machine-driven requeue, not a person's retry: retryItem's `askedByAPerson: false`
+    // path never resets recoveryAttempts/checksReads/pendingGatePolls to zero.
+    expect(requeued).not.toHaveProperty('recoveryAttempts', 0);
+  });
+
+  it('returns undefined and touches nothing when no item is running under that runKey', () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const before = store.all();
+
+    const requeued = requeueStuckItem(store, 'a-run-key-nothing-owns', 5000);
+
+    expect(requeued).toBeUndefined();
+    expect(store.all()).toEqual(before);
+    expect(item.state).toBe('queued');
   });
 });
 
@@ -788,7 +824,112 @@ describe('advanceItem', () => {
     expect(result.reason).toMatch(/nothing proving the work is good/);
     expect(result.state).toBe('parked');
   });
+});
 
+describe('BUG B: the queue ships a worker\'s unfinished commit/push/PR on the host', () => {
+  it('ships a worktree with real changes and no PR: commits, pushes, opens a draft PR', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    let shipInput: { item: { id: string; worktreePath: string; branch: string; repo: string; base: string } } | undefined;
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', lastText: 'finished the change' }) },
+      gh: { findPrByHead: async () => undefined },
+    });
+    deps.shipUnfinishedWork = async (input) => {
+      shipInput = input as typeof shipInput extends undefined ? never : NonNullable<typeof shipInput>;
+      return { ok: true, pr: { number: 42, url: 'https://github.com/owner/name/pull/42' } };
+    };
+
+    let current = item;
+    current = await advanceItem(current, deps); // plan
+    current = await advanceItem(current, deps); // launch
+    const result = await advanceItem(current, deps); // gate -> no PR found -> ship -> review
+
+    expect(shipInput?.item.id).toBe(item.id);
+    expect(shipInput?.item.worktreePath).toBeTruthy();
+    expect(shipInput?.item.branch).toBeTruthy();
+    expect(result.state).not.toBe('parked');
+    expect(result.pr?.no).toBe(42);
+  });
+
+  it('journals queue.shipped when the ship succeeds', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const events: string[] = [];
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done' }) },
+      gh: { findPrByHead: async () => undefined },
+    });
+    const base = deps.append;
+    deps.append = (event) => { events.push(String(event['event'])); return base(event); };
+    deps.shipUnfinishedWork = async () => ({ ok: true, pr: { number: 7, url: 'https://github.com/owner/name/pull/7' } });
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    await advanceItem(current, deps);
+
+    expect(events).toContain('queue.shipped');
+  });
+
+  it('still parks, unchanged, when the worktree has nothing to ship', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done' }) },
+      gh: { findPrByHead: async () => undefined },
+    });
+    deps.shipUnfinishedWork = async () => ({ ok: false });
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    const result = await advanceItem(current, deps);
+
+    expect(result.state).toBe('parked');
+    expect(result.reason).toMatch(/no PR was found/);
+  });
+
+  it('journals queue.ship-failed and still parks when a real ship attempt fails', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const events: { event: string; reason?: unknown }[] = [];
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done' }) },
+      gh: { findPrByHead: async () => undefined },
+    });
+    const base = deps.append;
+    deps.append = (event) => { events.push({ event: String(event['event']), reason: event['reason'] }); return base(event); };
+    deps.shipUnfinishedWork = async () => ({ ok: false, reason: 'could not push feature/abc-1: refused' });
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    const result = await advanceItem(current, deps);
+
+    expect(result.state).toBe('parked');
+    expect(events.some((e) => e.event === 'queue.ship-failed' && String(e.reason).includes('refused'))).toBe(true);
+  });
+
+  it('no shipUnfinishedWork dep wired: behaves exactly as before (parks)', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done' }) },
+      gh: { findPrByHead: async () => undefined },
+    });
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    const result = await advanceItem(current, deps);
+
+    expect(result.state).toBe('parked');
+    expect(result.reason).toMatch(/no PR was found/);
+  });
+});
+
+describe('gate: pending checks and no-CI repos', () => {
   // BBZ-60/62/74/202, 2026-09-08: four items reached the gate hop while their PR checks
   // were still queued and parked with the council's raw "checks are pending" refusal --
   // every one of them went green minutes later, but a parked item never retries and
@@ -1136,7 +1277,7 @@ describe('advanceItem', () => {
   });
 });
 
-describe('fix round: FIX FIRST relaunches once, a second parks', () => {
+describe('fix round: FIX FIRST relaunches up to the cap, then parks (2026-09-23: cap 6, was 1)', () => {
   it('relaunches the worker on the first FIX FIRST, carrying the findings as its brief', async () => {
     const store = tempStore();
     const item = addTicketItem(store, 'ABC-1', 1000);
@@ -1159,7 +1300,7 @@ describe('fix round: FIX FIRST relaunches once, a second parks', () => {
     expect(relaunchInput?.item.id).toBe(item.id);
   });
 
-  it('parks on a second consecutive FIX FIRST rather than relaunching a second time', async () => {
+  it('relaunches through the cap (6) and parks only on the 7th consecutive FIX FIRST', async () => {
     const store = tempStore();
     const item = addTicketItem(store, 'ABC-1', 1000);
     const { deps } = buildDeps(store, {
@@ -1170,15 +1311,20 @@ describe('fix round: FIX FIRST relaunches once, a second parks', () => {
     deps.relaunchForFixRound = async () => { relaunchCalls += 1; return { runKey: `fix-${relaunchCalls}` }; };
 
     let current = item;
-    current = await advanceItem(current, deps);
-    current = await advanceItem(current, deps);
-    current = await advanceItem(current, deps); // first FIX FIRST -> fix round
-    current = await advanceItem(current, deps); // second FIX FIRST -> park
+    current = await advanceItem(current, deps); // plan
+    current = await advanceItem(current, deps); // launch
+    for (let round = 1; round <= 6; round += 1) {
+      current = await advanceItem(current, deps); // FIX FIRST -> fix round
+      expect(current.state).toBe('running');
+      expect(current.fixRoundsUsed).toBe(round);
+    }
+    current = await advanceItem(current, deps); // 7th consecutive FIX FIRST -> park
 
     expect(current.state).toBe('parked');
-    expect(current.fixRoundsUsed).toBe(1);
-    expect(relaunchCalls).toBe(1);
+    expect(current.fixRoundsUsed).toBe(6);
+    expect(relaunchCalls).toBe(6);
     expect(current.reason).toContain('FIX FIRST');
+    expect(current.reason).toContain('cap 6');
   });
 
   it('coverage-missing always parks, never spawns a fix round', async () => {
@@ -1215,6 +1361,256 @@ describe('fix round: FIX FIRST relaunches once, a second parks', () => {
     current = await advanceItem(current, deps);
 
     expect(current.state).toBe('parked');
+  });
+});
+
+describe('BBZ-386/PR #219: a fix round never re-reviews an unchanged PR head', () => {
+  it('parks a fix round whose head never moved, instead of calling the council again', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    let councilCalls = 0;
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1', startedAt: 1500 }) },
+      council: async () => { councilCalls += 1; return { verdict: 'FIX FIRST', findingsText: 'bad thing' }; },
+      gh: { headSha: async () => 'sha-unchanged' },
+    });
+    deps.relaunchForFixRound = async () => ({ runKey: 'abc-1' });
+
+    let current = item;
+    current = await advanceItem(current, deps); // plan
+    current = await advanceItem(current, deps); // launch
+    current = await advanceItem(current, deps); // gate -> council FIX FIRST -> fix round (stamps lastCouncilHead)
+    expect(current.state).toBe('running');
+    expect(current.lastCouncilHead).toBe('sha-unchanged');
+    expect(councilCalls).toBe(1);
+
+    // The worker could not push -- the same head comes back. The next tick must park
+    // without calling the council a second time on the identical diff.
+    const result = await advanceItem(current, deps);
+    expect(result.state).toBe('parked');
+    expect(result.reason).toMatch(/made no change to the pull request/);
+    expect(result.reason).toContain('sha-unchanged');
+    expect(councilCalls).toBe(1);
+  });
+
+  it('a fix round whose head DID move goes on to a real re-review', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    let councilCalls = 0;
+    let headShaCalls = 0;
+    const heads = ['sha-1', 'sha-2'];
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1', startedAt: 1500 }) },
+      council: async () => {
+        councilCalls += 1;
+        return councilCalls === 1 ? { verdict: 'FIX FIRST', findingsText: 'bad thing' } : { verdict: 'PASS' };
+      },
+      gh: { headSha: async () => { const head = heads[headShaCalls] ?? heads[heads.length - 1]; headShaCalls += 1; return head; } },
+    });
+    deps.relaunchForFixRound = async () => ({ runKey: 'abc-1' });
+
+    let current = item;
+    current = await advanceItem(current, deps); // plan
+    current = await advanceItem(current, deps); // launch
+    current = await advanceItem(current, deps); // gate -> FIX FIRST -> fix round, lastCouncilHead = sha-1
+    expect(current.lastCouncilHead).toBe('sha-1');
+
+    const result = await advanceItem(current, deps); // head moved to sha-2 -> real re-review -> PASS
+    expect(councilCalls).toBe(2);
+    expect(result.state).not.toBe('parked');
+  });
+
+  it('does not treat the run as finished until a run.started newer than the fix round exists', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    let councilCalls = 0;
+    let freshRunStarted = false;
+    const { deps } = buildDeps(store, {
+      launcher: {
+        status: async () => (
+          // The first post-relaunch poll still reads the OLD run's stale startedAt
+          // (500, before the fix round fired at clock=1000); the queue must not act on
+          // it. The next poll shows a fresh run.started (1500) and is honoured.
+          freshRunStarted
+            ? { finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1', startedAt: 1500 }
+            : { finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1', startedAt: 500 }
+        ),
+      },
+      council: async () => { councilCalls += 1; return councilCalls === 1 ? { verdict: 'FIX FIRST', findingsText: 'x' } : { verdict: 'PASS' }; },
+      gh: { headSha: async () => (freshRunStarted ? 'sha-after-fix' : 'sha-before-fix') },
+    });
+    deps.relaunchForFixRound = async () => ({ runKey: 'abc-1' });
+
+    let current = item;
+    current = await advanceItem(current, deps); // plan
+    current = await advanceItem(current, deps); // launch (freshRunStarted false, startedAt 500 < no fixRoundAt yet -> proceeds)
+    freshRunStarted = false;
+    current = await advanceItem(current, deps); // gate -> FIX FIRST -> fix round (clock 1000)
+    expect(current.fixRoundAt).toBe(1_000);
+
+    // Stale status (startedAt 500 < fixRoundAt 1000): the item must not advance.
+    const stillWaiting = await advanceItem(current, deps);
+    expect(stillWaiting.runKey).toBe(current.runKey);
+    expect(councilCalls).toBe(1);
+
+    // Simulate the fresh run.started landing.
+    freshRunStarted = true;
+    const advanced = await advanceItem(current, deps);
+    expect(councilCalls).toBe(2);
+    expect(advanced.state).not.toBe('parked');
+  });
+
+  it('parks a fix round whose relaunch never started and has no live worker (BBZ-386, 2026-09-24)', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    let councilCalls = 0;
+    let now = 1_000;
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1', startedAt: 500 }) },
+      council: async () => { councilCalls += 1; return { verdict: 'FIX FIRST', findingsText: 'x' }; },
+      gh: { headSha: async () => 'sha-before-fix' },
+    });
+    deps.clock = () => now;
+    deps.relaunchForFixRound = async () => ({ runKey: 'abc-1' });
+    deps.runPid = () => undefined;
+
+    let current = item;
+    current = await advanceItem(current, deps); // plan
+    current = await advanceItem(current, deps); // launch
+    current = await advanceItem(current, deps); // gate -> FIX FIRST -> fix round at clock 1000
+    expect(current.fixRoundAt).toBe(1_000);
+
+    // Inside the grace window the wait still holds: the relaunch may be registering.
+    now = 1_000 + 60_000;
+    expect((await advanceItem(current, deps)).state).toBe('running');
+
+    // Past it, with no process behind the run, nothing will ever start it: park.
+    now = 1_000 + 11 * 60_000;
+    const parked = await advanceItem(current, deps);
+    expect(parked.state).toBe('parked');
+    expect(parked.reason).toMatch(/fix-round relaunch never started/);
+    expect(councilCalls).toBe(1);
+  });
+});
+
+describe('bug hunt: runs after a clean council, before merge (2026-09-23 standing order)', () => {
+  it('a clean bug hunt lets a cleared item reach review/merge as before', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    let bugHuntCalls = 0;
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'PASS' }),
+      bugHunt: async () => { bugHuntCalls += 1; return { clean: true }; },
+    });
+
+    let current = item;
+    current = await advanceItem(current, deps); // plan
+    current = await advanceItem(current, deps); // launch
+    current = await advanceItem(current, deps); // gate -> bug hunt -> review
+
+    expect(bugHuntCalls).toBe(1);
+    expect(current.state).not.toBe('parked');
+    expect(current.bugHuntClearedAt).toBe(1_000);
+  });
+
+  it('a dirty bug hunt relaunches the worker exactly like a council FIX FIRST does', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    let relaunchInput: { item: { id: string }; findings: string } | undefined;
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'PASS' }),
+      bugHunt: async () => ({ clean: false, findingsText: '[high/high] src/x.ts:1 -- unbounded retry loop' }),
+      relaunchForFixRound: async (input) => { relaunchInput = input; return { runKey: 'abc-1-bughunt-1' }; },
+    });
+
+    let current = item;
+    current = await advanceItem(current, deps); // plan
+    current = await advanceItem(current, deps); // launch
+    const result = await advanceItem(current, deps); // gate -> council PASS -> bug hunt dirty -> fix round
+
+    expect(result.state).toBe('running');
+    expect(result.fixRoundsUsed).toBe(1);
+    expect(result.runKey).toBe('abc-1-bughunt-1');
+    expect(relaunchInput?.findings).toContain('unbounded retry loop');
+    expect(result.bugHuntClearedAt).toBeUndefined();
+  });
+
+  it('a fix round clears the last run\'s block and gives it a fresh clock before relaunching', async () => {
+    // BBZ-386/388, 2026-09-23: the relaunch was refused overnight with "Running 3.0 h,
+    // expected 3.0 h" because the block and the wall clock from the first run carried over.
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const order: string[] = [];
+    const { deps, events: rows } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'FIX FIRST', findingsText: 'x' }),
+      clearRunBlock: (runKey: string) => { order.push(`clear:${runKey}`); },
+      relaunchForFixRound: async () => { order.push('relaunch'); return { runKey: 'k-2' }; },
+    });
+
+    let current = item;
+    current = await advanceItem(current, deps); // plan
+    current = await advanceItem(current, deps); // launch
+    const runKey = current.runKey!;
+    await advanceItem(current, deps); // gate -> FIX FIRST -> fix round
+
+    expect(order.slice(-2)).toEqual([`clear:${runKey}`, 'relaunch']);
+    expect(rows.some((r) => r['event'] === 'queue.fix-round-start' && r['previousRunKey'] === runKey)).toBe(true);
+  });
+
+  it('a dirty bug hunt with the fix-round cap already used parks instead of relaunching again', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'PASS' }),
+      bugHunt: async () => ({ clean: false, findingsText: 'still broken' }),
+    });
+
+    let current: typeof item = { ...item, fixRoundsUsed: 6 };
+    current = await advanceItem(current, deps); // plan
+    current = await advanceItem(current, deps); // launch
+    current = await advanceItem(current, deps); // gate -> council PASS -> bug hunt dirty -> cap reached -> park
+
+    expect(current.state).toBe('parked');
+    expect(current.reason).toContain('bug hunt found a defect');
+  });
+
+  it('a bug hunt that already cleared this head is never run twice', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    let bugHuntCalls = 0;
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'PASS' }),
+      bugHunt: async () => { bugHuntCalls += 1; return { clean: true }; },
+    });
+
+    let current: typeof item = { ...item, bugHuntClearedAt: 999 };
+    current = await advanceItem(current, deps); // plan
+    current = await advanceItem(current, deps); // launch
+    await advanceItem(current, deps); // gate -> bug hunt already cleared, skipped
+
+    expect(bugHuntCalls).toBe(0);
+  });
+
+  it('no bugHunt dep wired: a cleared council goes straight through, the pre-standing-order behaviour', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'PASS' }),
+    });
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.state).not.toBe('parked');
+    expect(current.bugHuntClearedAt).toBeUndefined();
   });
 });
 
@@ -1729,6 +2125,78 @@ describe('runQueueTick', () => {
 
     expect(calls).toBe(1);
   });
+
+  // Finding #1/#6: `advanceItem` for independent items used to run one after another
+  // inside a `for` loop with `await` in the body -- a council/gate round on item A held
+  // up item B's launch even though nothing connects them. Two items admitted into the
+  // same tick must overlap in flight, not queue behind each other.
+  it('advances independent in-flight items concurrently, not one after another', async () => {
+    const store = tempStore();
+    store.append({
+      id: 'q1', at: 1000, source: 'ticket', input: 'A-1', ticket: 'A-1', repo: 'owner/name',
+      briefPath: 'C:/briefs/a-1.md', branch: 'feature/a-1', worktreePath: 'C:/worktrees/repo--a-1', base: 'develop',
+      state: 'running', runKey: 'a-1', reason: null, pr: null, journalIds: [], createdAt: 1000, updatedAt: 1000,
+    });
+    store.append({
+      id: 'q2', at: 1000, source: 'ticket', input: 'A-2', ticket: 'A-2', repo: 'owner/name',
+      briefPath: 'C:/briefs/a-2.md', branch: 'feature/a-2', worktreePath: 'C:/worktrees/repo--a-2', base: 'develop',
+      state: 'running', runKey: 'a-2', reason: null, pr: null, journalIds: [], createdAt: 1000, updatedAt: 1000,
+    });
+    let inFlightAtOnce = 0;
+    let maxInFlightAtOnce = 0;
+    const releases: Array<() => void> = [];
+    const { deps } = buildDeps(store, {
+      maxInFlight: () => 2,
+      launcher: {
+        status: async () => {
+          inFlightAtOnce += 1;
+          maxInFlightAtOnce = Math.max(maxInFlightAtOnce, inFlightAtOnce);
+          await new Promise<void>((resolve) => releases.push(resolve));
+          inFlightAtOnce -= 1;
+          return { finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' };
+        },
+      },
+    });
+
+    const tick = runQueueTick(deps, store.all());
+    // Give both `status` calls a chance to have started before either resolves.
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(maxInFlightAtOnce).toBe(2);
+    releases.forEach((release) => release());
+    await tick;
+  });
+
+  // Finding #6/#9: the merged-elsewhere sweep walked every `review` item with
+  // `await deps.prMerged(...)` inside a `for` loop, so N review items meant N sequential
+  // GitHub round-trips every two minutes. Bounded concurrency should let independent
+  // `prMerged` checks overlap.
+  it('checks merged-review items with bounded concurrency, not one after another', async () => {
+    const { resetMergedSweep } = await import('../../../src/forge/intake/queue.js');
+    resetMergedSweep();
+    const store = tempStore();
+    const item1 = addTicketItem(store, 'ABC-1', 1000);
+    store.append({ id: item1.id, at: 2000, state: 'review', repo: 'owner/name', pr: { no: 201, url: 'u', files: 1, add: 1, del: 0, draft: true }, updatedAt: 2000 } as never);
+    const item2 = addTicketItem(store, 'ABC-2', 1000);
+    store.append({ id: item2.id, at: 2000, state: 'review', repo: 'owner/name', pr: { no: 202, url: 'u', files: 1, add: 1, del: 0, draft: true }, updatedAt: 2000 } as never);
+
+    let inFlightAtOnce = 0;
+    let maxInFlightAtOnce = 0;
+    const { deps } = buildDeps(store, {});
+    deps.prMerged = async (_repo, pr) => {
+      inFlightAtOnce += 1;
+      maxInFlightAtOnce = Math.max(maxInFlightAtOnce, inFlightAtOnce);
+      await new Promise((resolve) => setImmediate(resolve));
+      inFlightAtOnce -= 1;
+      return pr === 201 || pr === 202;
+    };
+
+    await runQueueTick(deps, store.all());
+
+    expect(maxInFlightAtOnce).toBeGreaterThan(1);
+    expect(store.get(item1.id)?.state).toBe('done');
+    expect(store.get(item2.id)?.state).toBe('done');
+  });
 });
 describe('a branch must sit on the latest base before anyone reviews it', () => {
   // Aaron, 2026-09-07. A queue that runs for hours branches off a base that keeps moving,
@@ -1911,6 +2379,38 @@ describe('mergeItem: A.7', () => {
     });
     await new Promise((r) => setTimeout(r, 0));
     expect(rows[1]).toMatchObject({ id: item.id, reason: 'merged; deploy run not found after 30 minutes' });
+  });
+
+  it('plan item 5: raises a board blocker naming the ticket and PR when the deploy run never turns up', async () => {
+    const item = reviewItem();
+    const raised: Array<{ item: { id: string }; pr: { no: number; url: string } }> = [];
+    await mergeItem(item, {
+      mergeAllowed: () => true,
+      gate: async () => ({ merged: true }),
+      postMergeVerify: async () => undefined,
+      raiseDeployBlocker: async (input) => { raised.push(input); },
+      clock: () => 3000,
+      store: { append: () => {} } as never,
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(raised).toHaveLength(1);
+    expect(raised[0]?.item.id).toBe(item.id);
+    expect(raised[0]?.pr).toEqual({ no: 9, url: 'https://github.com/owner/name/pull/9' });
+  });
+
+  it('plan item 5: never raises the deploy blocker once the deploy run is found', async () => {
+    const item = reviewItem();
+    const raised: unknown[] = [];
+    await mergeItem(item, {
+      mergeAllowed: () => true,
+      gate: async () => ({ merged: true }),
+      postMergeVerify: async () => ({ android: 'update abc', ios: 'update def' }),
+      raiseDeployBlocker: async (input) => { raised.push(input); },
+      clock: () => 3000,
+      store: { append: () => {} } as never,
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(raised).toHaveLength(0);
   });
 
   it('marks the item mergedBy: queue at once so the merged-elsewhere sweep never relabels it (BBZ-178)', async () => {
@@ -2360,5 +2860,63 @@ describe('the gate hop never parks a run whose process is alive', () => {
     } finally {
       if (worker.exitCode === null && worker.signalCode === null) worker.kill();
     }
+  });
+});
+
+// A queue item stuck reading `running` while its run had already ended -- a worker
+// killed outside the Warden's own path, or a handoff whose successor died before it
+// could journal `run.finished` -- read `started`/`paused`/`handed-off` forever by
+// `status.finished`, and nothing else in `advanceItem` ever revisited that verdict.
+// BBZ-354/BBZ-387/BBZ-342/BBZ-386/BBZ-388/BBZ-74/BBZ-304/BBZ-343 all sat this way.
+describe('a running item whose run never reports finished reconciles against liveness', () => {
+  it('parks an item whose run key has no live process behind it', async () => {
+    const store = tempStore();
+    const added = addTicketItem(store, 'BBZ-343', 1000);
+    const runKey = 'queue-BBZ-343-Q-ceffa11b';
+    store.append({
+      id: added.id, at: 1100, state: 'running', ticket: 'BBZ-343', repo: 'owner/name',
+      briefPath: 'C:/briefs/BBZ-343.md', runKey, branch: 'feature/bbz-343', updatedAt: 1100,
+    });
+    const { deps } = buildDeps(store, { launcher: { status: async () => ({ finished: false }) } });
+    // No process is alive under this run key -- the registry row is gone or its pid is dead.
+    deps.runPid = () => undefined;
+
+    const result = await advanceItem(store.get(added.id)!, deps);
+
+    expect(result.state).toBe('parked');
+    expect(result.reason).toContain(runKey);
+    expect(store.get(added.id)!.state).toBe('parked');
+  });
+
+  it('leaves the item running when no liveness check is wired at all (fail standing-down, not parked)', async () => {
+    const store = tempStore();
+    const added = addTicketItem(store, 'BBZ-343', 1000);
+    const runKey = 'queue-BBZ-343-Q-ceffa11b';
+    store.append({
+      id: added.id, at: 1100, state: 'running', ticket: 'BBZ-343', repo: 'owner/name',
+      briefPath: 'C:/briefs/BBZ-343.md', runKey, branch: 'feature/bbz-343', updatedAt: 1100,
+    });
+    const { deps } = buildDeps(store, { launcher: { status: async () => ({ finished: false }) } });
+    // deps.runPid left unset entirely: this environment cannot tell.
+
+    const result = await advanceItem(store.get(added.id)!, deps);
+
+    expect(result.state).toBe('running');
+  });
+
+  it('still holds the item running while its process really is alive', async () => {
+    const store = tempStore();
+    const added = addTicketItem(store, 'BBZ-343', 1000);
+    const runKey = 'queue-BBZ-343-Q-ceffa11b';
+    store.append({
+      id: added.id, at: 1100, state: 'running', ticket: 'BBZ-343', repo: 'owner/name',
+      briefPath: 'C:/briefs/BBZ-343.md', runKey, branch: 'feature/bbz-343', updatedAt: 1100,
+    });
+    const { deps } = buildDeps(store, { launcher: { status: async () => ({ finished: false }) } });
+    deps.runPid = () => 41412;
+
+    const result = await advanceItem(store.get(added.id)!, deps);
+
+    expect(result.state).toBe('running');
   });
 });

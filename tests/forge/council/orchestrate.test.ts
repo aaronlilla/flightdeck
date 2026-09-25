@@ -1,11 +1,18 @@
 /**
- * The orchestrator that composes the lens/Codex/judge roles into one council round. Every
- * role is a fake: no model call, no Codex call, anywhere in this file.
+ * The orchestrator that composes the lens/judge roles into one council round. Every role
+ * is a fake: no model call anywhere in this file.
+ *
+ * Aaron's 2026-09-23 standing order (full autonomous mode): the council has no Codex lane
+ * any more (`orchestrate.ts`'s own 2026-09-23 comment) -- every specimen that used to
+ * drive a `CodexLane` fake now only exercises the lens/judge pair. `forceCodex` is still
+ * accepted on the input shape for backward compatibility with existing callers, but it is
+ * silently ignored, so the specimen that used to prove it forced Codex on now proves the
+ * opposite: it changes nothing about the round.
  */
 import { describe, expect, it } from 'vitest';
 
 import { runCouncilRound } from '../../../src/forge/council/orchestrate.ts';
-import type { LensRunner, CodexLane, Judge } from '../../../src/forge/council/roles.ts';
+import type { LensRunner, Judge } from '../../../src/forge/council/roles.ts';
 import type { CouncilLensReport } from '../../../src/forge/contracts.ts';
 
 function fakeLensRunner(reportsByLens: Record<string, CouncilLensReport>): LensRunner {
@@ -16,43 +23,24 @@ function fakeLensRunner(reportsByLens: Record<string, CouncilLensReport>): LensR
   };
 }
 
-function fakeCodexLane(findings: CouncilLensReport['findings']): CodexLane {
-  return { async run() { return { ran: true, findings }; } };
-}
-
 function fakeJudge(verdict: 'PASS' | 'PASS WITH NOTES' | 'FIX FIRST'): Judge {
   return { async decide() { return { verdict, decidingFindings: [] }; } };
 }
 
 describe('runCouncilRound', () => {
-  it('a small, non-risky diff runs one lens and skips Codex entirely', async () => {
+  it('a small, non-risky diff runs one lens and reads its verdict', async () => {
     const lensRunner = fakeLensRunner({ correctness: { lens: 'correctness', findings: [] } });
-    let codexCalled = false;
-    const codexLane: CodexLane = { async run() { codexCalled = true; return { ran: true, findings: [] }; } };
     const judge = fakeJudge('PASS');
 
     const result = await runCouncilRound(
       { brief: 'fix retry', diffSummary: 'small diff', changedLines: 10, paths: ['src/x.ts'], ci: { runId: 'r', headSha: 'a' } },
-      { lensRunner, codexLane, judge },
+      { lensRunner, judge },
     );
 
     expect(result.lensReports.length).toBe(1);
-    expect(codexCalled).toBe(false);
+    expect(result.codexRan).toBe(false);
+    expect(result.codexOnly).toEqual([]);
     expect(result.verdict).toBe('PASS');
-  });
-
-  it('a risky-path diff always runs Codex, regardless of size', async () => {
-    const lensRunner = fakeLensRunner({});
-    let codexCalled = false;
-    const codexLane: CodexLane = { async run() { codexCalled = true; return { ran: true, findings: [] }; } };
-    const judge = fakeJudge('PASS');
-
-    await runCouncilRound(
-      { brief: 'x', diffSummary: 'y', changedLines: 5, paths: ['src/features/wallet/pay.ts'], ci: { runId: 'r', headSha: 'a' } },
-      { lensRunner, codexLane, judge },
-    );
-
-    expect(codexCalled).toBe(true);
   });
 
   it('the judge input never carries the raw diffSummary text', async () => {
@@ -67,42 +55,19 @@ describe('runCouncilRound', () => {
         }],
       },
     });
-    const codexLane = fakeCodexLane([]);
     let seenInput: unknown;
     const judge: Judge = { async decide(input) { seenInput = input; return { verdict: 'PASS', decidingFindings: [] }; } };
 
     await runCouncilRound(
       { brief: 'x', diffSummary: 'RAW DIFF TEXT MUST NOT REACH THE JUDGE', changedLines: 5, paths: ['src/x.ts'], ci: { runId: 'r', headSha: 'a' } },
-      { lensRunner, codexLane, judge },
+      { lensRunner, judge },
     );
 
     expect(JSON.stringify(seenInput)).not.toContain('RAW DIFF TEXT');
   });
 
-  it('P5.7: forceCodex runs Codex on a small, non-risky diff that would otherwise skip it', async () => {
+  it('2026-09-23: forceCodex is accepted but changes nothing -- there is no Codex lane left', async () => {
     const lensRunner = fakeLensRunner({ correctness: { lens: 'correctness', findings: [] } });
-    let codexCalled = false;
-    const codexLane: CodexLane = { async run() { codexCalled = true; return { ran: true, findings: [] }; } };
-    const judge = fakeJudge('PASS');
-
-    await runCouncilRound(
-      {
-        brief: 'x', diffSummary: 'y', changedLines: 10, paths: ['src/x.ts'],
-        ci: { runId: 'r', headSha: 'a' }, forceCodex: true,
-      },
-      { lensRunner, codexLane, judge },
-    );
-
-    expect(codexCalled).toBe(true);
-  });
-
-  it('a forced round with a lane that did not run fails to clear and carries that finding', async () => {
-    const lensRunner = fakeLensRunner({ correctness: { lens: 'correctness', findings: [] } });
-    const codexLane: CodexLane = {
-      async run() { return { ran: false, findings: [], reason: 'the codex lane needs both cwd and baseRef' }; },
-    };
-    // The judge would clear this round on its own -- the gap has to override that,
-    // never merely hope the judge notices.
     const judge = fakeJudge('PASS');
 
     const result = await runCouncilRound(
@@ -110,28 +75,11 @@ describe('runCouncilRound', () => {
         brief: 'x', diffSummary: 'y', changedLines: 10, paths: ['src/x.ts'],
         ci: { runId: 'r', headSha: 'a' }, forceCodex: true,
       },
-      { lensRunner, codexLane, judge },
+      { lensRunner, judge },
     );
 
-    expect(result.verdict).toBe('FIX FIRST');
-    expect(result.decidingFindings.some((f) => f.claim.includes('Codex lane did not run'))).toBe(true);
-  });
-
-  it('the judge itself sees the gap: a forced round with a missing lane passes a codex-lens packet', async () => {
-    const lensRunner = fakeLensRunner({});
-    const codexLane: CodexLane = { async run() { return { ran: false, findings: [] }; } };
-    let seenInput: unknown;
-    const judge: Judge = { async decide(input) { seenInput = input; return { verdict: 'PASS', decidingFindings: [] }; } };
-
-    await runCouncilRound(
-      {
-        brief: 'x', diffSummary: 'y', changedLines: 10, paths: ['src/x.ts'],
-        ci: { runId: 'r', headSha: 'a' }, forceCodex: true,
-      },
-      { lensRunner, codexLane, judge },
-    );
-
-    expect(JSON.stringify(seenInput)).toContain('Codex lane did not run');
+    expect(result.codexRan).toBe(false);
+    expect(result.verdict).toBe('PASS');
   });
 
   describe('coverage (GATE.md items 1, 2 and 4): a member that never answers cannot let the round pass', () => {
@@ -146,12 +94,11 @@ describe('runCouncilRound', () => {
           return { lens: input.lens, findings: [] };
         },
       };
-      const codexLane = fakeCodexLane([]);
       const judge = fakeJudge('PASS WITH NOTES');
 
       const result = await runCouncilRound(
         { brief: 'x', diffSummary: 'y', changedLines: 200, paths: ['src/x.ts'], ci: { runId: 'r', headSha: 'a' } },
-        { lensRunner, codexLane, judge },
+        { lensRunner, judge },
       );
 
       // One retry each for the two failed lenses, never a second retry.
@@ -173,12 +120,11 @@ describe('runCouncilRound', () => {
           return { lens: input.lens, findings: [] };
         },
       };
-      const codexLane = fakeCodexLane([]);
       const judge = fakeJudge('PASS');
 
       const result = await runCouncilRound(
         { brief: 'x', diffSummary: 'y', changedLines: 10, paths: ['src/x.ts'], ci: { runId: 'r', headSha: 'a' } },
-        { lensRunner, codexLane, judge },
+        { lensRunner, judge },
       );
 
       expect(result.missingMembers).toEqual([]);
@@ -206,13 +152,12 @@ describe('runCouncilRound', () => {
           return { lens: input.lens, findings: [] };
         },
       };
-      const codexLane = fakeCodexLane([]);
       let seenInput: unknown;
       const judge: Judge = { async decide(input) { seenInput = input; return { verdict: 'PASS', decidingFindings: [] }; } };
 
       await runCouncilRound(
         { brief: 'x', diffSummary: 'y', changedLines: 200, paths: ['src/x.ts'], ci: { runId: 'r', headSha: 'a' } },
-        { lensRunner, codexLane, judge },
+        { lensRunner, judge },
       );
 
       expect(JSON.stringify(seenInput)).not.toContain('unparseable');
@@ -226,13 +171,12 @@ describe('runCouncilRound', () => {
     // clears a round with no findings and no missing member.
     it('C.2: skips the judge call entirely when no lens produced a finding, reading PASS', async () => {
       const lensRunner = fakeLensRunner({ correctness: { lens: 'correctness', findings: [] } });
-      const codexLane = fakeCodexLane([]);
       let judgeCalled = false;
       const judge: Judge = { async decide() { judgeCalled = true; return { verdict: 'FIX FIRST', decidingFindings: [] }; } };
 
       const result = await runCouncilRound(
         { brief: 'x', diffSummary: 'y', changedLines: 10, paths: ['src/x.ts'], ci: { runId: 'r', headSha: 'a' } },
-        { lensRunner, codexLane, judge },
+        { lensRunner, judge },
       );
 
       expect(judgeCalled).toBe(false);
@@ -243,13 +187,12 @@ describe('runCouncilRound', () => {
       const lensRunner: LensRunner = {
         async run(input) { return { lens: input.lens, failed: true, rawReply: 'not json', findings: [] }; },
       };
-      const codexLane = fakeCodexLane([]);
       let judgeCalled = false;
       const judge: Judge = { async decide() { judgeCalled = true; return { verdict: 'PASS', decidingFindings: [] }; } };
 
       const result = await runCouncilRound(
         { brief: 'x', diffSummary: 'y', changedLines: 10, paths: ['src/x.ts'], ci: { runId: 'r', headSha: 'a' } },
-        { lensRunner, codexLane, judge },
+        { lensRunner, judge },
       );
 
       expect(judgeCalled).toBe(false);
@@ -267,13 +210,12 @@ describe('runCouncilRound', () => {
           }],
         },
       });
-      const codexLane = fakeCodexLane([]);
       let judgeCalled = false;
       const judge: Judge = { async decide() { judgeCalled = true; return { verdict: 'PASS WITH NOTES', decidingFindings: [] }; } };
 
       const result = await runCouncilRound(
         { brief: 'x', diffSummary: 'y', changedLines: 10, paths: ['src/x.ts'], ci: { runId: 'r', headSha: 'a' } },
-        { lensRunner, codexLane, judge },
+        { lensRunner, judge },
       );
 
       expect(judgeCalled).toBe(true);
@@ -282,12 +224,11 @@ describe('runCouncilRound', () => {
 
     it('full coverage reports zero missing members', async () => {
       const lensRunner = fakeLensRunner({ correctness: { lens: 'correctness', findings: [] } });
-      const codexLane = fakeCodexLane([]);
       const judge = fakeJudge('PASS');
 
       const result = await runCouncilRound(
         { brief: 'x', diffSummary: 'y', changedLines: 10, paths: ['src/x.ts'], ci: { runId: 'r', headSha: 'a' } },
-        { lensRunner, codexLane, judge },
+        { lensRunner, judge },
       );
 
       expect(result.missingMembers).toEqual([]);

@@ -36,6 +36,7 @@ import { renderShipPrediction, shipPredictionFor } from './shipPrediction.js';
 import { parkReasonFor } from './parkReason.js';
 import type { GoalAuditOutcome, ProgressNote, ProgressStage } from './ticketProgress.js';
 import { parkRecoverability, PARK_RECOVERY_CAP, type ParkRecoverability, type ParkRecheck } from '../../shared/parkRecoverability.js';
+import { MAX_FIX_ROUNDS } from '../council/rounds.js';
 export { parkRecoverability, PARK_RECOVERY_CAP };
 export type { ParkRecoverability, ParkRecheck };
 
@@ -324,7 +325,13 @@ export function retryItem(
     // sweep's path as well as a button: handing them back on every automatic retry makes
     // every cap here unreachable. `pendingGatePolls` belongs with them -- left at its cap,
     // the retry re-enters the gate, spends a real review round, and parks on the first pass.
-    ...(opts.askedByAPerson ? { recoveryAttempts: 0, checksReads: 0, checksReadAt: 0, pendingGatePolls: 0 } : {}),
+    ...(opts.askedByAPerson ? {
+      recoveryAttempts: 0, checksReads: 0, checksReadAt: 0, pendingGatePolls: 0,
+      // A person's retry also hands back the fix-round budget, or an item that hit the cap
+      // can never be reviewed again (BBZ-386, 2026-09-23: 6 rounds burned on one unchanged
+      // head by a since-fixed loop, then parked for good).
+      fixRoundsUsed: 0, lastCouncilHead: null, fixRoundAt: null, bugHuntClearedAt: null,
+    } : {}),
     ...(item.runKey ? { retriedAt: now } : {}),
   };
   store.append({ id, at: now, ...patch });
@@ -334,6 +341,29 @@ export function retryItem(
 // ---------------------------------------------------------------------------------------
 // The worker: advancing what is already in the queue
 // ---------------------------------------------------------------------------------------
+
+/**
+ * Plan item 4: after the Warden kills a run's process for producing no progress event
+ * for 15 minutes, this finds the one queue item that was running under that `runKey`
+ * (a run launched outside the queue -- a bare `forge run`, a goal loop -- names none,
+ * and this returns `undefined`) and requeues it exactly like a person clicking Retry:
+ * parked first, so `retryItem`'s own state guard (`parked` or `failed` only) accepts
+ * it, then retried with `askedByAPerson: false` -- a machine's retry, not a person's,
+ * so the recovery budgets a chronically-stuck item has already spent stay spent instead
+ * of resetting to fresh on every kill.
+ */
+export function requeueStuckItem(
+  store: QueueStore, runKey: string, now: number = Date.now(),
+): QueueItem | undefined {
+  const item = store.all().find((row) => row.runKey === runKey);
+  if (!item) return undefined;
+  store.append({
+    id: item.id, at: now, state: 'parked',
+    reason: 'killed: no progress for 15 minutes with the process still alive',
+    updatedAt: now,
+  });
+  return retryItem(store, item.id, now, { askedByAPerson: false });
+}
 
 /** A minimal journal event handed back to `advanceItem` -- everything this module needs
  *  from `Journal.append`/`appendOnce`'s real `ForgeEvent`. */
@@ -367,6 +397,18 @@ export interface QueueRuntimeDeps {
    *  Unset in a specimen with nothing on disk to clear. */
   clearRunBlock?: (runKey: string) => void;
   gh: ChainGh;
+  /** BUG B (BBZ-386/BBZ-388, 2026-09-23): commits, pushes and opens a draft PR on the
+   *  host for an item whose worker finished with real changes but no PR -- the fix for
+   *  the sandbox carve-out that refuses a worker's own `git commit`/`gh`. Answers
+   *  `{ ok: false }` with no `reason` when the worktree carries nothing to ship (no
+   *  park-worthy failure, just nothing to do); `{ ok: false, reason }` for a real
+   *  attempt that failed (push refused, `gh pr create` failed); `{ ok: true, pr }` once
+   *  the PR is open. Absent means this environment never wires the write, and the item
+   *  parks exactly as it did before this fix. */
+  shipUnfinishedWork?: (input: {
+    item: QueueItem & { worktreePath: string; branch: string; repo: string; base: string };
+    lastText?: string;
+  }) => Promise<{ ok: true; pr: { number: number; url: string } } | { ok: false; reason?: string }>;
   /** Brings the branch up to date with its base before the gate reads it, and answers
    *  whether that succeeded. A branch that has fallen behind while the work ran is the
    *  ordinary case on a busy repository; one that cannot be replayed cleanly is a real
@@ -385,6 +427,15 @@ export interface QueueRuntimeDeps {
    *  environment never wires a fix round; a FIX FIRST then always parks, the behaviour
    *  every specimen before this stream already proved. */
   relaunchForFixRound?: (input: { item: QueueItem; findings: string }) => Promise<{ runKey: string }>;
+  /** Aaron's 2026-09-23 standing order (full autonomous mode): once the council itself
+   *  clears (PASS/PASS WITH NOTES), a dedicated bug-hunt pass (opus-5-5,
+   *  `council/bugHunt.ts`) reads the diff plus surrounding code for real defects before
+   *  the item is ever allowed to merge. Same shape as `council` deliberately -- the
+   *  queue stays diff-blind, and the actual read happens in whatever wires this dep
+   *  (mirroring `chainCouncil`). Absent means this environment never runs a bug hunt,
+   *  and a cleared council goes straight to merge, the behaviour every specimen before
+   *  this stream already proved. */
+  bugHunt?: (input: { repo: string; pr: number; cwd?: string; baseRef?: string }) => Promise<{ clean: boolean; findingsText?: string }>;
   /** A.2: posts the council's own notes on the PR before the item reaches `review`.
    *  Best effort -- a comment failing never blocks the item; absent means this
    *  environment never wires the write, and no comment is attempted. */
@@ -478,6 +529,16 @@ export interface QueueRuntimeDeps {
    *  already gets. Absent means an auto-merged item lands on `done` with no OTA line,
    *  the same fallback `mergeItem` already has. */
   postMergeVerify?: (input: { repo: string; branch: string; mergeSha?: string }) => Promise<{ android: string; ios: string } | undefined>;
+  /** Plan item 5, 2026-09-23: when `postMergeVerify` gives up after its 30-minute wait
+   *  and answers `undefined`, this raises a board blocker naming the ticket and the PR
+   *  instead of the item's reason line being the only place that 30-minute silence is
+   *  ever recorded. `BBZ-72`/`Q-7409e170` and three other tickets sat 391.8 hours total
+   *  with nobody told beyond that one queue-item reason string -- a person reading the
+   *  board never saw it unless they opened that specific card. Best effort: called from
+   *  inside `postMergeVerify`'s own `.then`, after the item's `done` transition has
+   *  already landed, so a failure here can never unwind or delay the merge itself.
+   *  Absent means this environment never wires it, and the old silent behaviour stands. */
+  raiseDeployBlocker?: (input: { item: QueueItem; pr: { no: number; url: string } }) => Promise<void>;
   /** 2026-09-08: launches a `goal` item -- its own worktree, its own gates, no brief
    *  file to plan or amend. Absent means a goal item always fails at the launch hop;
    *  every other source ignores this. */
@@ -497,6 +558,13 @@ export interface QueueRuntimeDeps {
    *  fallback repo is known, the same "never resolves" answer as before this field
    *  existed. */
   mergeCheckRepos?: string[];
+  /** Plan item 2, 2026-09-23: whether any linked Claude account has room right now --
+   *  the same question `pickAccount`/`launchAccountDecision` already answer for a fresh
+   *  launch, asked here for a park that already happened. Absent means an
+   *  accounts-spent park is never re-read by this pass and waits on the Warden's own
+   *  reconcile cadence instead, the behaviour every environment had before this field
+   *  existed. */
+  accountHasRoom?: () => boolean;
   clock(): number;
   killSwitch(): boolean;
   paused(): boolean;
@@ -921,7 +989,51 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
   }
 
   const status = await deps.launcher.status(item.runKey);
-  if (!status.finished) return item;
+  if (!status.finished) {
+    // Reconcile: `status.finished` reads false forever when a run's own fold is stuck
+    // at `started`/`paused`/`handed-off` and nothing is left alive to move it past that
+    // -- a worker killed outside the Warden's own path, a crash before `run.finished`
+    // ever got journaled, or a handoff whose successor never registered and itself died.
+    // `deps.runPid` is the same liveness read `relaunchOnRetryOrPark` already uses right
+    // below for a park held on a live worker; no live pid under this run key means
+    // nothing is ever going to finish it, so the item is parked with that fact as its
+    // reason (existing `parked` state, existing `relaunchOnRetryOrPark` transition)
+    // instead of sitting `running` on the board forever with no way to retry it.
+    // Absent `deps.runPid` means this environment cannot tell, and the reconcile stands
+    // down exactly like every other `runPid` read in this file -- never treated as "no
+    // process", or every environment with no liveness wiring would park its whole board.
+    if (deps.runPid && deps.runPid(item.runKey) === undefined) {
+      return relaunchOnRetryOrPark(
+        item, deps, `run ${item.runKey} is not finished but no process is running for it`,
+        { hop: 'gate', verdict: null },
+      );
+    }
+    return item;
+  }
+  // BBZ-386/PR #219, 2026-09-23: a fix round relaunches the worker under the SAME run
+  // key (`runKeyForBrief` is deterministic on the brief path), and the launcher's own
+  // registration wait can resolve on the registry row alone, before the new run's own
+  // `run.started` has been journaled. Reading `status` right after that relaunch can
+  // therefore still fold the OLD (already-finished) run under this key -- the exact
+  // race that let one council FIX FIRST burn six review rounds in five minutes on an
+  // unchanged head. An item with a pending fix round waits for a `run.started` newer
+  // than the relaunch itself before it will call this run finished at all. Absent
+  // `status.startedAt` (an environment that never wires it) skips the wait rather than
+  // blocking forever on evidence that will never arrive.
+  if (item.fixRoundAt && status.startedAt !== undefined && status.startedAt < item.fixRoundAt) {
+    // BBZ-386, 2026-09-24: a relaunch the launcher refused (over time, a stale live-run
+    // row) never journals a `run.started`, so this wait held the item `running` for good
+    // and filled a width slot with nothing behind it. Past the grace window with no
+    // process under the run key, nothing will ever start it: park it where retry works.
+    if (deps.runPid && deps.runPid(item.runKey) === undefined
+      && deps.clock() - item.fixRoundAt > FIX_ROUND_START_GRACE_MS) {
+      return relaunchOnRetryOrPark(
+        item, deps, `fix-round relaunch never started for run ${item.runKey} and no process is running for it`,
+        { hop: 'gate', verdict: null },
+      );
+    }
+    return item;
+  }
   // A park already held on a live worker (`relaunchOnRetryOrPark`) waits on that process.
   // Reading the PR again on every tick until it exits is a GitHub call per tick per item.
   const heldPid = deps.runPid?.(item.runKey);
@@ -946,9 +1058,62 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
     }
   }
   if (!pr) {
+    // BUG B (BBZ-386/BBZ-388, 2026-09-23): a worker running inside the Docker sandbox
+    // (`shell-containment.ts`/`sandbox-exec.ts`) cannot commit, push or open a PR itself
+    // -- no working `gh`, and `.git` inside the container cannot resolve the host's
+    // alternate object path. A worker that finished real code with nothing to show for
+    // it is not a failure to park; it is a queue-side chore the queue itself can do,
+    // on the host, where git and gh both work. `deps.shipUnfinishedWork` commits
+    // whatever is left in the worktree, pushes the branch and opens a draft PR; only a
+    // worktree with real changes vs its base ever attempts this, so an item that
+    // genuinely produced nothing still parks exactly as before.
+    if (deps.shipUnfinishedWork && item.worktreePath && item.branch && item.repo && item.base) {
+      const shipped = await deps.shipUnfinishedWork({
+        item: item as QueueItem & { worktreePath: string; branch: string; repo: string; base: string },
+        lastText: status.lastText ?? status.lastHandoff,
+      });
+      if (shipped.ok) {
+        deps.append({
+          event: 'queue.shipped', actor: 'queue', itemId: item.id, pr: shipped.pr.number, url: shipped.pr.url,
+        });
+        pr = shipped.pr;
+      } else if (shipped.reason) {
+        // Only a real attempt that failed is worth its own row -- a worktree with
+        // nothing to ship falls straight through to the ordinary park below with no
+        // extra noise (`shipUnfinishedWork` answers `{ ok: false }` with no reason for
+        // that case, `{ ok: false, reason }` only for an attempt that actually failed).
+        deps.append({ event: 'queue.ship-failed', actor: 'queue', itemId: item.id, reason: shipped.reason });
+      }
+    }
+  }
+  if (!pr) {
     return relaunchOnRetryOrPark(
       item, deps, 'run finished done but no PR was found in its evidence or on its branch', { hop: 'gate' },
     );
+  }
+
+  // BBZ-386/PR #219, 2026-09-23: a fix round relaunches the worker, but only the
+  // worker's own push moves the PR's head -- a worker that could not commit or push
+  // (the sandbox has no `gh`, no working git remote, etc: see the ship step below)
+  // leaves the SAME head sitting there for the queue to find again. Reviewing that
+  // head a second time is not a new round, it is the same diff a council already gave
+  // a verdict for, at the cost of a full Opus review pass. An item with a fix round
+  // pending and a prior council verdict on record checks the PR's CURRENT head before
+  // spending anything else on it; an unmoved head parks immediately rather than
+  // re-running the council or the bug hunt.
+  if (item.fixRoundAt && item.lastCouncilHead && deps.gh.headSha) {
+    const currentHead = await deps.gh.headSha(item.repo!, pr.number);
+    if (currentHead && currentHead === item.lastCouncilHead) {
+      return writeTransition(
+        item,
+        {
+          state: 'parked',
+          reason: `fix round ${item.fixRoundsUsed ?? 0} made no change to the pull request `
+            + `(head ${currentHead} unchanged); the worker could not push`,
+        },
+        deps, 'queue.parked', { hop: 'gate', head: currentHead },
+      );
+    }
   }
 
   // A.8/A.9: one fetch of the PR's own changed files and line counts, right after the PR
@@ -1041,6 +1206,12 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
     // this ticket's diff. Provisioning refreshes the remote ref, so this one is current.
     ...(item.base ? { baseRef: `origin/${item.base}` } : {}),
   });
+  // BBZ-386/PR #219, 2026-09-23: the head this verdict is FOR, read once so both fix-round
+  // branches below (council FIX FIRST and bug-hunt dirty) can stamp `lastCouncilHead`
+  // without a second GitHub call each. Absent `headSha` (an environment that never wires
+  // it) leaves the item exactly as it behaved before this fix: no unchanged-head check,
+  // no stamping, the pre-existing park-after-cap behaviour untouched.
+  const councilHead = deps.gh.headSha ? await deps.gh.headSha(item.repo!, pr.number) : undefined;
   // BBZ-60/62/74/202, 2026-09-08: a pending check is "not yet", never "no" -- four real
   // items parked on `refused: checks are pending on head <sha>` and needed an operator to
   // merge them by hand once the same checks went green minutes later. Checked before
@@ -1077,18 +1248,36 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
 
   const councilCleared = council.verdict === 'PASS' || council.verdict === 'PASS WITH NOTES';
   if (!councilCleared) {
-    // A.1: a FIX FIRST on an item that has not already used its one fix round relaunches
-    // the worker on the same worktree instead of parking outright -- the findings are a
-    // fixable problem, not a question for a person, and asking a person for every one of
-    // those defeats the point of the queue. Coverage-missing never gets a fix round: a
-    // member that did not answer says nothing about whether the code has a problem, so
-    // relaunching against it would be guessing at a "fix" for no claim at all.
-    if (council.verdict === 'FIX FIRST' && !council.coverageNote && !item.fixRoundsUsed && deps.relaunchForFixRound) {
+    // A.1, raised 3->6 by Aaron's 2026-09-23 standing order (full autonomous mode --
+    // iterate until clean): a FIX FIRST on an item that has not yet used its
+    // `MAX_FIX_ROUNDS` relaunches (`council/rounds.ts`) relaunches the worker on the
+    // same worktree instead of parking outright -- the findings are a fixable problem,
+    // not a question for a person, and asking a person for every one of those defeats
+    // the point of the queue. Coverage-missing never gets a fix round: a member that did
+    // not answer says nothing about whether the code has a problem, so relaunching
+    // against it would be guessing at a "fix" for no claim at all.
+    if (
+      council.verdict === 'FIX FIRST' && !council.coverageNote
+      && (item.fixRoundsUsed ?? 0) < MAX_FIX_ROUNDS && deps.relaunchForFixRound
+    ) {
       const findings = council.findingsText
         ?? 'the council returned FIX FIRST with no findings text carried on this result';
+      // A fix round is new work, not a continuation: clear any block the last run left
+      // (a warden park such as "Running 3.0 h, expected 3.0 h") and give the run a fresh
+      // wall clock, or the launcher refuses to start it at all. Both BBZ-386 and BBZ-388
+      // sat overnight on 2026-09-23 behind exactly that refusal after one fix round each.
+      if (item.runKey) {
+        deps.clearRunBlock?.(item.runKey);
+        deps.append({ event: 'queue.fix-round-start', actor: 'queue', itemId: item.id, previousRunKey: item.runKey });
+      }
       const relaunched = await deps.relaunchForFixRound({ item, findings });
       return writeTransition(
-        item, { runKey: relaunched.runKey, fixRoundsUsed: 1 }, deps, 'queue.fix-round',
+        item,
+        {
+          runKey: relaunched.runKey, fixRoundsUsed: (item.fixRoundsUsed ?? 0) + 1,
+          fixRoundAt: deps.clock(), ...(councilHead ? { lastCouncilHead: councilHead } : {}),
+        },
+        deps, 'queue.fix-round',
         { previousRunKey: item.runKey, findings },
       );
     }
@@ -1098,9 +1287,55 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
     const reason = council.coverageNote
       ? `${council.verdict}: ${council.coverageNote}`
       : item.fixRoundsUsed
-        ? `${council.verdict} after ${item.fixRoundsUsed} fix round(s), parking rather than relaunching again`
+        ? `${council.verdict} after ${item.fixRoundsUsed} fix round(s) (cap ${MAX_FIX_ROUNDS}), parking with the full findings history rather than relaunching again`
         : council.verdict;
     return writeTransition(item, { state: 'parked', reason }, deps, 'queue.parked', { hop: 'gate' });
+  }
+
+  // Aaron's 2026-09-23 standing order (full autonomous mode): the council clearing is
+  // not the last read before merge -- a dedicated opus-5-5 bug-hunt pass
+  // (`council/bugHunt.ts`) reads the diff plus surrounding code for real defects the
+  // audit lenses were not specifically looking for. Run once per head: `bugHuntClearedAt`
+  // is only ever set once this pass has come back clean, so a re-tick after it already
+  // cleared never re-runs it (it costs a real model call, same as the council itself).
+  // A bug the hunt does find re-enters the SAME fix-round loop the council's own FIX
+  // FIRST uses above, capped by the same `MAX_FIX_ROUNDS` -- one loop, one cap, whichever
+  // reviewer raised the finding.
+  if (deps.bugHunt && !item.bugHuntClearedAt) {
+    const hunt = await deps.bugHunt({
+      repo: item.repo!, pr: pr.number,
+      ...(item.worktreePath ? { cwd: item.worktreePath } : {}),
+      ...(item.base ? { baseRef: `origin/${item.base}` } : {}),
+    });
+    if (!hunt.clean) {
+      if ((item.fixRoundsUsed ?? 0) < MAX_FIX_ROUNDS && deps.relaunchForFixRound) {
+        const findings = hunt.findingsText
+          ?? 'the bug hunt found a defect with no findings text carried on this result';
+        // A fix round is new work, not a continuation: clear any block the last run left
+      // (a warden park such as "Running 3.0 h, expected 3.0 h") and give the run a fresh
+      // wall clock, or the launcher refuses to start it at all. Both BBZ-386 and BBZ-388
+      // sat overnight on 2026-09-23 behind exactly that refusal after one fix round each.
+      if (item.runKey) {
+        deps.clearRunBlock?.(item.runKey);
+        deps.append({ event: 'queue.fix-round-start', actor: 'queue', itemId: item.id, previousRunKey: item.runKey });
+      }
+      const relaunched = await deps.relaunchForFixRound({ item, findings });
+        return writeTransition(
+          item,
+          {
+            runKey: relaunched.runKey, fixRoundsUsed: (item.fixRoundsUsed ?? 0) + 1,
+            fixRoundAt: deps.clock(), ...(councilHead ? { lastCouncilHead: councilHead } : {}),
+          },
+          deps, 'queue.fix-round',
+          { previousRunKey: item.runKey, findings, hop: 'bug-hunt' },
+        );
+      }
+      const reason = item.fixRoundsUsed
+        ? `bug hunt found a defect after ${item.fixRoundsUsed} fix round(s) (cap ${MAX_FIX_ROUNDS}), parking rather than relaunching again`
+        : 'bug hunt found a defect';
+      return writeTransition(item, { state: 'parked', reason }, deps, 'queue.parked', { hop: 'bug-hunt' });
+    }
+    item = { ...item, bugHuntClearedAt: deps.clock() };
   }
 
   // Merge only when this item's repo is on the operator's own autoMerge allow-list --
@@ -1281,6 +1516,12 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
         .then((reason) => {
           const at = deps.clock();
           deps.store.append({ id: item.id, at, reason, updatedAt: at });
+          // Plan item 5: the reason line above is not enough on its own -- it only
+          // reaches a person who opens this exact card. A board blocker names the
+          // ticket and the PR so the 30-minute silence stops being silent.
+          if (reason.startsWith('merged; deploy run not found') && deps.raiseDeployBlocker) {
+            void deps.raiseDeployBlocker({ item, pr: { no: pr.number, url: pr.url } }).catch(() => undefined);
+          }
         });
     }
     return merged;
@@ -1325,8 +1566,36 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
  *  Module scope rather than a field, because the tick is a free function and one process
  *  owns one queue. */
 const advancing = new Set<string>();
+/** How long a fix-round relaunch may take to journal its `run.started` before a run key
+ *  with no live process is treated as never started (see `advanceItem`). */
+const FIX_ROUND_START_GRACE_MS = 10 * 60_000;
+
 const MERGED_SWEEP_MS = 120_000;
 let lastMergedSweepAt = 0;
+/** Finding #6/#9: how many `prMerged` GitHub calls the merged-elsewhere sweep may have
+ *  in flight at once. Independent of `maxInFlight` -- that width governs worker
+ *  concurrency, this one only bounds a read-only status check -- and kept modest so a
+ *  board with many open reviews does not open a burst of simultaneous GitHub calls. */
+const MERGED_SWEEP_CONCURRENCY = 4;
+
+/** Runs `fn` over `items` with at most `limit` calls in flight at once, preserving each
+ *  item's own result but not the order calls settle in. A `limit` at or above the item
+ *  count is exactly `Promise.all`; this exists so a large `items` array never opens more
+ *  concurrent network calls than the caller intends. */
+async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  async function worker(): Promise<void> {
+    for (;;) {
+      const index = next;
+      next += 1;
+      if (index >= items.length) return;
+      results[index] = await fn(items[index]!);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker));
+  return results;
+}
 /** Test seam: make the next tick sweep merged PRs regardless of the last sweep time. */
 export function resetMergedSweep(): void { lastMergedSweepAt = 0; }
 
@@ -1377,10 +1646,11 @@ async function recoverParkedItems(deps: QueueRuntimeDeps, items: QueueItem[], sl
     // provision ten workers on one tick. Journalled once, like every other decision here:
     // an item held back by the width is a decision, and skipping it in silence is the
     // thing this function's own comment promises not to do.
-    // Only a `run` recovery ends in a relaunched worker; a `checks` recovery re-enters
-    // the gate hop and provisions nothing, so it neither needs a slot nor spends one.
-    // Charging it a slot starved the relaunches the width is actually there to bound.
-    const needsSlot = verdict.reRead === 'run';   // checks and overlap re-enter the gate hop and provision nothing
+    // Only a `run` or `accounts` recovery ends in a relaunched worker; a `checks`
+    // recovery re-enters the gate hop and provisions nothing, so it neither needs a slot
+    // nor spends one. Charging it a slot starved the relaunches the width is actually
+    // there to bound.
+    const needsSlot = verdict.reRead === 'run' || verdict.reRead === 'accounts';
     if (needsSlot && slots <= 0) {
       // Its own marker, not `recoveryHeldOn`: overwriting the real reading with the width
       // made a queue oscillating around its cap write a row on every flip, which is what
@@ -1422,6 +1692,20 @@ async function recoverParkedItems(deps: QueueRuntimeDeps, items: QueueItem[], sl
         // lowercase verdict (`council/gh.ts`), and comparing against 'SUCCESS' made this
         // whole branch dead in production while the specimen stayed green.
         clear = found.toLowerCase() === 'success';
+      }
+    } else if (verdict.reRead === 'accounts') {
+      // Plan item 2: the short check the plan asks for -- every 15s tick, since this
+      // module is never told the queue's own poll cadence, and a check this cheap (one
+      // in-memory read, no network) costs nothing to run every tick rather than on a
+      // window of its own the way `checks` and `run` recoveries are throttled. No cap
+      // to spend here either: unlike `checks` (a GitHub call) or `run` (a relaunch),
+      // a `false` reading changes nothing and writes no row (see the `!clear` branch
+      // below, which is silent for a `found` string that has not changed).
+      if (!deps.accountHasRoom) {
+        found = 'no account reader wired';
+      } else {
+        found = deps.accountHasRoom() ? 'an account has room again' : 'every account still reads as spent';
+        clear = deps.accountHasRoom();
       }
     } else if (!deps.runPid) {
       found = 'no liveness reader wired';
@@ -1466,9 +1750,10 @@ async function recoverParkedItems(deps: QueueRuntimeDeps, items: QueueItem[], sl
         checksReads: 0, checksReadAt: 0,
         // `retriedAt` means "a person asked for this run to be looked at again", and
         // `relaunchOnRetryOrPark` answers it by provisioning a NEW worker. That is right
-        // for a run that died and wrong for checks that went green: there the run
-        // finished correctly and the item only needs its gate hop read again.
-        ...(item.runKey && verdict.reRead === 'run' ? { retriedAt: deps.clock() } : {}),
+        // for a run that died, and for `accounts` (the whole reason the item parked was
+        // that nothing could launch), and wrong for checks that went green: there the
+        // run finished correctly and the item only needs its gate hop read again.
+        ...(item.runKey && (verdict.reRead === 'run' || verdict.reRead === 'accounts') ? { retriedAt: deps.clock() } : {}),
         ...(item.pendingGatePolls ? { pendingGatePolls: 0 } : {}),
       },
       deps, 'queue.recovered',
@@ -1500,6 +1785,13 @@ export async function runQueueTick(deps: QueueRuntimeDeps, items: QueueItem[]): 
   void retryOpenPrCloses(items, {
     ...(deps.closePr ? { closePr: deps.closePr } : {}),
     ...(deps.append ? { append: deps.append } : {}),
+  }).then((closedIds) => {
+    // Record the close on the item, or the next tick asks GitHub again for ever (#188/#189
+    // were asked ~41,600 times on 2026-09-23 and tripped the GraphQL rate limit).
+    for (const id of closedIds) {
+      const item = items.find((candidate) => candidate.id === id);
+      if (item?.pr) deps.store.append({ id, at: Date.now(), pr: { ...item.pr, closed: true } } as never);
+    }
   }).catch(() => undefined);
 
   const inFlight = items.filter((item) => QUEUE_IN_FLIGHT_STATES.includes(item.state));
@@ -1538,61 +1830,77 @@ export async function runQueueTick(deps: QueueRuntimeDeps, items: QueueItem[]): 
   // `mergedBy: 'queue'` mark -- that mark is never true unless `mergeItem` wrote it.
   if (deps.prMerged && Date.now() - lastMergedSweepAt >= MERGED_SWEEP_MS) {
     lastMergedSweepAt = Date.now();
-    for (const item of items.filter((row) => row.state === 'review' && row.pr && row.repo)) {
-      try {
-        if (await deps.prMerged(item.repo!, item.pr!.no)) {
-          const current = deps.store.get(item.id) ?? item;
-          if (current.mergedBy === 'queue') continue;
-          // The ticket does not care which route merged its pull request. Workers run
-          // with no push credentials, so in practice the operator merges from the host
-          // and every one of those merges lands here rather than on the gate hop above
-          // -- and until this ran, the queue item closed while Jira kept the ticket
-          // assigned to the operator in its old status forever. Seven shipped tickets
-          // were found stranded that way on 2026-09-21. Same two writes the gate hop
-          // makes, in the same order, under the same best-effort contract: a Jira
-          // outage must never stop the item closing, or the next sweep re-merges it.
-          const mergedAt = deps.clock();
-          if (deps.jiraHandoff && !current.handoffAt && current.ticket && !current.noMerge) {
-            try {
-              await deps.jiraHandoff({ item: current, pr: { no: current.pr!.no, url: current.pr!.url } });
-            } catch {
-              // Best effort, exactly as on the gate hop.
+    // Finding #6/#9: each item's own PR is independent of every other item's, so the
+    // GitHub check for one is never blocked behind another's -- bounded, not unbounded,
+    // so a board with many open reviews does not open one call per item at once.
+    await mapWithConcurrency(
+      items.filter((row) => row.state === 'review' && row.pr && row.repo),
+      MERGED_SWEEP_CONCURRENCY,
+      async (item) => {
+        try {
+          if (await deps.prMerged!(item.repo!, item.pr!.no)) {
+            const current = deps.store.get(item.id) ?? item;
+            if (current.mergedBy === 'queue') return;
+            // The ticket does not care which route merged its pull request. Workers run
+            // with no push credentials, so in practice the operator merges from the host
+            // and every one of those merges lands here rather than on the gate hop above
+            // -- and until this ran, the queue item closed while Jira kept the ticket
+            // assigned to the operator in its old status forever. Seven shipped tickets
+            // were found stranded that way on 2026-09-21. Same two writes the gate hop
+            // makes, in the same order, under the same best-effort contract: a Jira
+            // outage must never stop the item closing, or the next sweep re-merges it.
+            const mergedAt = deps.clock();
+            if (deps.jiraHandoff && !current.handoffAt && current.ticket && !current.noMerge) {
+              try {
+                await deps.jiraHandoff({ item: current, pr: { no: current.pr!.no, url: current.pr!.url } });
+              } catch {
+                // Best effort, exactly as on the gate hop.
+              }
             }
-          }
-          if (deps.jiraDone && current.ticket) {
-            try {
-              await deps.jiraDone({ item: current, pr: { no: current.pr!.no, url: current.pr!.url }, mergedAt });
-            } catch {
-              // Best effort, exactly as on the gate hop.
+            if (deps.jiraDone && current.ticket) {
+              try {
+                await deps.jiraDone({ item: current, pr: { no: current.pr!.no, url: current.pr!.url }, mergedAt });
+              } catch {
+                // Best effort, exactly as on the gate hop.
+              }
             }
+            writeTransition(
+              item,
+              {
+                state: 'done',
+                reason: `PR #${item.pr!.no} merged outside the queue`,
+                ...(current.handoffAt ? {} : { handoffAt: mergedAt }),
+              },
+              deps, 'queue.done', { hop: 'merged-elsewhere' },
+            );
           }
-          writeTransition(
-            item,
-            {
-              state: 'done',
-              reason: `PR #${item.pr!.no} merged outside the queue`,
-              ...(current.handoffAt ? {} : { handoffAt: mergedAt }),
-            },
-            deps, 'queue.done', { hop: 'merged-elsewhere' },
-          );
+        } catch {
+          // an unreadable PR is not evidence of a merge; the next sweep asks again
         }
-      } catch {
-        // an unreadable PR is not evidence of a merge; the next sweep asks again
-      }
-    }
+      },
+    );
   }
 
-  let advanced = 0;
-  for (const item of toAdvance) {
+  // Finding #1/#6: these items are independent of each other -- nothing here shares a
+  // worktree, a branch or a run key -- so nothing requires them to advance one after
+  // another. `toAdvance` is already bounded by `maxInFlight` (the in-flight items plus
+  // however many `queued` items fit the remaining slots), so running every entry through
+  // `Promise.all` never admits more concurrent work than the width the operator set; it
+  // only stops queueing item B's network round-trip behind item A's. Ordering among
+  // `toAdvance` itself is irrelevant: each entry's own `advancing` guard (added/removed
+  // right around its own `advanceItem` call) is what actually protects re-entrancy, not
+  // the order the array is walked in.
+  const advancedFlags = await Promise.all(toAdvance.map(async (item) => {
     advancing.add(item.id);
     const before = JSON.stringify(item);
     try {
       const next = await advanceItem(item, deps);
-      if (JSON.stringify(next) !== before) advanced += 1;
+      return JSON.stringify(next) !== before;
     } finally {
       advancing.delete(item.id);
     }
-  }
+  }));
+  const advanced = advancedFlags.filter(Boolean).length;
   return { started, advanced, killSwitchEngaged: false, paused: false };
 }
 
@@ -1618,6 +1926,11 @@ export interface QueueMergeDeps {
    *  landed. Absent means this environment never wires it, and the item still lands on
    *  `done`, just without an OTA line in its reason. */
   postMergeVerify?: (input: { repo: string; branch: string; mergeSha?: string }) => Promise<{ android: string; ios: string } | undefined>;
+  /** Plan item 5, 2026-09-23: same shape and same best-effort contract as
+   *  `QueueRuntimeDeps.raiseDeployBlocker`, wired here so a person's own Merge click
+   *  raises the same board blocker an auto-merge would when the deploy run never turns
+   *  up. Absent means this click's own 30-minute timeout stays silent, the old behaviour. */
+  raiseDeployBlocker?: (input: { item: QueueItem; pr: { no: number; url: string } }) => Promise<void>;
   /** R-22: when present, the Merge click lands the PR with git itself: fetch, squash onto
    *  a local checkout of the base, commit, push, instead of `gh pr merge`. That way a
    *  GitHub rate limit on mutations never blocks something already reviewed. The one API
@@ -1743,6 +2056,11 @@ export async function mergeItem(item: QueueItem, deps: QueueMergeDeps): Promise<
       .then((reason) => {
         const at = deps.clock();
         deps.store.append({ id: item.id, at, reason, updatedAt: at });
+        // Plan item 5: same board blocker the queue's own auto-merge raises -- a
+        // person's Merge click must not go quiet after 30 minutes either.
+        if (reason.startsWith('merged; deploy run not found') && deps.raiseDeployBlocker) {
+          void deps.raiseDeployBlocker({ item, pr: { no: item.pr!.no, url: item.pr!.url } }).catch(() => undefined);
+        }
       });
   }
   return { ok: true, message: patch.reason ?? 'merged', item: { ...item, ...patch } };
@@ -1832,6 +2150,13 @@ export async function retryOpenPrCloses(items: QueueItem[], deps: RetryCloseDeps
         comment: `Merged into ${base}${where}. Closing this, since the squash lands a new commit and GitHub cannot see the branch in it.`,
       });
       if (result && result.ok === false) {
+        // "already merged"/"already closed" is the goal state, not a failure. Treating it
+        // as a retry hammered GitHub ~41,600 times for PRs #188/#189 and tripped the
+        // account's GraphQL rate limit (2026-09-23).
+        if (/already (merged|closed)/i.test(result.reason ?? '')) {
+          closed.push(item.id);
+          continue;
+        }
         deps.append?.({
           event: 'queue.pr-close-failed', actor: 'queue', itemId: item.id,
           pr: pr.no, error: result.reason ?? 'no reason given', retry: true,

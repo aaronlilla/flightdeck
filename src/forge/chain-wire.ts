@@ -12,6 +12,8 @@ import {
   closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync, writeFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { autoMergeAllowed } from './council/risk.js';
+import { autoMergeOn } from './intake/autopilot.js';
 
 import type { CliResult, ForgeDeps } from './cli.js';
 import { forge } from './cli.js';
@@ -23,6 +25,9 @@ import {
   completeBriefWithVerification, runKeyForBrief,
   type ChainCouncilFn, type ChainDeps, type ChainGateFn, type ChainGh, type ChainLauncher, type ChainPlannedPacket, type ChainRunStatus,
 } from './chain.js';
+import { REAL_GH } from './council/gh.js';
+import { reasonerBugHunter } from './council/bugHunt.js';
+import { titleFromHeading } from './console/lanes.js';
 import {
   baseFor, checkoutFor, mergeAllowedFor, runClonePathFor, verifyCommandFor, worktreePathFor,
   worktreeSetupFor,
@@ -210,10 +215,14 @@ export function runOutcome(
   const finishedEvent = [...input.events].reverse()
     .find((event) => event['event'] === 'run.finished' && event['run'] === key);
   const lastText = finishedEvent?.['lastText'] as string | undefined;
+  const startedEvent = [...input.events].reverse()
+    .find((event) => event['event'] === 'run.started' && event['run'] === key);
+  const startedAt = startedEvent?.['at'] as number | undefined;
   return {
     finished: true,
     verdict: run.verdict ?? (finishedEvent?.['verdict'] as string | undefined) ?? run.state,
     ...(lastText ? { lastText } : {}),
+    ...(startedAt !== undefined ? { startedAt } : {}),
   };
 }
 
@@ -524,6 +533,50 @@ export async function provisionWorktree(input: {
   let reused = false;
   if (samePath && samePath.branch === branch) {
     reused = true;
+  } else if (samePath) {
+    // Plan item 8, 2026-09-23: a worktree already registered at this exact path on a
+    // DIFFERENT branch -- the residue of an earlier attempt of the SAME queue item
+    // (`worktreePathFor` is deterministic per repo+ticket, so a retry always computes
+    // this identical path). `branchElsewhere` below only ever catches the branch
+    // checked out at a DIFFERENT path; this path being already-a-worktree-but-wrong-
+    // branch fell through to the plain `git worktree add` case, which git refuses with
+    // "already used by worktree at <path>" on its own target path -- 117 episodes over
+    // 14 days (`Q-2f338f3d`, 04-failures.md rank 5). Same reclaim rule as
+    // `branchElsewhere`: a live registry row still owning this path blocks (real work in
+    // progress), and only a worktree with no live owner behind it is removed and retried.
+    const isAlive = input.isAlive ?? processAlive;
+    const rows = input.registryRows ? [...input.registryRows()] : undefined;
+    const ownedLive = rows?.some(
+      (row) => normalizeWorktreePath(row.cwd) === target && isAlive(row.pid),
+    );
+    if (rows === undefined || ownedLive) {
+      throw new Error(`${worktreePath} is already used by worktree (branch ${samePath.branch ?? 'detached'})`);
+    }
+    if (worktreeRemovalOff()) {
+      throw new Error(
+        `${worktreePath} is already used by worktree (branch ${samePath.branch ?? 'detached'}), `
+        + 'and worktree removal is switched off (FORGE_WORKTREE_REMOVAL=off)',
+      );
+    }
+
+    const removed = await runner({
+      argv: ['git', '-C', checkout, 'worktree', 'remove', '--force', worktreePath],
+      cwd: checkout, owner: `chain-${input.ticket}`, cls: 'script',
+    });
+    if (!removed.ok) {
+      throw new Error(
+        `${worktreePath} is already used by worktree (branch ${samePath.branch ?? 'detached'}), `
+        + `and reclaiming it failed: ${tailOfCommand(removed.tail, 300)}`,
+      );
+    }
+    input.onReclaim?.(worktreePath, branch);
+
+    fs.mkdirSync(dirname(worktreePath), { recursive: true });
+    const add = await runner({
+      argv: ['git', '-C', checkout, 'worktree', 'add', '-B', branch, worktreePath, `origin/${base}`],
+      cwd: checkout, owner: `chain-${input.ticket}`, cls: 'script',
+    });
+    if (!add.ok) throw new Error(tailOfCommand(add.tail));
   } else if (branchElsewhere) {
     const isAlive = input.isAlive ?? processAlive;
     const elsewhereTarget = normalizeWorktreePath(branchElsewhere.path);
@@ -1027,7 +1080,134 @@ export function chainGh(): ChainGh {
         return undefined;
       }
     },
+    async headSha(repo, pr) {
+      const result = await execRun({
+        argv: ['gh', 'pr', 'view', String(pr), '--repo', repo, '--json', 'headRefOid'],
+        cwd: process.cwd(), owner: 'chain-gh', cls: 'script', fullOutput: true,
+      });
+      if (!result.ok) return undefined;
+      try {
+        const parsed = JSON.parse((result.full ?? result.tail).trim()) as { headRefOid?: string };
+        return parsed.headRefOid;
+      } catch {
+        return undefined;
+      }
+    },
   };
+}
+
+/**
+ * BUG B (BBZ-386/BBZ-388, 2026-09-23): a worker running inside the Docker sandbox
+ * (`shell-containment.ts`/`sandbox-exec.ts`, image `forge-sandbox:node22-git`) cannot
+ * commit, push or open a pull request itself -- `.git` inside the container resolves
+ * to a Windows host path GitHub's own object model cannot normalize, `gh` is not
+ * installed there, and the bare-host-git carve-out (`isBareHostCommand`) refuses any
+ * command carrying quotes or chaining, so even `git commit -m "msg"` is denied. Both
+ * BBZ-386 and BBZ-388 finished their code and still ended in `forge_ask 'cannot
+ * commit/push/open PR'`, and the gate parked them for a person with nothing to click.
+ *
+ * The robust fix is on the HOST side, where git and `gh` both work without restriction:
+ * once a run finishes with no PR anywhere, check whether the worktree actually has
+ * anything to ship (uncommitted changes, or committed-but-unpushed commits against its
+ * base) -- commit any leftovers on the worker's own branch (the same pattern
+ * `commitLeftovers` already uses for the pre-gate rebase), push the branch (never
+ * force, never to develop/main directly: this pushes the worker's OWN feature branch),
+ * then open a draft PR with a title naming the ticket and a body built from the run's
+ * last text. A worktree with nothing to ship -- no local commits ahead of its
+ * upstream, no dirty tree -- answers `{ ok: false }` with no reason, so `queue.ts`'s
+ * caller falls through to the ordinary park exactly as before for an item that truly
+ * produced nothing.
+ */
+export function chainShipUnfinishedWork(): NonNullable<QueueRuntimeDeps['shipUnfinishedWork']> {
+  return async ({ item, lastText }) => {
+    const { worktreePath, branch, repo, base } = item;
+    // Never push a protected branch, whatever the item says (GITFLOW: develop and main
+    // move only by reviewed merge).
+    if (!branch || /^(develop|main|master)$/i.test(branch) || branch === base) {
+      return { ok: false, reason: `refusing to ship: ${branch || 'no branch'} is not a feature branch` };
+    }
+    const git = async (argv: string[], raw = false): Promise<RunResult> => execRun({
+      argv: [
+        'git', '-C', worktreePath,
+        '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false',
+        '-c', 'core.pager=cat', '-c', 'core.editor=true',
+        ...argv,
+      ],
+      cwd: worktreePath, owner: 'queue-ship', cls: 'script', ...(raw ? { raw: true } : {}),
+    });
+
+    const committedLeftover = await commitLeftovers(git);
+
+    // Ahead of its own upstream, not ahead of the base: a branch that rebased cleanly
+    // onto `base` and has commits the worker made but never pushed is exactly the
+    // sandboxed-worker case this exists for. `@{u}` (the configured upstream) is absent
+    // on a branch nothing has ever pushed, so that failure reads as "nothing pushed
+    // yet" -- compared against `origin/<base>` instead, the honest question ("does this
+    // branch carry anything base doesn't have") for a branch with no upstream at all.
+    const fetched = await git(['fetch', '--prune', 'origin', base]);
+    const aheadOfBase = fetched.ok
+      ? Number.parseInt((await git(['rev-list', '--count', `origin/${base}..HEAD`], true)).tail.trim(), 10) || 0
+      : 0;
+    const upstreamCount = await git(['rev-list', '--count', `origin/${branch}..HEAD`], true);
+    // A branch never pushed has no origin/<branch>; everything ahead of base is unpushed.
+    const upstreamAhead = upstreamCount.ok
+      ? Number.parseInt(upstreamCount.tail.trim(), 10) || 0
+      : aheadOfBase;
+    const hasUnpushedWork = aheadOfBase > 0 && upstreamAhead > 0;
+    if (!committedLeftover.length && !hasUnpushedWork) return { ok: false };
+
+    const pushed = await git(['push', '--no-force-with-lease', '-u', 'origin', `HEAD:${branch}`]);
+    if (!pushed.ok) return { ok: false, reason: `could not push ${branch}: ${tailOfCommand(pushed.tail)}` };
+
+    const title = queueShipTitle(item);
+    const body = [
+      'Opened by the queue: the worker finished its work but the sandbox it ran in',
+      'cannot commit, push or open a pull request itself. Nothing here was reviewed by',
+      'a person yet.',
+      '',
+      ...(lastText ? ['Worker\'s last note:', '', lastText, ''] : []),
+      ...(committedLeftover.length
+        ? [`Files the queue committed on the worker's behalf: ${committedLeftover.map((f) => `\`${f}\``).join(', ')}`, '']
+        : []),
+    ].join('\n');
+
+    const created = await execRun({
+      argv: [
+        'gh', 'pr', 'create', '--repo', repo, '--draft', '--base', base, '--head', branch,
+        '--title', title, '--body', body,
+      ],
+      cwd: worktreePath, owner: 'queue-ship', cls: 'script', fullOutput: true,
+    });
+    if (!created.ok) return { ok: false, reason: `gh pr create failed: ${tailOfCommand((created.full ?? created.tail))}` };
+
+    const view = await execRun({
+      argv: ['gh', 'pr', 'view', '--repo', repo, branch, '--json', 'number,url'],
+      cwd: worktreePath, owner: 'queue-ship', cls: 'script', fullOutput: true,
+    });
+    if (!view.ok) return { ok: false, reason: 'gh pr create appeared to succeed but the PR could not be read back' };
+    try {
+      const parsed = JSON.parse((view.full ?? view.tail).trim()) as { number: number; url: string };
+      return { ok: true, pr: parsed };
+    } catch {
+      return { ok: false, reason: 'gh pr view returned output that is not JSON after ship' };
+    }
+  };
+}
+
+/** The one-line ship-PR title: the ticket key plus its brief's own heading, the same
+ *  rule `queue-title.ts` already uses for the board card, so the PR title and the card
+ *  never disagree about what this ticket is. Falls back to the ticket key (or the item
+ *  id, for a goal item with no ticket) alone when the brief carries no heading `gh pr
+ *  create` would otherwise be handed an empty title. */
+function queueShipTitle(item: { ticket: string | null; id: string; briefPath: string | null }): string {
+  const key = item.ticket ?? item.id;
+  if (!item.briefPath || !existsSync(item.briefPath)) return key;
+  try {
+    const heading = titleFromHeading(readFileSync(item.briefPath, 'utf8'), item.ticket);
+    return heading ? `${key}: ${heading}` : key;
+  } catch {
+    return key;
+  }
 }
 
 /** H4: reuses the already-tested `council`/`gate` CLI commands rather than a second copy
@@ -1048,8 +1228,8 @@ export function chainCouncil(deps: ForgeDeps): ChainCouncilFn {
     // Until 2026-09-07 nothing filled this, so every PR comment read "No deciding
     // findings" while the attestation on disk carried four.
     const attestationPath = result.data?.['attestationPath'] as string | undefined;
-    let findingsText: string | undefined;
-    if (attestationPath && existsSync(attestationPath)) {
+    let findingsText: string | undefined = (result.data?.['findingsText'] as string | undefined) || undefined;
+    if (!findingsText && attestationPath && existsSync(attestationPath)) {
       try {
         findingsText = findingsTextFrom(JSON.parse(readFileSync(attestationPath, 'utf8')) as Parameters<typeof findingsTextFrom>[0]);
       } catch {
@@ -1065,6 +1245,60 @@ export function chainCouncil(deps: ForgeDeps): ChainCouncilFn {
       // through unchanged, so the queue's `advanceItem` can retry instead of parking.
       ...(result.data?.['pending'] ? { pending: true } : {}),
     };
+  };
+}
+
+/**
+ * Aaron's 2026-09-23 standing order (full autonomous mode): once the council itself
+ * clears, a dedicated opus-5-5 bug-hunt pass (`council/bugHunt.ts`) reads the diff plus
+ * every changed file's full contents (not just the hunks) before the item is ever
+ * allowed to merge. Built directly on `reasonerBugHunter` rather than round-tripping
+ * through `forge`'s own CLI (`chainCouncil`'s own pattern) because there is no
+ * `forge bug-hunt` subcommand to shell out to -- this IS the one live caller of that
+ * role, so there is nothing a CLI wrapper would add here.
+ */
+export function chainBugHunt(deps: ForgeDeps): NonNullable<QueueRuntimeDeps['bugHunt']> {
+  return async ({ repo, pr, cwd, baseRef }) => {
+    const gh = deps.councilGh ?? REAL_GH;
+    const snapshot = await gh.viewPr(repo, pr);
+    const journal = new Journal(journalPath());
+    try {
+      const reasoner = reasonerFor('claude', { journal, queryFn: deps.reasonerQueryFn });
+      const hunter = reasonerBugHunter(reasoner, `${repo}#${pr}`);
+      // Surrounding code, not only the diff hunks: the full contents of every changed
+      // file the diff touches, read straight off the worktree the queue provisioned
+      // (`cwd`), so a callee's real behaviour is visible, not just the lines a hunk
+      // happened to touch. Absent `cwd` (no worktree wired) means the hunt reads the
+      // diff alone, same as an ordinary lens with no extra budget.
+      let surroundingCode: string | undefined;
+      if (cwd) {
+        const files = [...new Set(snapshot.files)].slice(0, 20);
+        const contents = files.map((file) => {
+          try {
+            return `--- ${file} ---\n${readFileSync(join(cwd, file), 'utf8')}`;
+          } catch {
+            return `--- ${file} --- (could not be read; likely deleted or renamed)`;
+          }
+        });
+        surroundingCode = contents.join('\n\n');
+      }
+      const result = await hunter.run({
+        brief: snapshot.body, diffSummary: snapshot.diffText,
+        ...(surroundingCode ? { surroundingCode } : {}),
+      });
+      journal.append({
+        event: 'bug-hunt.run', actor: 'council', repo, pr, clean: result.clean,
+        findings: result.findings.length, ...(result.failed ? { failed: true } : {}),
+        ...(baseRef ? { baseRef } : {}),
+      });
+      if (result.clean) return { clean: true };
+      const findingsText = result.findings
+        .map((f) => `[${f.severity}/${f.confidence}] ${f.file}:${f.line} -- ${f.claim}`)
+        .join('\n');
+      return { clean: false, findingsText };
+    } finally {
+      journal.close();
+    }
   };
 }
 
@@ -1093,7 +1327,9 @@ export function buildChainDeps(chainEnv: ChainEnv, configDirFor: () => string, d
     gate: chainGate(deps),
     clock: () => Date.now(),
     killSwitch: () => readKillSwitch(killSwitchPath()).engaged,
-    mergeAllowed: (repo) => mergeAllowedFor(chainEnv, repo),
+    // FORGE_CHAIN_MERGE still works as an explicit list; with the autoMerge switch on
+    // (default), the council's own autoMerge list is enough for the chain too.
+    mergeAllowed: (repo) => mergeAllowedFor(chainEnv, repo) || (autoMergeOn() && autoMergeAllowed(repo)),
     append: (event) => {
       const journal = new Journal(journalPath());
       try {

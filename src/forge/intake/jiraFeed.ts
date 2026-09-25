@@ -140,10 +140,16 @@ export function feedText(node: unknown): string {
   return children.join('');
 }
 
-/** Every ticket in `project` touched in the last `sinceMinutes`. Relative minutes rather
+/** `project = X` for one project, `project in (X, Y)` for several. */
+export function projectClause(projects: string | readonly string[]): string {
+  const list = typeof projects === 'string' ? [projects] : [...projects];
+  return list.length === 1 ? `project = ${list[0]}` : `project in (${list.join(', ')})`;
+}
+
+/** Every ticket in `projects` touched in the last `sinceMinutes`. Relative minutes rather
  *  than a timestamp, so the site's own timezone never shifts the window. */
-export function feedJql(project: string, sinceMinutes: number): string {
-  return `project = ${project} AND updated >= -${sinceMinutes}m ORDER BY updated ASC`;
+export function feedJql(projects: string | readonly string[], sinceMinutes: number): string {
+  return `${projectClause(projects)} AND updated >= -${sinceMinutes}m ORDER BY updated ASC`;
 }
 
 function basicAuth(email: string, token: string): string {
@@ -525,7 +531,8 @@ export function replyRefusal(reply: string, operatorNames: readonly string[]): s
 // Resolving
 
 export interface FeedActivityDeps {
-  project: string;
+  /** One project, or several (the watched project plus the e2e sandbox). */
+  project: string | readonly string[];
   me: () => Promise<FeedMe | null>;
   /** The operator's display name, as the reasoner is told to write. */
   operatorName: () => string;
@@ -543,6 +550,8 @@ export interface FeedActivityDeps {
   /** Whether the operator's own comments are let through, for a timed test of the
    *  pipeline. Absent reads as off. */
   selfTest?: () => boolean;
+  /** The projects the self-test may act on. Empty or absent means every project. */
+  selfTestProjects?: () => readonly string[];
   /** Words the team's comment check refuses, named in the prompt so a reply avoids them
    *  on the first try instead of spending a rewording. */
   avoidWords?: () => string[];
@@ -578,9 +587,11 @@ interface Candidate { issue: FeedIssue; comment: FeedComment; relevance: Exclude
 /** The description of a ticket created since the feed started, as a comment, when it
  *  mentions or names the operator on a ticket not already theirs. A ticket assigned to
  *  the operator is the watcher's to queue, not this module's to answer. */
-function descriptionCandidate(issue: FeedIssue, me: FeedMe): FeedComment | null {
+function descriptionCandidate(issue: FeedIssue, me: FeedMe, selfTest = false): FeedComment | null {
   if (issue.assigneeAccountId === me.accountId) return null;
-  if (issue.reporterAccountId === me.accountId) return null;
+  // The operator's own description is his own words, except under the sandbox self-test,
+  // which reads it the way a teammate's ticket would be read.
+  if (issue.reporterAccountId === me.accountId && !selfTest) return null;
   if (!issue.descriptionMentions.includes(me.accountId) && !namesOperator(issue.description, me.names)) return null;
   return {
     id: `desc:${issue.key}`,
@@ -611,8 +622,11 @@ export async function runFeedActivity(deps: FeedActivityDeps): Promise<FeedActiv
   const selfTest = deps.selfTest?.() === true;
   ledger.posted ??= [];
   const candidates: Candidate[] = [];
+  const selfTestScope = deps.selfTestProjects?.() ?? [];
+  const selfTestOn = (key: string): boolean =>
+    selfTest && (selfTestScope.length === 0 || selfTestScope.includes(key.split('-')[0] ?? ''));
   for (const issue of issues) {
-    const description = issue.created >= ledger.startedAt ? descriptionCandidate(issue, me) : null;
+    const description = issue.created >= ledger.startedAt ? descriptionCandidate(issue, me, selfTestOn(issue.key)) : null;
     const comments = description ? [description, ...issue.comments] : issue.comments;
     for (const comment of comments) {
       if (!comment.id || comment.created < ledger.startedAt || ledger.handled[comment.id]) continue;
@@ -621,9 +635,14 @@ export async function runFeedActivity(deps: FeedActivityDeps): Promise<FeedActiv
         continue;
       }
       let relevance: FeedRelevance = comment.id.startsWith('desc:') ? 'named' : classifyComment(issue, comment, me);
-      let fromSelfTest = false;
+      let fromSelfTest = comment.id.startsWith('desc:') && issue.reporterAccountId === me.accountId;
       if (relevance === 'self') {
-        if (!selfTest) {
+        // Self-test lets the operator's own comments through, but only on the projects it
+        // is scoped to (the FDTES sandbox): with it on, the feed may REPLY as the operator,
+        // which must never happen on a real board.
+        const allowed = deps.selfTestProjects?.() ?? [];
+        const projectOfIssue = issue.key.split('-')[0] ?? '';
+        if (!selfTest || (allowed.length > 0 && !allowed.includes(projectOfIssue))) {
           ledger.handled[comment.id] = { at: pollAt, ticket: issue.key, outcome: 'ignored', reason: 'written by the operator' };
           continue;
         }

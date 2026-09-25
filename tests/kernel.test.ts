@@ -46,7 +46,7 @@ describe('phase routing', () => {
     const { kernel, controls } = build();
     await kernel.enterPlanning();
     expect(kernel.state.phase).toBe('planning');
-    expect(controls.models).toEqual(['claude-fable-5']);
+    expect(controls.models).toEqual(['claude-opus-5-5']);
     expect(controls.modes).toEqual(['plan']);
   });
 
@@ -56,7 +56,7 @@ describe('phase routing', () => {
     await kernel.decide(call('ExitPlanMode', { plan: 'anything' }));
     expect(kernel.state.phase).toBe('implementation');
     expect(kernel.state.planApproved).toBe(true);
-    expect(controls.models).toEqual(['claude-fable-5', 'claude-opus-5']);
+    expect(controls.models).toEqual(['claude-opus-5-5', 'claude-opus-5']);
   });
 
   it('stays in planning on the plan model when the plan is turned down', async () => {
@@ -66,7 +66,7 @@ describe('phase routing', () => {
     expect(result.allow).toBe(false);
     expect(kernel.state.phase).toBe('planning');
     expect(kernel.state.planApproved).toBe(false);
-    expect(controls.models).toEqual(['claude-fable-5']);
+    expect(controls.models).toEqual(['claude-opus-5-5']);
   });
 
   it('requires no particular model during ordinary conversation', () => {
@@ -120,7 +120,7 @@ describe('subagent tier correction', () => {
 
   it('leaves a correctly tiered call alone', () => {
     const { kernel } = build({ guards });
-    const verdict = kernel.inspect(call('Agent', { subagent_type: 'Plan', model: 'fable', prompt: 'x' }));
+    const verdict = kernel.inspect(call('Agent', { subagent_type: 'Plan', model: 'opus-5-5', prompt: 'x' }));
     expect(verdict.updatedInput).toBeUndefined();
   });
 
